@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+client/node_modules/
+
+# Build output
+client/dist/
+
+# Environment variables — NEVER commit this
+.env
+
+# Local data — stays on your machine only
+data/
+backups/
+vault/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Dropbox
+.dropboxignore
+excludelist.txt
