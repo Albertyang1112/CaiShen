@@ -110,15 +110,30 @@ app.delete('/api/properties/:id', (req, res) => {
 const vaultRoutes = require('./vault')
 app.use('/api/vault', vaultRoutes)
 
+// ── Server-Sent Events — push data-refresh signals to the browser ─────
+const sseClients = new Set()
+app.get('/api/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders()
+  sseClients.add(res)
+  req.on('close', () => sseClients.delete(res))
+})
+function notifyClients() {
+  for (const client of sseClients) {
+    client.write(`data: ${JSON.stringify({ type: 'data-updated' })}\n\n`)
+  }
+}
+
 // ── Routes: Plaid ─────────────────────────────────────────────────────
-const plaidRoutes = require('./plaid');
-app.use('/api/plaid', plaidRoutes(readData, writeData));
+const { router: plaidRouter, syncAll: plaidSyncAll } = require('./plaid')(readData, writeData, notifyClients);
+app.use('/api/plaid', plaidRouter);
 
 // ── Routes: QuickBooks ────────────────────────────────────────────────
-const qbAuthRoutes = require('./quickbooks')
-const qbApiRoutes  = require('./quickbooks')
-app.use('/auth/quickbooks', qbAuthRoutes(readData, writeData))
-app.use('/api/quickbooks', qbApiRoutes(readData, writeData))
+const { authRouter: qbAuth, apiRouter: qbApi } = require('./quickbooks')(readData, writeData)
+app.use('/auth/quickbooks', qbAuth)
+app.use('/api/quickbooks', qbApi)
 
 // ── Routes: Backup & Export ───────────────────────────────────────────
 app.get('/api/backup', (req, res) => {
@@ -244,10 +259,19 @@ app.get('/{*path}', (req, res) => {
 });
 
 // ── Auto-sync scheduler ───────────────────────────────────────────────
-const intervalMinutes = parseInt(process.env.AUTO_SYNC_INTERVAL) || 60;
+const intervalMinutes = parseInt(process.env.AUTO_SYNC_INTERVAL) || 5;
 cron.schedule(`*/${intervalMinutes} * * * *`, async () => {
-  console.log(`[${new Date().toISOString()}] Running auto-sync...`);
-  // Plaid sync will be triggered here once keys are configured
+  const ts = new Date().toLocaleTimeString();
+  const result = await plaidSyncAll().catch(e => ({ error: e.message }));
+  if (result.skipped) return;
+  if (result.error) { console.log(`[${ts}] Auto-sync error: ${result.error}`); return; }
+  for (const r of result.results || []) {
+    if (r.error) {
+      console.log(`[${ts}] ${r.institution}: error — ${r.error}`);
+    } else {
+      console.log(`[${ts}] ${r.institution}: ${r.accounts} accounts, ${r.transactions} transactions`);
+    }
+  }
 });
 
 // ── Start ─────────────────────────────────────────────────────────────

@@ -570,6 +570,24 @@ export default function App() {
     axios.get(`${API}/properties`).then(r=>setProperties(r.data||[])).catch(()=>{})
   },[])
 
+  // Live push: server notifies the browser whenever a Plaid sync writes new data
+  useEffect(()=>{
+    let es, retryTimer
+    const connect = () => {
+      es = new EventSource(`http://localhost:3001/api/events`)
+      es.onmessage = () => {
+        axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])).catch(()=>{})
+        axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])).catch(()=>{})
+      }
+      es.onerror = () => {
+        es.close()
+        retryTimer = setTimeout(connect, 5000) // reconnect after 5s if connection drops
+      }
+    }
+    connect()
+    return () => { es?.close(); clearTimeout(retryTimer) }
+  },[])
+
   const drill = (id, label) => { setNav(id); setTrail(prev=>[...prev,{id,label}]) }
   const navBC = idx => { const t=trail.slice(0,idx+1); setTrail(t); setNav(t[t.length-1].id) }
   const go = (id, label) => { setNav(id); setTrail([{id:label||id,label:label||id}]) }

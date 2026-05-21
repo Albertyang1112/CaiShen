@@ -2,7 +2,8 @@ const express = require('express');
 const OAuthClient = require('intuit-oauth');
 
 module.exports = function(readData, writeData) {
-  const router = express.Router();
+  const authRouter = express.Router();
+  const apiRouter  = express.Router();
 
   const qbConfigured = process.env.QB_CLIENT_ID &&
     process.env.QB_CLIENT_ID !== 'paste_your_qb_client_id_here';
@@ -21,7 +22,7 @@ module.exports = function(readData, writeData) {
   }
 
   // ── Step 1: Redirect user to QuickBooks login ─────────────────────────
-  router.get('/connect', (req, res) => {
+  authRouter.get('/connect', (req, res) => {
     if (!oauthClient) return res.status(400).json({ error: 'QuickBooks not configured' });
     const authUri = oauthClient.authorizeUri({
       scope: [OAuthClient.scopes.Accounting, OAuthClient.scopes.OpenId],
@@ -31,7 +32,7 @@ module.exports = function(readData, writeData) {
   });
 
   // ── Step 2: Handle OAuth callback ────────────────────────────────────
-  router.get('/callback', async (req, res) => {
+  authRouter.get('/callback', async (req, res) => {
     if (!oauthClient) return res.status(400).send('QuickBooks not configured');
     try {
       const authResponse = await oauthClient.createToken(req.url);
@@ -57,7 +58,7 @@ module.exports = function(readData, writeData) {
   });
 
   // ── Get QB connection status ──────────────────────────────────────────
-  router.get('/status', (req, res) => {
+  apiRouter.get('/status', (req, res) => {
     const connections = readData('connections.json');
     if (!connections.quickbooks) return res.json({ connected: false });
     res.json({
@@ -69,7 +70,7 @@ module.exports = function(readData, writeData) {
   });
 
   // ── Manual sync ───────────────────────────────────────────────────────
-  router.post('/sync', async (req, res) => {
+  apiRouter.post('/sync', async (req, res) => {
     if (!oauthClient) return res.status(400).json({ error: 'QuickBooks not configured' });
     const connections = readData('connections.json');
     if (!connections.quickbooks) return res.status(400).json({ error: 'QuickBooks not connected' });
@@ -92,14 +93,14 @@ module.exports = function(readData, writeData) {
   });
 
   // ── Disconnect ────────────────────────────────────────────────────────
-  router.post('/disconnect', (req, res) => {
+  apiRouter.post('/disconnect', (req, res) => {
     const connections = readData('connections.json');
     connections.quickbooks = null;
     writeData('connections.json', connections);
     res.json({ success: true });
   });
 
-  return router;
+  return { authRouter, apiRouter };
 };
 
 // ── QB Sync helper ────────────────────────────────────────────────────
