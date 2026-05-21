@@ -1,0 +1,28 @@
+{
+  "name": "caishen",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.16.1",
+    "better-sqlite3": "^12.10.0",
+    "cors": "^2.8.6",
+    "crypto-js": "^4.2.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "intuit-oauth": "^4.2.3",
+    "multer": "^2.1.1",
+    "node-cron": "^4.2.1",
+    "node-fetch": "^3.3.2",
+    "open": "^11.0.0",
+    "plaid": "^42.2.0"
+  }
+}
