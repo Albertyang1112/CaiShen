@@ -9,6 +9,10 @@ client/dist/
 .env
 
 # Local data — stays on your machine only
+.env
+node_modules/
+client/node_modules/
+client/dist/
 data/
 backups/
 vault/
