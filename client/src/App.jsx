@@ -4,6 +4,7 @@ import Projections from './Projections'
 import PersonalSpending from './PersonalSpending'
 import TransactionTransfer from './TransactionTransfer'
 import DataVault from './DataVault'
+import { usePlaidLink } from 'react-plaid-link'
 
 const API = 'http://localhost:3001/api'
 
@@ -313,86 +314,228 @@ function PropertyDetail({propId, properties}) {
 }
 
 function ConnectionsScreen({status, onSync}) {
-  const [syncing, setSyncing] = useState(false)
+  const [syncing, setSyncing]       = useState(false)
   const [plaidConns, setPlaidConns] = useState([])
+  const [linkToken, setLinkToken]   = useState(null)
+  const [linkError, setLinkError]   = useState(null)
+  const [qbStatus, setQbStatus]     = useState(null)
+  const [connecting, setConnecting] = useState(false)
 
-  useEffect(()=>{
-    axios.get(`${API}/plaid/connections`).then(r=>setPlaidConns(r.data)).catch(()=>{})
-  },[])
+  // Load existing connections and QB status
+  useEffect(() => {
+    axios.get(`${API}/plaid/connections`)
+      .then(r => setPlaidConns(Array.isArray(r.data) ? r.data : []))
+      .catch(() => {})
+    axios.get(`${API}/quickbooks/status`)
+      .then(r => setQbStatus(r.data))
+      .catch(() => {})
+  }, [])
+
+  // Get Plaid Link token from backend
+  const getLinkToken = async () => {
+    setConnecting(true)
+    setLinkError(null)
+    try {
+      const res = await axios.post(`${API}/plaid/create-link-token`)
+      setLinkToken(res.data.link_token)
+    } catch (e) {
+      setLinkError(e.response?.data?.error || e.message)
+      setConnecting(false)
+    }
+  }
+
+  // Plaid Link config
+  const plaidConfig = {
+    token: linkToken,
+    onSuccess: async (publicToken, metadata) => {
+      try {
+        await axios.post(`${API}/plaid/exchange-token`, {
+          public_token: publicToken,
+          institution_name: metadata.institution?.name || 'Unknown'
+        })
+        // Reload connections
+        const res = await axios.get(`${API}/plaid/connections`)
+        setPlaidConns(Array.isArray(res.data) ? res.data : [])
+        setLinkToken(null)
+        onSync?.()
+      } catch (e) {
+        setLinkError('Failed to connect account: ' + e.message)
+      }
+      setConnecting(false)
+    },
+    onExit: () => {
+      setLinkToken(null)
+      setConnecting(false)
+    },
+    onEvent: () => {}
+  }
+
+  const { open: openPlaidLink, ready: plaidReady } = usePlaidLink(
+    linkToken ? plaidConfig : { token: null, onSuccess: () => {} }
+  )
+
+  // Auto-open Plaid Link once token is ready
+  useEffect(() => {
+    if (linkToken && plaidReady) {
+      openPlaidLink()
+    }
+  }, [linkToken, plaidReady, openPlaidLink])
 
   const syncAll = async () => {
     setSyncing(true)
-    try { await axios.post(`${API}/plaid/sync`); onSync?.() }
-    catch(e) { console.error(e) }
+    try {
+      await axios.post(`${API}/plaid/sync`)
+      onSync?.()
+      const res = await axios.get(`${API}/plaid/connections`)
+      setPlaidConns(Array.isArray(res.data) ? res.data : [])
+    } catch(e) { console.error(e) }
+    setSyncing(false)
+  }
+
+  const removeConnection = async (itemId) => {
+    if (!window.confirm('Disconnect this account?')) return
+    try {
+      await axios.delete(`${API}/plaid/connections/${itemId}`)
+      setPlaidConns(prev => prev.filter(c => c.item_id !== itemId))
+    } catch(e) { console.error(e) }
+  }
+
+  const connectQB = () => {
+    window.open('http://localhost:3001/auth/quickbooks/connect', '_blank', 'width=600,height=700')
+  }
+
+  const syncQB = async () => {
+    setSyncing(true)
+    try {
+      await axios.post(`${API}/quickbooks/sync`)
+      const res = await axios.get(`${API}/quickbooks/status`)
+      setQbStatus(res.data)
+      onSync?.()
+    } catch(e) { console.error(e) }
     setSyncing(false)
   }
 
   return (
     <div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
+      {linkError && (
+        <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'var(--coral-light)', borderRadius:'var(--radius-md)', marginBottom:16, fontSize:13, color:'var(--coral)', border:'0.5px solid var(--coral)' }}>
+          <i className="ti ti-alert-circle" style={{ fontSize:15 }} aria-hidden="true"/> {linkError}
+          <button onClick={()=>setLinkError(null)} style={{ marginLeft:'auto', background:'none', border:'none', color:'var(--coral)', padding:0 }}>✕</button>
+        </div>
+      )}
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:20 }}>
+
+        {/* Plaid */}
         <div className="card">
-          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
-            <div style={{width:38,height:38,borderRadius:'var(--radius-md)',background:'var(--blue-light)',display:'flex',alignItems:'center',justifyContent:'center'}}>
-              <Icon name="ti-building-bank" size={19} color="var(--blue)"/>
+          <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
+            <div style={{ width:38, height:38, borderRadius:'var(--radius-md)', background:'var(--blue-light)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <i className="ti ti-building-bank" style={{ fontSize:19, color:'var(--blue)' }} aria-hidden="true"/>
             </div>
             <div>
-              <p style={{fontSize:14,fontWeight:500,margin:0}}>Plaid — Bank Connections</p>
-              <p style={{fontSize:12,color:status?.plaidConfigured?'var(--teal)':'var(--coral)',margin:0}}>
-                {status?.plaidConfigured?'✓ API keys configured':'⚠ Add keys to .env to enable'}
+              <p style={{ fontSize:14, fontWeight:500, margin:0 }}>Plaid — Bank Connections</p>
+              <p style={{ fontSize:12, color:status?.plaidConfigured?'var(--teal)':'var(--coral)', margin:0 }}>
+                {status?.plaidConfigured ? '✓ API keys configured' : '⚠ Add keys to .env to enable'}
               </p>
             </div>
           </div>
-          {plaidConns.length>0 ? (
-            <div style={{marginBottom:12}}>
+
+          {plaidConns.length > 0 ? (
+            <div style={{ marginBottom:12 }}>
               {plaidConns.map(c=>(
-                <div key={c.item_id} className="row">
-                  <span>{c.institution_name}</span>
-                  <span style={{fontSize:11,color:'var(--text-muted)'}}>Last sync: {c.lastSync?new Date(c.lastSync).toLocaleTimeString():'Never'}</span>
+                <div key={c.item_id} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 10px', background:'var(--bg-secondary)', borderRadius:'var(--radius-sm)', marginBottom:6 }}>
+                  <i className="ti ti-circle-check" style={{ fontSize:14, color:'var(--teal)', flexShrink:0 }} aria-hidden="true"/>
+                  <div style={{ flex:1 }}>
+                    <p style={{ fontSize:13, fontWeight:500, margin:0 }}>{c.institution_name}</p>
+                    <p style={{ fontSize:11, color:'var(--text-secondary)', margin:0 }}>
+                      Last sync: {c.lastSync ? new Date(c.lastSync).toLocaleString() : 'Never'}
+                    </p>
+                  </div>
+                  <button onClick={()=>removeConnection(c.item_id)} style={{ fontSize:11, padding:'3px 8px', color:'var(--coral)', borderColor:'var(--coral)', background:'var(--coral-light)' }}>
+                    Disconnect
+                  </button>
                 </div>
               ))}
             </div>
           ) : (
-            <p style={{fontSize:12,color:'var(--text-secondary)',marginBottom:12}}>No accounts connected yet. Add your Plaid API keys to .env then connect your first account.</p>
+            <p style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:12 }}>
+              No accounts connected yet. Click below to connect your bank.
+            </p>
           )}
-          <div style={{display:'flex',gap:8}}>
-            <button className="sync-btn" onClick={syncAll} disabled={syncing||!status?.plaidConfigured}>
-              <Icon name="ti-refresh" size={14}/> {syncing?'Syncing...':'Sync all'}
+
+          <div style={{ display:'flex', gap:8 }}>
+            <button onClick={getLinkToken} disabled={connecting || !status?.plaidConfigured}
+              style={{ fontSize:12, background:'var(--blue-light)', color:'var(--blue)', borderColor:'var(--blue)' }}>
+              <i className="ti ti-plug" aria-hidden="true"/> {connecting ? 'Opening...' : 'Connect account'}
             </button>
+            {plaidConns.length > 0 && (
+              <button className="sync-btn" onClick={syncAll} disabled={syncing}>
+                <i className="ti ti-refresh" aria-hidden="true"/> {syncing ? 'Syncing...' : 'Sync all'}
+              </button>
+            )}
           </div>
         </div>
+
+        {/* QuickBooks */}
         <div className="card">
-          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
-            <div style={{width:38,height:38,borderRadius:'var(--radius-md)',background:'var(--green-light)',display:'flex',alignItems:'center',justifyContent:'center'}}>
-              <Icon name="ti-file-spreadsheet" size={19} color="var(--green)"/>
+          <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
+            <div style={{ width:38, height:38, borderRadius:'var(--radius-md)', background:'var(--green-light)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <i className="ti ti-file-spreadsheet" style={{ fontSize:19, color:'var(--green)' }} aria-hidden="true"/>
             </div>
             <div>
-              <p style={{fontSize:14,fontWeight:500,margin:0}}>QuickBooks</p>
-              <p style={{fontSize:12,color:status?.qbConfigured?'var(--teal)':'var(--coral)',margin:0}}>
-                {status?.qbConfigured?'✓ API keys configured':'⚠ Add keys to .env to enable'}
+              <p style={{ fontSize:14, fontWeight:500, margin:0 }}>QuickBooks</p>
+              <p style={{ fontSize:12, color:status?.qbConfigured?'var(--teal)':'var(--coral)', margin:0 }}>
+                {status?.qbConfigured ? '✓ API keys configured' : '⚠ Add keys to .env to enable'}
               </p>
             </div>
           </div>
-          <p style={{fontSize:12,color:'var(--text-secondary)',marginBottom:12}}>One-click OAuth sync. Pulls all transactions, expenses, and P&L automatically.</p>
-          <button onClick={()=>window.open('http://localhost:3001/auth/quickbooks/connect')} disabled={!status?.qbConfigured}>
-            <Icon name="ti-plug" size={14}/> Connect QuickBooks
-          </button>
+
+          {qbStatus?.connected ? (
+            <div style={{ marginBottom:12 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px', background:'var(--teal-light)', borderRadius:'var(--radius-sm)', marginBottom:8 }}>
+                <i className="ti ti-circle-check" style={{ fontSize:14, color:'var(--teal)' }} aria-hidden="true"/>
+                <div style={{ flex:1 }}>
+                  <p style={{ fontSize:13, fontWeight:500, margin:0, color:'var(--teal)' }}>Connected</p>
+                  <p style={{ fontSize:11, color:'var(--text-secondary)', margin:0 }}>
+                    Last sync: {qbStatus.lastSync ? new Date(qbStatus.lastSync).toLocaleString() : 'Never'}
+                  </p>
+                </div>
+              </div>
+              <button onClick={syncQB} disabled={syncing} className="sync-btn" style={{ fontSize:12 }}>
+                <i className="ti ti-refresh" aria-hidden="true"/> {syncing ? 'Syncing...' : 'Sync QuickBooks'}
+              </button>
+            </div>
+          ) : (
+            <>
+              <p style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:12, lineHeight:1.6 }}>
+                Connect QuickBooks to automatically pull all transactions, expenses, P&L reports, and receipts. No manual CSV exports needed.
+              </p>
+              <button onClick={connectQB} disabled={!status?.qbConfigured}
+                style={{ fontSize:12, background:'var(--green-light)', color:'var(--green)', borderColor:'var(--green)' }}>
+                <i className="ti ti-plug" aria-hidden="true"/> Connect QuickBooks
+              </button>
+            </>
+          )}
         </div>
       </div>
+
+      {/* Setup checklist */}
       <div className="card">
-        <p style={{fontSize:14,fontWeight:500,margin:'0 0 4px'}}>Setup checklist</p>
-        <p style={{fontSize:12,color:'var(--text-secondary)',margin:'0 0 14px'}}>Complete these steps to activate live data</p>
+        <p style={{ fontSize:14, fontWeight:500, margin:'0 0 4px' }}>Setup checklist</p>
+        <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'0 0 14px' }}>Complete these steps to activate live data</p>
         {[
-          {label:'Node.js installed',done:true},
-          {label:'CaiShen server running',done:true},
-          {label:'Plaid account created at plaid.com',done:status?.plaidConfigured},
-          {label:'Plaid keys added to .env (PLAID_CLIENT_ID + PLAID_SECRET)',done:status?.plaidConfigured},
-          {label:'Plaid development access approved (1–2 days)',done:status?.plaidConfigured},
-          {label:'QuickBooks developer account at developer.intuit.com',done:status?.qbConfigured},
-          {label:'QuickBooks keys added to .env (QB_CLIENT_ID + QB_CLIENT_SECRET)',done:status?.qbConfigured},
+          { label:'Node.js installed',                                          done:true },
+          { label:'CaiShen server running',                                     done:true },
+          { label:'Plaid account created at plaid.com',                         done:status?.plaidConfigured },
+          { label:'Plaid keys added to .env',                                   done:status?.plaidConfigured },
+          { label:'Bank account connected via Plaid',                           done:plaidConns.length>0 },
+          { label:'QuickBooks developer account at developer.intuit.com',       done:status?.qbConfigured },
+          { label:'QuickBooks keys added to .env',                              done:status?.qbConfigured },
+          { label:'QuickBooks account connected',                               done:qbStatus?.connected },
         ].map((item,i)=>(
-          <div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 0',borderBottom:'0.5px solid var(--border)'}}>
-            <Icon name={item.done?'ti-circle-check':'ti-circle'} size={16} color={item.done?'var(--teal)':'var(--text-muted)'}/>
-            <span style={{fontSize:13,color:item.done?'var(--text-primary)':'var(--text-secondary)'}}>{item.label}</span>
+          <div key={i} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 0', borderBottom:'0.5px solid var(--border)' }}>
+            <i className={`ti ${item.done?'ti-circle-check':'ti-circle'}`} style={{ fontSize:16, color:item.done?'var(--teal)':'var(--text-muted)', flexShrink:0 }} aria-hidden="true"/>
+            <span style={{ fontSize:13, color:item.done?'var(--text-primary)':'var(--text-secondary)' }}>{item.label}</span>
           </div>
         ))}
       </div>

@@ -1,11 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import axios from 'axios'
-import * as pdfjsLib from 'pdfjs-dist'
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url
-).toString()
 
 const API = 'http://localhost:3001/api/vault'
 
@@ -63,49 +57,243 @@ const formatSize = (bytes) => {
 
 const fd = (n) => (n<0?'-$':'$') + Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
 
-// ── PDF renderer ──────────────────────────────────────────────────────
+// ── PDF preview — server-side text extraction, no vulnerable browser parsing ──
 function PDFPreview({ url, onTransactions }) {
-  const canvasRefs = useRef([])
-  const [pages, setPages]     = useState([])
-  const [loading, setLoading] = useState(true)
+  const [pages, setPages]       = useState(0)
+  const [text, setText]         = useState('')
   const [extracted, setExtracted] = useState([])
-  const [error, setError]     = useState(null)
+  const [loading, setLoading]   = useState(true)
+  const [error, setError]       = useState(null)
 
   useEffect(() => {
     let cancelled = false
     const load = async () => {
       try {
-        const response = await fetch(url)
-        const buffer   = await response.arrayBuffer()
-        const pdf      = await pdfjsLib.getDocument({ data: buffer }).promise
-        if (cancelled) return
+        // Fetch the file and send to backend for safe server-side parsing
+        const fileRes  = await fetch(url)
+        const blob     = await fileRes.blob()
+        const formData = new FormData()
+        formData.append('file', blob, 'document.pdf')
 
-        const pageData = []
-        const allText  = []
-
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page     = await pdf.getPage(i)
-          const viewport = page.getViewport({ scale: 1.4 })
-          const canvas   = document.createElement('canvas')
-          canvas.width   = viewport.width
-          canvas.height  = viewport.height
-          const ctx      = canvas.getContext('2d')
-          await page.render({ canvasContext: ctx, viewport }).promise
-          pageData.push(canvas.toDataURL())
-
-          // Extract text for transaction parsing
-          const content = await page.getTextContent()
-          const text    = content.items.map(i => i.str).join(' ')
-          allText.push(text)
-        }
+        const res  = await axios.post('http://localhost:3001/api/pdf-render', formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        })
 
         if (!cancelled) {
-          setPages(pageData)
+          setPages(res.data.pages || 0)
+          setText(res.data.text || '')
           setLoading(false)
-          // Parse transactions from text
-          const txs = parseTransactionsFromText(allText.join('\n'))
+
+          // Extract transactions from text
+          const txs = parseTransactionsFromText(res.data.text || '')
           setExtracted(txs)
           if (txs.length > 0) onTransactions?.(txs)
+        }
+      } catch (e) {
+        if (!cancelled) {
+          // Backend not running — fall back to showing file info only
+          setError('Backend server not running. Start it with npm start to enable PDF text extraction.')
+          setLoading(false)
+        }
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [url])
+
+  if (loading) return (
+    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'3rem', gap:12, color:'var(--text-secondary)' }}>
+      <i className="ti ti-loader-2" style={{ fontSize:22, animation:'spin 1s linear infinite' }} aria-hidden="true"/>
+      Extracting PDF content...
+    </div>
+  )
+
+  return (
+    <div>
+      {extracted.length > 0 && (
+        <div style={{ padding:'8px 16px', background:'var(--teal-light)', borderBottom:'0.5px solid var(--teal)', display:'flex', alignItems:'center', gap:10, fontSize:13 }}>
+          <i className="ti ti-sparkles" style={{ color:'var(--teal)' }} aria-hidden="true"/>
+          <span style={{ color:'var(--teal)', fontWeight:500 }}>{extracted.length} transactions extracted</span>
+        </div>
+      )}
+
+      {error ? (
+        <div style={{ padding:'2rem', textAlign:'center' }}>
+          <i className="ti ti-alert-circle" style={{ fontSize:36, color:'var(--amber)', display:'block', marginBottom:12 }} aria-hidden="true"/>
+          <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:16, lineHeight:1.6 }}>{error}</p>
+          <a href={url} download style={{ fontSize:13, padding:'8px 16px', background:'var(--blue-light)', color:'var(--blue)', border:'0.5px solid var(--blue)', borderRadius:'var(--radius-sm)', textDecoration:'none' }}>
+            Download PDF instead
+          </a>
+        </div>
+      ) : (
+        <div style={{ overflowY:'auto', maxHeight:'55vh', padding:'20px 24px' }}>
+          {/* PDF metadata */}
+          <div style={{ display:'flex', gap:16, marginBottom:16, padding:'10px 14px', background:'var(--bg-secondary)', borderRadius:'var(--radius-md)', fontSize:12 }}>
+            <span><i className="ti ti-file-type-pdf" style={{ color:'var(--coral)', marginRight:5 }} aria-hidden="true"/><strong>{pages}</strong> pages</span>
+            <span><strong>{text.length.toLocaleString()}</strong> characters extracted</span>
+            {extracted.length > 0 && <span style={{ color:'var(--teal)' }}><strong>{extracted.length}</strong> transactions found</span>}
+          </div>
+
+          {/* Extracted text */}
+          {text ? (
+            <div style={{ background:'var(--bg-secondary)', borderRadius:'var(--radius-md)', padding:'16px', fontFamily:'monospace', fontSize:12, lineHeight:1.8, color:'var(--text-secondary)', whiteSpace:'pre-wrap', wordBreak:'break-word', maxHeight:'42vh', overflowY:'auto', border:'0.5px solid var(--border)' }}>
+              {text}
+            </div>
+          ) : (
+            <div style={{ textAlign:'center', padding:'2rem', color:'var(--text-secondary)' }}>
+              <i className="ti ti-file-off" style={{ fontSize:32, display:'block', marginBottom:10 }} aria-hidden="true"/>
+              <p style={{ fontSize:13, margin:0 }}>No text could be extracted. This may be a scanned/image PDF.</p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── CSV preview ───────────────────────────────────────────────────────
+function CSVPreview({ url, onTransactions }) {
+  const [rows, setRows]       = useState([])
+  const [headers, setHeaders] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch(url).then(r => r.text()).then(text => {
+      const lines = text.trim().split('\n').filter(Boolean)
+      if (!lines.length) return
+      const hdrs = lines[0].split(',').map(h => h.replace(/"/g,'').trim())
+      const data = lines.slice(1).map(l => {
+        const cols = []
+        let cur = '', inQ = false
+        for (const ch of l) {
+          if (ch==='"') inQ=!inQ
+          else if (ch===',' && !inQ) { cols.push(cur.trim()); cur='' }
+          else cur+=ch
+        }
+        cols.push(cur.trim())
+        return cols.map(c => c.replace(/"/g,'').trim())
+      })
+      setHeaders(hdrs)
+      setRows(data)
+      setLoading(false)
+
+      // Extract transactions
+      const dateIdx = hdrs.findIndex(h => ['date','posting date','transaction date'].includes(h.toLowerCase()))
+      const descIdx = hdrs.findIndex(h => h.toLowerCase().includes('description') || h.toLowerCase().includes('merchant'))
+      const amtIdx  = hdrs.findIndex(h => h.toLowerCase().includes('amount'))
+      if (dateIdx>=0 && descIdx>=0 && amtIdx>=0) {
+        const txs = data.slice(0,500).map((row,i) => {
+          const amt  = parseFloat(row[amtIdx]?.replace(/[$,]/g,'')||'0')
+          const date = new Date(row[dateIdx])
+          return {
+            id: `csv_preview_${i}`,
+            date: isNaN(date) ? row[dateIdx] : date.toISOString().split('T')[0],
+            desc: row[descIdx]||'',
+            amount: amt,
+            category: categorize(row[descIdx]||''),
+            source: 'vault',
+          }
+        }).filter(t => !isNaN(t.amount) && t.amount !== 0)
+        onTransactions?.(txs)
+      }
+    }).catch(() => setLoading(false))
+  }, [url])
+
+  if (loading) return <div style={{ padding:'2rem', textAlign:'center', color:'var(--text-secondary)' }}>Loading CSV...</div>
+
+  return (
+    <div style={{ overflowX:'auto', overflowY:'auto', maxHeight:'60vh' }}>
+      <table style={{ borderCollapse:'collapse', fontSize:12, width:'100%' }}>
+        <thead>
+          <tr style={{ background:'var(--bg-secondary)', position:'sticky', top:0 }}>
+            <th style={{ padding:'8px 10px', color:'var(--text-muted)', borderBottom:'0.5px solid var(--border)', width:36, fontSize:11 }}>#</th>
+            {headers.map((h,i) => (
+              <th key={i} style={{ padding:'8px 12px', textAlign:'left', fontWeight:500, color:'var(--text-secondary)', borderBottom:'0.5px solid var(--border)', whiteSpace:'nowrap', borderRight:'0.5px solid var(--border)' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0,200).map((row,i) => (
+            <tr key={i} style={{ borderBottom:'0.5px solid var(--border)' }}
+              onMouseEnter={e=>e.currentTarget.style.background='var(--bg-secondary)'}
+              onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+              <td style={{ padding:'6px 10px', color:'var(--text-muted)', fontSize:11, textAlign:'right' }}>{i+1}</td>
+              {row.map((cell,j) => (
+                <td key={j} style={{ padding:'7px 12px', whiteSpace:'nowrap', maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', borderRight:'0.5px solid var(--border)' }}>{cell}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.length > 200 && <p style={{ padding:'10px', fontSize:11, color:'var(--text-secondary)', textAlign:'center' }}>Showing 200 of {rows.length} rows</p>}
+    </div>
+  )
+}
+
+// ── Excel preview — uses ExcelJS, 0 vulnerabilities ───────────────────
+function ExcelPreview({ url, onTransactions }) {
+  const [sheets, setSheets]         = useState({})
+  const [activeSheet, setActiveSheet] = useState('')
+  const [loading, setLoading]       = useState(true)
+  const [error, setError]           = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const ExcelJS  = (await import('exceljs/dist/exceljs.bare.min.js')).default
+        const response = await fetch(url)
+        const buffer   = await response.arrayBuffer()
+        const wb       = new ExcelJS.Workbook()
+        await wb.xlsx.load(buffer)
+
+        const allSheets = {}
+        wb.eachSheet(ws => {
+          const rows = []
+          ws.eachRow(row => {
+            rows.push(row.values.slice(1).map(v => {
+              if (v === null || v === undefined) return ''
+              if (v instanceof Date) return v.toLocaleDateString()
+              if (typeof v === 'object' && v.text) return v.text
+              if (typeof v === 'object' && v.result !== undefined) return v.result
+              return String(v)
+            }))
+          })
+          allSheets[ws.name] = rows
+        })
+
+        if (!cancelled) {
+          setSheets(allSheets)
+          const firstName = Object.keys(allSheets)[0] || ''
+          setActiveSheet(firstName)
+          setLoading(false)
+
+          // Transaction extraction from first sheet
+          const firstRows = allSheets[firstName] || []
+          if (firstRows.length > 1) {
+            const headers = firstRows[0].map(h => String(h).toLowerCase())
+            const dateIdx = headers.findIndex(h => h.includes('date'))
+            const descIdx = headers.findIndex(h => h.includes('desc') || h.includes('memo') || h.includes('name'))
+            const amtIdx  = headers.findIndex(h => h.includes('amount') || h.includes('debit') || h.includes('credit'))
+            if (dateIdx>=0 && descIdx>=0 && amtIdx>=0) {
+              const txs = firstRows.slice(1).map((row,i) => {
+                const date = new Date(row[dateIdx])
+                const amt  = parseFloat(String(row[amtIdx]).replace(/[$,]/g,'')) || 0
+                const desc = String(row[descIdx] || '')
+                if (isNaN(date.getTime()) || !amt) return null
+                return {
+                  id: `xlsx_${i}_${Date.now()}`,
+                  date: date.toISOString().split('T')[0],
+                  desc,
+                  amount: amt < 0 ? amt : -Math.abs(amt),
+                  category: categorize(desc),
+                  source: 'vault',
+                  month: `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`,
+                }
+              }).filter(Boolean)
+              if (txs.length > 0) onTransactions?.(txs)
+            }
+          }
         }
       } catch (e) {
         if (!cancelled) { setError(e.message); setLoading(false) }
@@ -117,109 +305,72 @@ function PDFPreview({ url, onTransactions }) {
 
   if (loading) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'3rem', gap:12, color:'var(--text-secondary)' }}>
-      <i className="ti ti-loader-2" style={{ fontSize:24, animation:'spin 1s linear infinite' }} aria-hidden="true"/>
-      Rendering PDF...
+      <i className="ti ti-loader-2" style={{ fontSize:22, animation:'spin 1s linear infinite' }} aria-hidden="true"/>
+      Reading spreadsheet...
     </div>
   )
   if (error) return (
     <div style={{ padding:'2rem', textAlign:'center', color:'var(--coral)' }}>
       <i className="ti ti-alert-circle" style={{ fontSize:28, display:'block', marginBottom:8 }} aria-hidden="true"/>
-      Could not render PDF: {error}
+      Could not read Excel file: {error}
     </div>
   )
+
+  const rows    = sheets[activeSheet] || []
+  const headers = rows[0] || []
+  const data    = rows.slice(1)
 
   return (
     <div>
-      {extracted.length > 0 && (
-        <div style={{ padding:'10px 16px', background:'var(--teal-light)', borderBottom:'0.5px solid var(--teal)', display:'flex', alignItems:'center', gap:10, fontSize:13 }}>
-          <i className="ti ti-sparkles" style={{ color:'var(--teal)' }} aria-hidden="true"/>
-          <span style={{ color:'var(--teal)', fontWeight:500 }}>{extracted.length} transactions extracted</span>
-          <span style={{ color:'var(--text-secondary)', fontSize:12 }}>from this document</span>
+      {Object.keys(sheets).length > 1 && (
+        <div style={{ display:'flex', gap:0, borderBottom:'0.5px solid var(--border)', background:'var(--bg-secondary)', overflowX:'auto' }}>
+          {Object.keys(sheets).map(name => (
+            <button key={name} onClick={() => setActiveSheet(name)}
+              style={{ fontSize:12, padding:'8px 16px', borderRadius:0, border:'none', borderBottom: activeSheet===name?'2px solid var(--green)':'2px solid transparent', background:'none', color: activeSheet===name?'var(--green)':'var(--text-secondary)', fontWeight: activeSheet===name?500:400, whiteSpace:'nowrap', cursor:'pointer' }}>
+              <i className="ti ti-table" style={{ fontSize:12, marginRight:5 }} aria-hidden="true"/>
+              {name}
+            </button>
+          ))}
         </div>
       )}
-      <div style={{ overflowY:'auto', maxHeight:'60vh', background:'#525659', padding:'16px', display:'flex', flexDirection:'column', gap:12, alignItems:'center' }}>
-        {pages.map((dataUrl, i) => (
-          <img key={i} src={dataUrl} alt={`Page ${i+1}`} style={{ maxWidth:'100%', boxShadow:'0 2px 12px rgba(0,0,0,0.4)', borderRadius:2 }}/>
-        ))}
+      <div style={{ padding:'6px 16px', background:'var(--bg-secondary)', borderBottom:'0.5px solid var(--border)', display:'flex', gap:16, fontSize:11, color:'var(--text-secondary)' }}>
+        <span><strong style={{ color:'var(--text-primary)' }}>{data.length.toLocaleString()}</strong> rows</span>
+        <span><strong style={{ color:'var(--text-primary)' }}>{headers.length}</strong> columns</span>
+        <span>Sheet: <strong style={{ color:'var(--green)' }}>{activeSheet}</strong></span>
+        {data.length > 200 && <span style={{ color:'var(--amber)' }}>Showing first 200 rows</span>}
       </div>
-    </div>
-  )
-}
-
-// ── CSV preview ───────────────────────────────────────────────────────
-function CSVPreview({ url, onTransactions }) {
-  const [rows, setRows]   = useState([])
-  const [headers, setHeaders] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    fetch(url).then(r=>r.text()).then(text => {
-      const lines = text.trim().split('\n').filter(Boolean)
-      if (lines.length === 0) return
-      const hdrs = lines[0].split(',').map(h=>h.replace(/"/g,'').trim())
-      const data = lines.slice(1).map(l => {
-        const cols = []
-        let cur = '', inQ = false
-        for (const ch of l) {
-          if (ch==='"') inQ=!inQ
-          else if (ch===',' && !inQ) { cols.push(cur.trim()); cur='' }
-          else cur+=ch
-        }
-        cols.push(cur.trim())
-        return cols.map(c=>c.replace(/"/g,'').trim())
-      })
-      setHeaders(hdrs)
-      setRows(data)
-      setLoading(false)
-
-      // Extract transactions
-      const dateIdx = hdrs.findIndex(h=>['date','posting date','transaction date'].includes(h.toLowerCase()))
-      const descIdx = hdrs.findIndex(h=>h.toLowerCase().includes('description')||h.toLowerCase().includes('merchant'))
-      const amtIdx  = hdrs.findIndex(h=>h.toLowerCase().includes('amount'))
-      if (dateIdx>=0 && descIdx>=0 && amtIdx>=0) {
-        const txs = data.slice(0,500).map((row,i) => {
-          const amt = parseFloat(row[amtIdx]?.replace(/[$,]/g,'')||'0')
-          const date = new Date(row[dateIdx])
-          return {
-            id: `csv_preview_${i}`,
-            date: isNaN(date)?row[dateIdx]:date.toISOString().split('T')[0],
-            desc: row[descIdx]||'',
-            amount: amt,
-            category: categorize(row[descIdx]||''),
-            source: 'vault',
-          }
-        }).filter(t=>!isNaN(t.amount)&&t.amount!==0)
-        onTransactions?.(txs)
-      }
-    }).catch(()=>setLoading(false))
-  }, [url])
-
-  if (loading) return <div style={{ padding:'2rem', textAlign:'center', color:'var(--text-secondary)' }}>Loading CSV...</div>
-
-  return (
-    <div style={{ overflowAuto:'auto', maxHeight:'60vh' }}>
-      <div style={{ overflowX:'auto', overflowY:'auto', maxHeight:'60vh' }}>
-        <table style={{ borderCollapse:'collapse', fontSize:12, width:'100%' }}>
+      <div style={{ overflowX:'auto', overflowY:'auto', maxHeight:'52vh' }}>
+        <table style={{ borderCollapse:'collapse', fontSize:12, width:'100%', minWidth:'max-content' }}>
           <thead>
-            <tr style={{ background:'var(--bg-secondary)', position:'sticky', top:0 }}>
-              {headers.map((h,i)=>(
-                <th key={i} style={{ padding:'8px 12px', textAlign:'left', fontWeight:500, color:'var(--text-secondary)', borderBottom:'0.5px solid var(--border)', whiteSpace:'nowrap' }}>{h}</th>
+            <tr style={{ background:'var(--bg-secondary)', position:'sticky', top:0, zIndex:1 }}>
+              <th style={{ padding:'8px 10px', color:'var(--text-muted)', borderBottom:'0.5px solid var(--border)', width:36, fontSize:11 }}>#</th>
+              {headers.map((h,i) => (
+                <th key={i} style={{ padding:'8px 12px', textAlign:'left', fontWeight:500, color:'var(--text-secondary)', borderBottom:'0.5px solid var(--border)', whiteSpace:'nowrap', borderRight:'0.5px solid var(--border)' }}>
+                  {h}
+                </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {rows.slice(0,200).map((row,i)=>(
+            {data.slice(0,200).map((row,i) => (
               <tr key={i} style={{ borderBottom:'0.5px solid var(--border)' }}
                 onMouseEnter={e=>e.currentTarget.style.background='var(--bg-secondary)'}
                 onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-                {row.map((cell,j)=>(
-                  <td key={j} style={{ padding:'7px 12px', color:'var(--text-primary)', whiteSpace:'nowrap', maxWidth:200, overflow:'hidden', textOverflow:'ellipsis' }}>{cell}</td>
-                ))}
+                <td style={{ padding:'6px 10px', color:'var(--text-muted)', fontSize:11, textAlign:'right' }}>{i+1}</td>
+                {headers.map((_,j) => {
+                  const val = row[j] ?? ''
+                  const isNum = !isNaN(parseFloat(val)) && String(val).trim() !== ''
+                  const isNeg = isNum && parseFloat(val) < 0
+                  return (
+                    <td key={j} style={{ padding:'6px 12px', color: isNeg?'var(--coral)':'var(--text-primary)', textAlign: isNum?'right':'left', whiteSpace:'nowrap', maxWidth:220, overflow:'hidden', textOverflow:'ellipsis', borderRight:'0.5px solid var(--border)', fontVariantNumeric: isNum?'tabular-nums':'normal' }}>
+                      {val}
+                    </td>
+                  )
+                })}
               </tr>
             ))}
           </tbody>
         </table>
-        {rows.length > 200 && <p style={{ padding:'10px 12px', fontSize:11, color:'var(--text-secondary)', textAlign:'center' }}>Showing 200 of {rows.length} rows</p>}
       </div>
     </div>
   )
@@ -228,7 +379,7 @@ function CSVPreview({ url, onTransactions }) {
 // ── Image preview ─────────────────────────────────────────────────────
 function ImagePreview({ url }) {
   return (
-    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'16px', background:'#1a1a1a', maxHeight:'60vh', overflow:'auto' }}>
+    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'16px', background:'#111', maxHeight:'60vh', overflow:'auto' }}>
       <img src={url} alt="preview" style={{ maxWidth:'100%', maxHeight:'55vh', objectFit:'contain', borderRadius:4 }}/>
     </div>
   )
@@ -291,10 +442,11 @@ function FilePreviewModal({ file, onClose, onImportTransactions }) {
 
   const renderContent = () => {
     switch (file.type) {
-      case 'pdf':   return <PDFPreview url={fileUrl} onTransactions={handleTransactions}/>
-      case 'csv':   return <CSVPreview url={fileUrl} onTransactions={handleTransactions}/>
-      case 'image': return <ImagePreview url={fileUrl}/>
-      default:
+        case 'pdf':   return <PDFPreview url={fileUrl} onTransactions={handleTransactions}/>
+        case 'csv':   return <CSVPreview url={fileUrl} onTransactions={handleTransactions}/>
+        case 'excel': return <ExcelPreview url={fileUrl} onTransactions={handleTransactions}/>
+        case 'image': return <ImagePreview url={fileUrl}/>
+        default:
         return (
           <div style={{ padding:'3rem', textAlign:'center', color:'var(--text-secondary)' }}>
             <i className={`ti ${FILE_ICONS[file.type]?.icon||'ti-file'}`} style={{ fontSize:48, display:'block', marginBottom:12, color:FILE_ICONS[file.type]?.color }} aria-hidden="true"/>

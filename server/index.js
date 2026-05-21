@@ -115,9 +115,10 @@ const plaidRoutes = require('./plaid');
 app.use('/api/plaid', plaidRoutes(readData, writeData));
 
 // ── Routes: QuickBooks ────────────────────────────────────────────────
-const qbRoutes = require('./quickbooks');
-app.use('/auth/quickbooks', qbRoutes(readData, writeData));
-app.use('/api/quickbooks', qbRoutes(readData, writeData));
+const qbAuthRoutes = require('./quickbooks')
+const qbApiRoutes  = require('./quickbooks')
+app.use('/auth/quickbooks', qbAuthRoutes(readData, writeData))
+app.use('/api/quickbooks', qbApiRoutes(readData, writeData))
 
 // ── Routes: Backup & Export ───────────────────────────────────────────
 app.get('/api/backup', (req, res) => {
@@ -190,6 +191,28 @@ app.post('/api/parse-statement', upload.single('file'), async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+app.post('/api/pdf-render', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' })
+  try {
+    const PDFParser = require('pdf2json')
+    const parser = new PDFParser()
+    
+    await new Promise((resolve, reject) => {
+      parser.on('pdfParser_dataReady', resolve)
+      parser.on('pdfParser_dataError', reject)
+      parser.parseBuffer(req.file.buffer)
+    })
+
+    const text = parser.getRawTextContent()
+    const pages = parser.data?.Pages?.length || 0
+
+    res.json({ text, pages })
+  } catch (e) {
+    console.error('PDF parse error:', e.message)
+    res.status(500).json({ error: e.message, text: '', pages: 0 })
+  }
+})
 
 // ── Routes: Status ────────────────────────────────────────────────────
 app.get('/api/status', (req, res) => {
