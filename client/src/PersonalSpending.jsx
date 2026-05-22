@@ -76,8 +76,86 @@ function categorize(description, chaseCategory) {
   return 'Other'
 }
 
-// ── CSV parser — supports Chase, Amex, Schwab, generic ───────────────
+// ── Cash App CSV parser ───────────────────────────────────────────────
+function parseCashAppCSV(text) {
+  const lines = text.trim().split('\n').filter(l => l.trim())
+  // Cash App CSVs start with a few header/info rows before the real header
+  const headerIdx = lines.findIndex(l => l.toLowerCase().includes('transaction id') || l.toLowerCase().startsWith('date,transaction type'))
+  if (headerIdx === -1) return null
+  const headerLine = lines[headerIdx]
+  const headers = headerLine.split(',').map(h => h.replace(/"/g,'').trim().toLowerCase())
+  const dateIdx   = headers.findIndex(h => h === 'date')
+  const typeIdx   = headers.findIndex(h => h.includes('transaction type') || h === 'type')
+  const amtIdx    = headers.findIndex(h => h === 'amount' || h.includes('net amount'))
+  const nameIdx   = headers.findIndex(h => h === 'name' || h === 'sender / recipient')
+  const noteIdx   = headers.findIndex(h => h === 'notes' || h === 'note')
+  if (dateIdx === -1 || amtIdx === -1) return null
+  const txs = []
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const cols = lines[i].split(',').map(c => c.replace(/"/g,'').trim())
+    const dateRaw = cols[dateIdx]
+    const amtRaw  = cols[amtIdx]?.replace(/[$,\s]/g,'') || '0'
+    const amount  = parseFloat(amtRaw)
+    if (!dateRaw || isNaN(amount) || amount === 0) continue
+    const date = new Date(dateRaw)
+    if (isNaN(date.getTime())) continue
+    const desc = cols[nameIdx] || cols[noteIdx] || cols[typeIdx] || 'Cash App Transfer'
+    txs.push({
+      id: `cashapp_${i}_${Date.now()}`, date: date.toISOString().split('T')[0],
+      desc, amount, category: amount > 0 ? 'Income' : categorize(desc, ''),
+      source: 'cashapp', month: `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`
+    })
+  }
+  return txs.length ? txs : null
+}
+
+// ── Venmo CSV parser ──────────────────────────────────────────────────
+function parseVenmoCSV(text) {
+  const lines = text.trim().split('\n')
+  // Venmo CSVs have boilerplate rows; look for the row with 'ID' and 'Datetime'
+  const headerIdx = lines.findIndex(l => l.toLowerCase().includes('datetime') && l.toLowerCase().includes('type'))
+  if (headerIdx === -1) return null
+  const headers = lines[headerIdx].split(',').map(h => h.replace(/"/g,'').trim().toLowerCase())
+  const dateIdx  = headers.findIndex(h => h.includes('datetime') || h === 'date')
+  const typeIdx  = headers.findIndex(h => h === 'type')
+  const noteIdx  = headers.findIndex(h => h === 'note')
+  const fromIdx  = headers.findIndex(h => h === 'from')
+  const toIdx    = headers.findIndex(h => h === 'to')
+  const amtIdx   = headers.findIndex(h => h.includes('amount') && !h.includes('tip') && !h.includes('tax') && !h.includes('fee'))
+  if (dateIdx === -1 || amtIdx === -1) return null
+  const txs = []
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const cols = lines[i].split(',').map(c => c.replace(/"/g,'').trim())
+    if (!cols[dateIdx]) continue
+    const amtRaw = (cols[amtIdx] || '').replace(/[$+\- ,]/g,'').trim()
+    const isNeg  = (cols[amtIdx] || '').includes('-')
+    const amount = isNeg ? -parseFloat(amtRaw) : parseFloat(amtRaw)
+    if (!amtRaw || isNaN(amount) || amount === 0) continue
+    const date = new Date(cols[dateIdx])
+    if (isNaN(date.getTime())) continue
+    const desc = [cols[noteIdx], cols[fromIdx] && `From: ${cols[fromIdx]}`, cols[toIdx] && `To: ${cols[toIdx]}`].filter(Boolean).join(' — ') || 'Venmo Transfer'
+    txs.push({
+      id: `venmo_${i}_${Date.now()}`, date: date.toISOString().split('T')[0],
+      desc, amount, category: amount > 0 ? 'Income' : categorize(desc, ''),
+      source: 'venmo', month: `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`
+    })
+  }
+  return txs.length ? txs : null
+}
+
+// ── CSV parser — supports Chase, Amex, Schwab, Cash App, Venmo, generic
 function parseCSV(text) {
+  // Try Cash App first
+  if (text.toLowerCase().includes('cash app') || text.toLowerCase().includes('square inc')) {
+    const cashResult = parseCashAppCSV(text)
+    if (cashResult) return cashResult
+  }
+  // Try Venmo
+  if (text.toLowerCase().includes('venmo')) {
+    const venmoResult = parseVenmoCSV(text)
+    if (venmoResult) return venmoResult
+  }
+
   const lines = text.trim().split('\n').filter(l => l.trim())
   if (lines.length < 2) return []
 
@@ -264,7 +342,7 @@ export default function PersonalSpending(props) {
         </div>
         <div style={{ flex:1 }}>
           <p style={{ fontSize:14, fontWeight:500, margin:'0 0 2px' }}>{uploading?'Processing...':'Upload bank statement (CSV)'}</p>
-          <p style={{ fontSize:12, color:'var(--text-secondary)', margin:0 }}>Chase, Amex, Schwab, and most banks. Export as CSV from your bank's website.</p>
+          <p style={{ fontSize:12, color:'var(--text-secondary)', margin:0 }}>Chase, Amex, Schwab, Cash App, Venmo, and most banks. Export as CSV.</p>
         </div>
         <div style={{ display:'flex', gap:6, flexShrink:0 }}>
           {['Chase CSV','Amex CSV','Schwab CSV'].map(f=>(

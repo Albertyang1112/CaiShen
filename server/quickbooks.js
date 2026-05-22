@@ -1,9 +1,17 @@
 const express = require('express');
 const OAuthClient = require('intuit-oauth');
+const axios = require('axios');
 
-module.exports = function(readData, writeData) {
+module.exports = function(makeIO) {
   const authRouter = express.Router();
   const apiRouter  = express.Router();
+
+  // Inject per-user IO into apiRouter handlers
+  apiRouter.use((req, res, next) => {
+    const { read, write } = makeIO(req.user.id);
+    req.read = read; req.write = write;
+    next();
+  });
 
   const qbConfigured = process.env.QB_CLIENT_ID &&
     process.env.QB_CLIENT_ID !== 'paste_your_qb_client_id_here';
@@ -11,10 +19,10 @@ module.exports = function(readData, writeData) {
   let oauthClient = null;
   if (qbConfigured) {
     oauthClient = new OAuthClient({
-      clientId: process.env.QB_CLIENT_ID,
+      clientId:     process.env.QB_CLIENT_ID,
       clientSecret: process.env.QB_CLIENT_SECRET,
-      environment: 'production',
-      redirectUri: process.env.QB_REDIRECT_URI,
+      environment:  'production',
+      redirectUri:  process.env.QB_REDIRECT_URI,
     });
     console.log('✓ QuickBooks OAuth client initialized');
   } else {
@@ -26,65 +34,67 @@ module.exports = function(readData, writeData) {
     if (!oauthClient) return res.status(400).json({ error: 'QuickBooks not configured' });
     const authUri = oauthClient.authorizeUri({
       scope: [OAuthClient.scopes.Accounting, OAuthClient.scopes.OpenId],
-      state: 'wealthos-qb-auth'
+      state: `caishen-qb-${req.user.id}`
     });
     res.redirect(authUri);
   });
 
-  // ── Step 2: Handle OAuth callback ────────────────────────────────────
+  // ── Step 2: Handle OAuth callback (no user JWT — userId in state) ─────
   authRouter.get('/callback', async (req, res) => {
     if (!oauthClient) return res.status(400).send('QuickBooks not configured');
     try {
+      const state  = req.query.state || '';
+      const userId = state.startsWith('caishen-qb-') ? state.slice('caishen-qb-'.length) : '1';
+      const io     = makeIO(userId);
+
       const authResponse = await oauthClient.createToken(req.url);
       const token = oauthClient.getToken();
-      const connections = readData('connections.json');
+      const connections = io.read('connections.json') || { plaid: [] };
       connections.quickbooks = {
-        access_token: token.access_token,
+        access_token:  token.access_token,
         refresh_token: token.refresh_token,
-        realm_id: req.query.realmId,
-        connectedAt: new Date().toISOString(),
-        lastSync: null
+        realm_id:      req.query.realmId,
+        connectedAt:   new Date().toISOString(),
+        lastSync:      null
       };
-      writeData('connections.json', connections);
+      io.write('connections.json', connections);
 
-      // Immediately do first sync
-      await syncQuickBooks(oauthClient, connections.quickbooks, readData, writeData);
+      await syncQuickBooks(oauthClient, connections.quickbooks, io);
 
-      res.redirect('http://localhost:3001/?qb=connected');
+      res.redirect('http://localhost:5173/?qb=connected');
     } catch (e) {
       console.error('QB callback error:', e.message);
-      res.redirect('http://localhost:3001/?qb=error');
+      res.redirect('http://localhost:5173/?qb=error');
     }
   });
 
   // ── Get QB connection status ──────────────────────────────────────────
   apiRouter.get('/status', (req, res) => {
-    const connections = readData('connections.json');
+    const connections = req.read('connections.json') || { plaid: [] };
     if (!connections.quickbooks) return res.json({ connected: false });
     res.json({
-      connected: true,
+      connected:   true,
       connectedAt: connections.quickbooks.connectedAt,
-      lastSync: connections.quickbooks.lastSync,
-      realmId: connections.quickbooks.realm_id
+      lastSync:    connections.quickbooks.lastSync,
+      realmId:     connections.quickbooks.realm_id
     });
   });
 
   // ── Manual sync ───────────────────────────────────────────────────────
   apiRouter.post('/sync', async (req, res) => {
     if (!oauthClient) return res.status(400).json({ error: 'QuickBooks not configured' });
-    const connections = readData('connections.json');
+    const connections = req.read('connections.json') || { plaid: [] };
     if (!connections.quickbooks) return res.status(400).json({ error: 'QuickBooks not connected' });
     try {
       oauthClient.setToken(connections.quickbooks);
-      // Refresh token if needed
       if (oauthClient.isAccessTokenValid() === false) {
         const refreshed = await oauthClient.refresh();
         connections.quickbooks = { ...connections.quickbooks, ...refreshed.getToken() };
-        writeData('connections.json', connections);
+        req.write('connections.json', connections);
       }
-      const result = await syncQuickBooks(oauthClient, connections.quickbooks, readData, writeData);
+      const result = await syncQuickBooks(oauthClient, connections.quickbooks, { read: req.read, write: req.write });
       connections.quickbooks.lastSync = new Date().toISOString();
-      writeData('connections.json', connections);
+      req.write('connections.json', connections);
       res.json({ success: true, ...result });
     } catch (e) {
       console.error('QB sync error:', e.message);
@@ -94,9 +104,9 @@ module.exports = function(readData, writeData) {
 
   // ── Disconnect ────────────────────────────────────────────────────────
   apiRouter.post('/disconnect', (req, res) => {
-    const connections = readData('connections.json');
+    const connections = req.read('connections.json') || { plaid: [] };
     connections.quickbooks = null;
-    writeData('connections.json', connections);
+    req.write('connections.json', connections);
     res.json({ success: true });
   });
 
@@ -104,13 +114,12 @@ module.exports = function(readData, writeData) {
 };
 
 // ── QB Sync helper ────────────────────────────────────────────────────
-async function syncQuickBooks(oauthClient, qbConn, readData, writeData) {
+async function syncQuickBooks(oauthClient, qbConn, io) {
+  const { read, write } = io;
   const { realm_id } = qbConn;
   const baseUrl = `https://quickbooks.api.intuit.com/v3/company/${realm_id}`;
   const headers = { Authorization: `Bearer ${qbConn.access_token}`, Accept: 'application/json' };
-  const axios = require('axios');
 
-  // Fetch transactions (last 365 days)
   const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const query = `SELECT * FROM Purchase WHERE TxnDate >= '${startDate}' MAXRESULTS 1000`;
 
@@ -118,33 +127,32 @@ async function syncQuickBooks(oauthClient, qbConn, readData, writeData) {
   const purchases = txResp.data?.QueryResponse?.Purchase || [];
 
   const qbTxs = purchases.map(p => ({
-    id: `qb_${p.Id}`,
-    date: p.TxnDate,
-    desc: p.EntityRef?.name || p.PrivateNote || 'QuickBooks Transaction',
-    amount: -Math.abs(p.TotalAmt),
-    category: p.AccountRef?.name || 'Business Expense',
-    account: p.AccountRef?.name || 'QuickBooks',
-    source: 'quickbooks',
-    docNumber: p.DocNumber,
+    id:          `qb_${p.Id}`,
+    date:        p.TxnDate,
+    desc:        p.EntityRef?.name || p.PrivateNote || 'QuickBooks Transaction',
+    amount:      -Math.abs(p.TotalAmt),
+    category:    p.AccountRef?.name || 'Business Expense',
+    account:     p.AccountRef?.name || 'QuickBooks',
+    source:      'quickbooks',
+    docNumber:   p.DocNumber,
     lastUpdated: new Date().toISOString()
   }));
 
-  // Also fetch P&L report
   const plResp = await axios.get(
     `${baseUrl}/reports/ProfitAndLoss?start_date=${startDate}&end_date=${new Date().toISOString().split('T')[0]}`,
     { headers }
   ).catch(() => ({ data: null }));
 
-  // Merge QB transactions
-  const existingTxs = readData('transactions.json') || [];
-  const merged = [...existingTxs.filter(t => t.source !== 'quickbooks' || !qbTxs.find(q => q.id === t.id)), ...qbTxs];
-  writeData('transactions.json', merged);
+  const existingTxs = read('transactions.json') || [];
+  write('transactions.json', [
+    ...existingTxs.filter(t => t.source !== 'quickbooks' || !qbTxs.find(q => q.id === t.id)),
+    ...qbTxs
+  ]);
 
-  // Store QB summary
   if (plResp.data) {
-    const settings = readData('settings.json') || {};
+    const settings = read('settings.json') || {};
     settings.qbLastPL = { data: plResp.data, fetchedAt: new Date().toISOString() };
-    writeData('settings.json', settings);
+    write('settings.json', settings);
   }
 
   return { transactions: qbTxs.length, plReport: !!plResp.data };

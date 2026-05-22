@@ -138,3 +138,13 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); }
   letter-spacing: 0.6px;
   margin-bottom: 10px;
 }
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.spin { animation: spin 1s linear infinite; display: inline-block; }

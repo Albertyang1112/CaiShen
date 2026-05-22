@@ -57,98 +57,56 @@ const formatSize = (bytes) => {
 
 const fd = (n) => (n<0?'-$':'$') + Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
 
-// ── PDF preview — server-side text extraction, no vulnerable browser parsing ──
+// ── PDF preview — native browser renderer via authenticated blob URL ──
 function PDFPreview({ url, onTransactions }) {
-  const [pages, setPages]       = useState(0)
-  const [text, setText]         = useState('')
-  const [extracted, setExtracted] = useState([])
-  const [loading, setLoading]   = useState(true)
-  const [error, setError]       = useState(null)
+  const [blobUrl, setBlobUrl] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState(null)
 
   useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      try {
-        // Fetch the file and send to backend for safe server-side parsing
-        const fileRes  = await fetch(url)
-        const blob     = await fileRes.blob()
-        const formData = new FormData()
-        formData.append('file', blob, 'document.pdf')
+    let objUrl = null
+    const token = localStorage.getItem('caishen_token') || ''
 
-        const res  = await axios.post('http://localhost:3001/api/pdf-render', formData, {
-          headers: { 'Content-Type': 'multipart/form-data' }
-        })
+    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob() })
+      .then(blob => {
+        objUrl = URL.createObjectURL(blob)
+        setBlobUrl(objUrl)
+        setLoading(false)
 
-        if (!cancelled) {
-          setPages(res.data.pages || 0)
-          setText(res.data.text || '')
-          setLoading(false)
+        // Background: attempt text extraction for transaction import
+        const fd = new FormData()
+        fd.append('file', blob, 'document.pdf')
+        axios.post('http://localhost:3001/api/pdf-render', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+          .then(res => {
+            const txs = parseTransactionsFromText(res.data.text || '')
+            if (txs.length > 0) onTransactions?.(txs)
+          })
+          .catch(() => {}) // silently skip extraction if it fails
+      })
+      .catch(e => { setError(e.message); setLoading(false) })
 
-          // Extract transactions from text
-          const txs = parseTransactionsFromText(res.data.text || '')
-          setExtracted(txs)
-          if (txs.length > 0) onTransactions?.(txs)
-        }
-      } catch (e) {
-        if (!cancelled) {
-          // Backend not running — fall back to showing file info only
-          setError('Backend server not running. Start it with npm start to enable PDF text extraction.')
-          setLoading(false)
-        }
-      }
-    }
-    load()
-    return () => { cancelled = true }
+    return () => { if (objUrl) URL.revokeObjectURL(objUrl) }
   }, [url])
 
   if (loading) return (
-    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'3rem', gap:12, color:'var(--text-secondary)' }}>
+    <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', gap:12, color:'var(--text-secondary)' }}>
       <i className="ti ti-loader-2" style={{ fontSize:22, animation:'spin 1s linear infinite' }} aria-hidden="true"/>
-      Extracting PDF content...
+      Loading PDF...
     </div>
   )
 
-  return (
-    <div>
-      {extracted.length > 0 && (
-        <div style={{ padding:'8px 16px', background:'var(--teal-light)', borderBottom:'0.5px solid var(--teal)', display:'flex', alignItems:'center', gap:10, fontSize:13 }}>
-          <i className="ti ti-sparkles" style={{ color:'var(--teal)' }} aria-hidden="true"/>
-          <span style={{ color:'var(--teal)', fontWeight:500 }}>{extracted.length} transactions extracted</span>
-        </div>
-      )}
-
-      {error ? (
-        <div style={{ padding:'2rem', textAlign:'center' }}>
-          <i className="ti ti-alert-circle" style={{ fontSize:36, color:'var(--amber)', display:'block', marginBottom:12 }} aria-hidden="true"/>
-          <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:16, lineHeight:1.6 }}>{error}</p>
-          <a href={url} download style={{ fontSize:13, padding:'8px 16px', background:'var(--blue-light)', color:'var(--blue)', border:'0.5px solid var(--blue)', borderRadius:'var(--radius-sm)', textDecoration:'none' }}>
-            Download PDF instead
-          </a>
-        </div>
-      ) : (
-        <div style={{ overflowY:'auto', maxHeight:'55vh', padding:'20px 24px' }}>
-          {/* PDF metadata */}
-          <div style={{ display:'flex', gap:16, marginBottom:16, padding:'10px 14px', background:'var(--bg-secondary)', borderRadius:'var(--radius-md)', fontSize:12 }}>
-            <span><i className="ti ti-file-type-pdf" style={{ color:'var(--coral)', marginRight:5 }} aria-hidden="true"/><strong>{pages}</strong> pages</span>
-            <span><strong>{text.length.toLocaleString()}</strong> characters extracted</span>
-            {extracted.length > 0 && <span style={{ color:'var(--teal)' }}><strong>{extracted.length}</strong> transactions found</span>}
-          </div>
-
-          {/* Extracted text */}
-          {text ? (
-            <div style={{ background:'var(--bg-secondary)', borderRadius:'var(--radius-md)', padding:'16px', fontFamily:'monospace', fontSize:12, lineHeight:1.8, color:'var(--text-secondary)', whiteSpace:'pre-wrap', wordBreak:'break-word', maxHeight:'42vh', overflowY:'auto', border:'0.5px solid var(--border)' }}>
-              {text}
-            </div>
-          ) : (
-            <div style={{ textAlign:'center', padding:'2rem', color:'var(--text-secondary)' }}>
-              <i className="ti ti-file-off" style={{ fontSize:32, display:'block', marginBottom:10 }} aria-hidden="true"/>
-              <p style={{ fontSize:13, margin:0 }}>No text could be extracted. This may be a scanned/image PDF.</p>
-            </div>
-          )}
-        </div>
-      )}
+  if (error) return (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem' }}>
+      <i className="ti ti-alert-circle" style={{ fontSize:36, color:'var(--amber)', marginBottom:12 }} aria-hidden="true"/>
+      <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:16 }}>Could not load PDF</p>
+      <a href={url} download style={{ fontSize:13, padding:'8px 16px', background:'var(--blue-light)', color:'var(--blue)', border:'0.5px solid var(--blue)', borderRadius:'var(--radius-sm)', textDecoration:'none' }}>
+        Download PDF instead
+      </a>
     </div>
   )
+
+  return <iframe src={`${blobUrl}#navpanes=0`} title="PDF Preview" style={{ flex:1, width:'100%', border:'none', display:'block' }}/>
 }
 
 // ── CSV preview ───────────────────────────────────────────────────────
@@ -461,8 +419,8 @@ function FilePreviewModal({ file, onClose, onImportTransactions }) {
   }
 
   return (
-    <div onClick={onClose} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000, padding:'20px' }}>
-      <div onClick={e=>e.stopPropagation()} style={{ background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-lg)', width:'min(860px, 95vw)', maxHeight:'90vh', display:'flex', flexDirection:'column', overflow:'hidden' }}>
+    <div onClick={onClose} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000, padding:'16px' }}>
+      <div onClick={e=>e.stopPropagation()} style={{ background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-lg)', width:'min(1380px, 97vw)', height:'93vh', display:'flex', flexDirection:'column', overflow:'hidden' }}>
         {/* Modal header */}
         <div style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 16px', borderBottom:'0.5px solid var(--border)', background:'var(--bg-secondary)', flexShrink:0 }}>
           <i className={`ti ${FILE_ICONS[file.type]?.icon||'ti-file'}`} style={{ fontSize:18, color:FILE_ICONS[file.type]?.color }} aria-hidden="true"/>
@@ -491,7 +449,7 @@ function FilePreviewModal({ file, onClose, onImportTransactions }) {
         </div>
 
         {/* File content */}
-        <div style={{ flex:1, overflow:'hidden' }}>
+        <div style={{ flex:1, overflow:'hidden', minHeight:0, display:'flex', flexDirection:'column' }}>
           {renderContent()}
         </div>
 
@@ -627,8 +585,27 @@ export default function DataVault({ onImportTransactions }) {
   const [filterType, setFilterType] = useState('all')
   const [uploadError, setUploadError]   = useState(null)
   const [uploadSuccess, setUploadSuccess] = useState(null)
-  const folderRef = useRef()
-  const fileRef   = useRef()
+  const [sidebarWidth, setSidebarWidth] = useState(210)
+  const folderRef  = useRef()
+  const fileRef    = useRef()
+  const dividerDrag = useRef(null)
+
+  const onDividerMouseDown = (e) => {
+    e.preventDefault()
+    dividerDrag.current = { startX: e.clientX, startWidth: sidebarWidth }
+    const onMove = (e) => {
+      if (!dividerDrag.current) return
+      const delta = e.clientX - dividerDrag.current.startX
+      setSidebarWidth(Math.min(420, Math.max(140, dividerDrag.current.startWidth + delta)))
+    }
+    const onUp = () => {
+      dividerDrag.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
 
   const load = async () => {
     try {
@@ -766,13 +743,13 @@ export default function DataVault({ onImportTransactions }) {
       )}
 
       {/* Main layout */}
-      <div style={{ display:'grid', gridTemplateColumns:'210px 1fr', gap:10, flex:1, minHeight:0 }}>
+      <div style={{ display:'flex', flex:1, minHeight:0, gap:0 }}>
         {/* Folder tree */}
         <div
           onDragOver={e=>{e.preventDefault();setDragOver(true)}}
           onDragLeave={()=>setDragOver(false)}
           onDrop={e=>{e.preventDefault();setDragOver(false);handleFiles(e.dataTransfer.files)}}
-          style={{ background:dragOver?'var(--blue-light)':'var(--bg-card)', border:`0.5px solid ${dragOver?'var(--blue)':'var(--border)'}`, borderRadius:'var(--radius-lg)', overflow:'auto', padding:'8px 4px', transition:'all 0.15s' }}>
+          style={{ width:sidebarWidth, flexShrink:0, background:dragOver?'var(--blue-light)':'var(--bg-card)', border:`0.5px solid ${dragOver?'var(--blue)':'var(--border)'}`, borderRadius:'var(--radius-lg)', overflow:'auto', padding:'8px 4px', transition:'background 0.15s, border-color 0.15s' }}>
           <div style={{ padding:'4px 8px 8px', borderBottom:'0.5px solid var(--border)', marginBottom:4 }}>
             <p style={{ fontSize:10, fontWeight:500, color:'var(--text-secondary)', margin:0, textTransform:'uppercase', letterSpacing:'0.5px' }}>Vault</p>
           </div>
@@ -793,8 +770,18 @@ export default function DataVault({ onImportTransactions }) {
           )}
         </div>
 
+        {/* Drag-to-resize divider */}
+        <div
+          onMouseDown={onDividerMouseDown}
+          title="Drag to resize"
+          style={{ width:8, flexShrink:0, cursor:'col-resize', display:'flex', alignItems:'center', justifyContent:'center', position:'relative', zIndex:1 }}
+          onMouseEnter={e=>e.currentTarget.querySelector('span').style.background='var(--blue)'}
+          onMouseLeave={e=>e.currentTarget.querySelector('span').style.background='var(--border)'}>
+          <span style={{ width:2, height:'40px', borderRadius:2, background:'var(--border)', transition:'background 0.15s', pointerEvents:'none' }}/>
+        </div>
+
         {/* File grid */}
-        <div style={{ background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-lg)', overflow:'hidden', display:'flex', flexDirection:'column' }}>
+        <div style={{ flex:1, minWidth:0, background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-lg)', overflow:'hidden', display:'flex', flexDirection:'column' }}>
           <div style={{ padding:'10px 16px', borderBottom:'0.5px solid var(--border)', background:'var(--bg-secondary)', display:'flex', alignItems:'center', gap:10 }}>
             <i className={`ti ${selectedFolder?'ti-folder-open':'ti-files'}`} style={{ fontSize:14, color:'var(--amber)' }} aria-hidden="true"/>
             <p style={{ fontSize:13, fontWeight:500, margin:0 }}>{selectedFolder?.name||'All files'}</p>

@@ -2,7 +2,16 @@
   "permissions": {
     "allow": [
       "Bash(node -e \"const d = require\\('C:/Users/Albert Yang/Desktop/CaiShen/data/transactions.json'\\); console.log\\('Total transactions:', d.length\\); if\\(d.length>0\\){ console.log\\('Sources:', [...new Set\\(d.map\\(t=>t.source\\)\\)]\\); console.log\\('Latest 3:'\\); d.sort\\(\\(a,b\\)=>b.date.localeCompare\\(a.date\\)\\).slice\\(0,3\\).forEach\\(t=>console.log\\(t.date, t.desc, t.amount, t.source\\)\\); }\")",
-      "Bash(node -e \"const d = require\\('C:/Users/Albert Yang/Desktop/CaiShen/data/transactions.json'\\); const today = d.filter\\(t => t.date === '2026-05-20'\\); today.forEach\\(t => console.log\\(JSON.stringify\\({date:t.date,desc:t.desc,amount:t.amount,category:t.category,plaidCategory:t.plaidCategory,pending:t.pending}\\)\\)\\)\")"
+      "Bash(node -e \"const d = require\\('C:/Users/Albert Yang/Desktop/CaiShen/data/transactions.json'\\); const today = d.filter\\(t => t.date === '2026-05-20'\\); today.forEach\\(t => console.log\\(JSON.stringify\\({date:t.date,desc:t.desc,amount:t.amount,category:t.category,plaidCategory:t.plaidCategory,pending:t.pending}\\)\\)\\)\")",
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "Bash(npm install *)",
+      "Bash(node -e \"require\\('./server/advisor'\\)\")",
+      "Bash(node -e \"require\\('./server/index'\\)\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const d=JSON.parse\\(fs.readFileSync\\('data/vault.json','utf8'\\)\\); console.log\\(JSON.stringify\\(d, null, 2\\)\\)\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const d=JSON.parse\\(fs.readFileSync\\('data/vault.json','utf8'\\)\\); console.log\\('Folders:', d.folders?.length\\); console.log\\('Files:', d.files?.length\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(node -e \"const r=\\(f\\)=>{try{return require\\('fs'\\).existsSync\\('data/'+f\\)?JSON.parse\\(require\\('fs'\\).readFileSync\\('data/'+f,'utf8'\\)\\):[];}catch{return[];}};const w=\\(\\)=>true;const {router}=require\\('./server/accounting'\\)\\(r,w\\);console.log\\('routes:',router.stack.map\\(l=>l.route?.path\\).filter\\(Boolean\\).join\\(', '\\)\\)\")"
     ]
   }
 }

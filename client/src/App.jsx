@@ -1,10 +1,31 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, createContext, useContext } from 'react'
 import axios from 'axios'
 import Projections from './Projections'
 import PersonalSpending from './PersonalSpending'
 import TransactionTransfer from './TransactionTransfer'
 import DataVault from './DataVault'
+import Advisor from './Advisor'
+import Accounting from './Accounting'
+import Login from './Login'
 import { usePlaidLink } from 'react-plaid-link'
+
+// ── Auth context ──────────────────────────────────────────────────────
+export const AuthContext = createContext(null)
+export const useAuth = () => useContext(AuthContext)
+
+// ── Axios auth interceptors ───────────────────────────────────────────
+axios.interceptors.request.use(config => {
+  const token = localStorage.getItem('caishen_token')
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+axios.interceptors.response.use(r => r, err => {
+  if (err.response?.status === 401 && !err.config.url?.includes('/auth/')) {
+    localStorage.removeItem('caishen_token')
+    window.location.reload()
+  }
+  return Promise.reject(err)
+})
 
 const API = 'http://localhost:3001/api'
 
@@ -61,13 +82,14 @@ const ASSET_CLASSES = [
   {id:'personal',label:'Personal Spending',icon:'ti-receipt',color:'var(--pink)'},
 ]
 const NAV_TOOLS = [
-  {id:'connections',label:'Connections',icon:'ti-plug'},
-  {id:'data', label:'Data Vault', icon:'ti-database'},
-  {id:'taxes',label:'Tax Center',icon:'ti-receipt-tax'},
-  {id:'projections',label:'Projections',icon:'ti-trending-up'},
-  {id:'transactions', label:'Transactions', icon:'ti-arrows-exchange'},
-  {id:'advisor',label:'AI Advisor',icon:'ti-brain'},
-  {id:'settings',label:'Settings',icon:'ti-settings'},
+  {id:'connections',   label:'Connections',   icon:'ti-plug',             adminOnly:true},
+  {id:'data',          label:'Data Vault',    icon:'ti-database',         adminOnly:true},
+  {id:'taxes',         label:'Tax Center',    icon:'ti-receipt-tax',      adminOnly:false},
+  {id:'projections',   label:'Projections',   icon:'ti-trending-up',      adminOnly:false},
+  {id:'transactions',  label:'Transactions',  icon:'ti-arrows-exchange',  adminOnly:false},
+  {id:'accounting',    label:'Accounting',    icon:'ti-building-bank',    adminOnly:false},
+  {id:'advisor',       label:'AI Advisor',    icon:'ti-brain',            adminOnly:false},
+  {id:'settings',      label:'Settings',      icon:'ti-settings',         adminOnly:true},
 ]
 
 // ── Small components ──────────────────────────────────────────────────
@@ -313,13 +335,208 @@ function PropertyDetail({propId, properties}) {
   )
 }
 
-function ConnectionsScreen({status, onSync}) {
-  const [syncing, setSyncing]       = useState(false)
-  const [plaidConns, setPlaidConns] = useState([])
-  const [linkToken, setLinkToken]   = useState(null)
-  const [linkError, setLinkError]   = useState(null)
-  const [qbStatus, setQbStatus]     = useState(null)
-  const [connecting, setConnecting] = useState(false)
+// ── CSV history import helpers ────────────────────────────────────────
+const CHASE_CAT_MAP = {
+  'food & drink':'Dining', 'restaurants':'Dining', 'groceries':'Groceries',
+  'shopping':'Shopping', 'travel':'Travel', 'gas':'Transport', 'automotive':'Transport',
+  'entertainment':'Entertainment', 'health & wellness':'Health', 'personal care':'Health',
+  'bills & utilities':'Utilities', 'payment':'Income', 'payments':'Income',
+  'transfer':'Transfer', 'atm':'Other', 'fees & adjustments':'Other',
+}
+
+function parseCSVLine(line) {
+  const cols = []; let cur = '', inQ = false
+  for (const ch of line) {
+    if (ch === '"') inQ = !inQ
+    else if (ch === ',' && !inQ) { cols.push(cur.trim()); cur = '' }
+    else cur += ch
+  }
+  cols.push(cur.trim())
+  return cols.map(c => c.replace(/^"|"$/g, '').trim())
+}
+
+function parseHistoryCSV(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  // Find header row
+  const headerIdx = lines.findIndex(l => {
+    const low = l.toLowerCase()
+    return low.includes('transaction date') || low.includes('post date') ||
+           (low.includes('date') && low.includes('description') && low.includes('amount'))
+  })
+  if (headerIdx < 0) return []
+
+  const headers = parseCSVLine(lines[headerIdx]).map(h => h.toLowerCase())
+  const dateIdx = headers.findIndex(h =>
+    h === 'transaction date' || h === 'posting date' || h === 'date' || h.includes('transaction date')
+  )
+  const fallbackDateIdx = headers.findIndex(h => h.includes('date'))
+  const descIdx = headers.findIndex(h => h.includes('description'))
+  const amtIdx  = headers.findIndex(h => h === 'amount')
+  const catIdx  = headers.findIndex(h => h === 'category')
+
+  const effectiveDateIdx = dateIdx >= 0 ? dateIdx : fallbackDateIdx
+  if (effectiveDateIdx < 0 || descIdx < 0 || amtIdx < 0) return []
+
+  const txs = []
+  for (const line of lines.slice(headerIdx + 1)) {
+    const cols = parseCSVLine(line)
+    if (cols.length <= amtIdx) continue
+    const rawDate = cols[effectiveDateIdx] || ''
+    const desc    = cols[descIdx] || ''
+    const amtStr  = cols[amtIdx]  || ''
+    const cat     = catIdx >= 0 ? cols[catIdx] : ''
+
+    // Parse MM/DD/YYYY or MM-DD-YYYY
+    const parts = rawDate.split(/[\/\-]/)
+    if (parts.length < 3) continue
+    const [mo, dy, yr] = parts.length === 3 && parts[2].length === 4
+      ? parts : [parts[1], parts[2], parts[0]] // try YYYY-MM-DD fallback
+    if (!mo || !dy || !yr) continue
+    const date = `${yr}-${mo.padStart(2,'0')}-${dy.padStart(2,'0')}`
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
+
+    const amount = parseFloat(amtStr.replace(/[$,]/g, ''))
+    if (isNaN(amount) || amount === 0) continue
+
+    txs.push({
+      date,
+      desc: desc || 'Unknown',
+      amount, // Chase CSV: negative = debit, positive = credit — matches our convention
+      category: CHASE_CAT_MAP[cat.toLowerCase()] || 'Other',
+    })
+  }
+  return txs
+}
+
+function ImportHistoryModal({ plaidAccounts, onImported, onClose }) {
+  const [parsed,   setParsed]   = useState(null)  // { txs, fileName, dateRange }
+  const [accountId, setAccountId] = useState(plaidAccounts[0]?.id || '')
+  const [importing, setImporting] = useState(false)
+  const [error,    setError]    = useState(null)
+  const fileRef = useRef()
+
+  const handleFile = (file) => {
+    if (!file) return
+    setError(null)
+    const reader = new FileReader()
+    reader.onload = e => {
+      const txs = parseHistoryCSV(e.target.result)
+      if (!txs.length) { setError('Could not parse this file. Make sure it is a Chase CSV export.'); return }
+      const dates = txs.map(t => t.date).sort()
+      setParsed({ txs, fileName: file.name, dateRange: `${dates[0]} → ${dates[dates.length-1]}`, months: new Set(txs.map(t => t.date.slice(0,7))).size })
+    }
+    reader.readAsText(file)
+  }
+
+  const doImport = async () => {
+    if (!parsed || !accountId) return
+    setImporting(true)
+    setError(null)
+    try {
+      const r = await axios.post(`${API}/import-history`, { transactions: parsed.txs, accountId })
+      const stmts = await axios.post(`${API}/statements/generate`)
+      onImported({ ...r.data, statements: stmts.data })
+    } catch(e) {
+      setError(e.response?.data?.error || e.message)
+      setImporting(false)
+    }
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.75)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:3000 }}>
+      <div style={{ background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'1.5rem', width:500 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:16 }}>
+          <div style={{ width:38, height:38, borderRadius:'var(--radius-md)', background:'var(--purple-light)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <i className="ti ti-table-import" style={{ fontSize:19, color:'var(--purple)' }}/>
+          </div>
+          <div>
+            <p style={{ fontSize:14, fontWeight:500, margin:0 }}>Import CSV History</p>
+            <p style={{ fontSize:12, color:'var(--text-secondary)', margin:0 }}>Generate statements for years Plaid can't reach</p>
+          </div>
+          <button onClick={onClose} style={{ marginLeft:'auto', background:'none', border:'none', color:'var(--text-muted)', fontSize:18, padding:4, cursor:'pointer' }}>✕</button>
+        </div>
+
+        {/* Instructions */}
+        <div style={{ background:'var(--bg-secondary)', borderRadius:'var(--radius-md)', padding:'10px 14px', marginBottom:14, fontSize:12, lineHeight:1.7 }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
+            <p style={{ margin:0, fontWeight:500, color:'var(--text-secondary)' }}>How to download from Chase.com:</p>
+            <a href="https://secure.chase.com" target="_blank" rel="noreferrer"
+              style={{ display:'inline-flex', alignItems:'center', gap:5, fontSize:11, fontWeight:500, color:'var(--blue)', background:'var(--blue-light)', border:'0.5px solid var(--blue)', borderRadius:'var(--radius-sm)', padding:'3px 9px', textDecoration:'none', flexShrink:0 }}>
+              <i className="ti ti-external-link" style={{ fontSize:12 }}/> Open Chase.com
+            </a>
+          </div>
+          <ol style={{ margin:0, paddingLeft:18, color:'var(--text-muted)' }}>
+            <li>Sign in — on the dashboard, scroll to your checking account card</li>
+            <li>Click <strong style={{ color:'var(--text-secondary)' }}>See all transactions</strong> at the bottom of the card</li>
+            <li>In the <strong style={{ color:'var(--text-secondary)' }}>Showing</strong> dropdown, select <strong style={{ color:'var(--text-secondary)' }}>All transactions</strong></li>
+            <li>Click the <strong style={{ color:'var(--text-secondary)' }}>download icon ↓</strong> in the top-right corner ("Download account activity")</li>
+            <li>Choose <strong style={{ color:'var(--text-secondary)' }}>Spreadsheet (Excel, CSV)</strong> → Download</li>
+          </ol>
+          <p style={{ margin:'8px 0 0', color:'var(--text-muted)', fontSize:11 }}>
+            If Chase limits the date range, download multiple files and import them one at a time — duplicates are skipped automatically.
+          </p>
+        </div>
+
+        {/* File drop / picker */}
+        <div
+          onClick={() => fileRef.current.click()}
+          onDragOver={e => e.preventDefault()}
+          onDrop={e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]) }}
+          style={{ border:`1.5px dashed ${parsed ? 'var(--teal)' : 'var(--border)'}`, borderRadius:'var(--radius-md)', padding:'20px', textAlign:'center', cursor:'pointer', marginBottom:14, background: parsed ? 'var(--teal-light)' : 'var(--bg-secondary)', transition:'all 0.15s' }}>
+          <input ref={fileRef} type="file" accept=".csv" style={{ display:'none' }} onChange={e => handleFile(e.target.files[0])}/>
+          {parsed ? (
+            <div>
+              <i className="ti ti-circle-check" style={{ fontSize:22, color:'var(--teal)', display:'block', marginBottom:6 }}/>
+              <p style={{ fontSize:13, fontWeight:500, margin:'0 0 2px', color:'var(--teal)' }}>{parsed.fileName}</p>
+              <p style={{ fontSize:12, color:'var(--text-secondary)', margin:0 }}>
+                <strong>{parsed.txs.length.toLocaleString()}</strong> transactions · <strong>{parsed.months}</strong> months · {parsed.dateRange}
+              </p>
+            </div>
+          ) : (
+            <div>
+              <i className="ti ti-upload" style={{ fontSize:22, color:'var(--text-muted)', display:'block', marginBottom:6 }}/>
+              <p style={{ fontSize:13, color:'var(--text-secondary)', margin:0 }}>Drop CSV file here or click to browse</p>
+            </div>
+          )}
+        </div>
+
+        {/* Account selector */}
+        {plaidAccounts.length > 1 && (
+          <div style={{ marginBottom:14 }}>
+            <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'0 0 6px' }}>Associate with account:</p>
+            <select value={accountId} onChange={e => setAccountId(e.target.value)} style={{ width:'100%', fontSize:13, padding:'7px 10px' }}>
+              {plaidAccounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.institution}) ••••{a.last4}</option>)}
+            </select>
+          </div>
+        )}
+
+        {error && <p style={{ fontSize:12, color:'var(--coral)', margin:'0 0 12px' }}>{error}</p>}
+
+        <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+          <button onClick={onClose} style={{ fontSize:12 }}>Cancel</button>
+          <button onClick={doImport} disabled={!parsed || !accountId || importing}
+            style={{ fontSize:12, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
+            <i className={`ti ${importing ? 'ti-loader-2 spin' : 'ti-table-import'}`}/>
+            {' '}{importing ? 'Importing…' : `Import & generate statements`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ConnectionsScreen({status, accounts, onSync}) {
+  const [syncing, setSyncing]         = useState(false)
+  const [historyRunning, setHistoryRunning] = useState(false)
+  const [plaidConns, setPlaidConns]   = useState([])
+  const [linkToken, setLinkToken]     = useState(null)
+  const [linkError, setLinkError]     = useState(null)
+  const [qbStatus, setQbStatus]       = useState(null)
+  const [connecting, setConnecting]   = useState(false)
+  const [stmtResult, setStmtResult]   = useState(null)
+  const [showImportModal, setShowImportModal] = useState(false)
+
+  const plaidAccounts = (accounts || []).filter(a => a.source === 'plaid')
 
   // Load existing connections and QB status
   useEffect(() => {
@@ -344,6 +561,47 @@ function ConnectionsScreen({status, onSync}) {
     }
   }
 
+  // Generate monthly statement PDFs from existing transaction data
+  const generateStatements = async () => {
+    setSyncing(true)
+    setStmtResult(null)
+    try {
+      const r = await axios.post(`${API}/statements/generate`)
+      setStmtResult(r.data)
+      onSync?.()
+    } catch (e) {
+      setStmtResult({ error: e.response?.data?.error || e.message })
+    }
+    setSyncing(false)
+  }
+
+  // Pull full 2-year transaction history from Plaid then generate all statements
+  const syncFullHistory = async () => {
+    setHistoryRunning(true)
+    setStmtResult(null)
+    setLinkError(null)
+    try {
+      await axios.post(`${API}/plaid/sync-history`)
+      // Server responds immediately and processes async — wait then generate statements.
+      // SSE will also push data-updated when the sync finishes on the server.
+      setTimeout(async () => {
+        try {
+          const [connsRes, stmtRes] = await Promise.all([
+            axios.get(`${API}/plaid/connections`),
+            axios.post(`${API}/statements/generate`)
+          ])
+          setPlaidConns(Array.isArray(connsRes.data) ? connsRes.data : [])
+          setStmtResult(stmtRes.data)
+          onSync?.()
+        } catch {}
+        setHistoryRunning(false)
+      }, 45000)
+    } catch (e) {
+      setLinkError(e.response?.data?.error || e.message)
+      setHistoryRunning(false)
+    }
+  }
+
   // Plaid Link config
   const plaidConfig = {
     token: linkToken,
@@ -353,7 +611,6 @@ function ConnectionsScreen({status, onSync}) {
           public_token: publicToken,
           institution_name: metadata.institution?.name || 'Unknown'
         })
-        // Reload connections
         const res = await axios.get(`${API}/plaid/connections`)
         setPlaidConns(Array.isArray(res.data) ? res.data : [])
         setLinkToken(null)
@@ -423,6 +680,18 @@ function ConnectionsScreen({status, onSync}) {
           <button onClick={()=>setLinkError(null)} style={{ marginLeft:'auto', background:'none', border:'none', color:'var(--coral)', padding:0 }}>✕</button>
         </div>
       )}
+      {stmtResult && (
+        <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background: stmtResult.error ? 'var(--coral-light)' : 'var(--teal-light)', borderRadius:'var(--radius-md)', marginBottom:16, fontSize:13, color: stmtResult.error ? 'var(--coral)' : 'var(--teal)', border:`0.5px solid ${stmtResult.error ? 'var(--coral)' : 'var(--teal)'}` }}>
+          <i className={`ti ${stmtResult.error ? 'ti-alert-circle' : 'ti-circle-check'}`} style={{ fontSize:15 }} aria-hidden="true"/>
+          {stmtResult.error
+            ? stmtResult.error
+            : stmtResult.generated === 0
+              ? `All statements up to date — ${stmtResult.skipped} PDF${stmtResult.skipped !== 1 ? 's' : ''} already in Data Vault`
+              : `Generated ${stmtResult.generated} new statement PDF${stmtResult.generated !== 1 ? 's' : ''} → Data Vault${stmtResult.skipped ? ` (${stmtResult.skipped} already existed)` : ''}`
+          }
+          <button onClick={()=>setStmtResult(null)} style={{ marginLeft:'auto', background:'none', border:'none', color:'inherit', padding:0 }}>✕</button>
+        </div>
+      )}
 
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:20 }}>
 
@@ -463,7 +732,7 @@ function ConnectionsScreen({status, onSync}) {
             </p>
           )}
 
-          <div style={{ display:'flex', gap:8 }}>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
             <button onClick={getLinkToken} disabled={connecting || !status?.plaidConfigured}
               style={{ fontSize:12, background:'var(--blue-light)', color:'var(--blue)', borderColor:'var(--blue)' }}>
               <i className="ti ti-plug" aria-hidden="true"/> {connecting ? 'Opening...' : 'Connect account'}
@@ -473,8 +742,40 @@ function ConnectionsScreen({status, onSync}) {
                 <i className="ti ti-refresh" aria-hidden="true"/> {syncing ? 'Syncing...' : 'Sync all'}
               </button>
             )}
+            {plaidConns.length > 0 && (
+              <button onClick={generateStatements} disabled={syncing || historyRunning}
+                style={{ fontSize:12, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)' }}>
+                <i className="ti ti-file-text" aria-hidden="true"/> {syncing ? 'Generating...' : 'Generate Statements'}
+              </button>
+            )}
+            {plaidConns.length > 0 && (
+              <button onClick={syncFullHistory} disabled={syncing || historyRunning}
+                title="Pull up to 2 years of transaction history from Plaid, then generate statements for every month found"
+                style={{ fontSize:12, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
+                <i className={`ti ${historyRunning ? 'ti-loader-2 spin' : 'ti-clock-down'}`} aria-hidden="true"/>
+                {' '}{historyRunning ? 'Pulling history…' : 'Sync full history'}
+              </button>
+            )}
+            {plaidConns.length > 0 && (
+              <button onClick={() => setShowImportModal(true)} disabled={syncing || historyRunning}
+                title="Import Chase CSV export to get statements older than 2 years"
+                style={{ fontSize:12, background:'var(--amber-light)', color:'var(--amber)', borderColor:'var(--amber)' }}>
+                <i className="ti ti-table-import" aria-hidden="true"/> Import CSV history
+              </button>
+            )}
           </div>
         </div>
+        {showImportModal && (
+          <ImportHistoryModal
+            plaidAccounts={plaidAccounts}
+            onImported={(result) => {
+              setShowImportModal(false)
+              setStmtResult({ generated: result.statements?.generated ?? 0, skipped: result.statements?.skipped ?? 0 })
+              onSync?.()
+            }}
+            onClose={() => setShowImportModal(false)}
+          />
+        )}
 
         {/* QuickBooks */}
         <div className="card">
@@ -555,6 +856,34 @@ function PlaceholderScreen({label}) {
 
 // ── Main App ──────────────────────────────────────────────────────────
 export default function App() {
+  const [auth, setAuth] = useState(null) // null=loading, false=logged out, {user,token}=in
+
+  useEffect(() => {
+    const token = localStorage.getItem('caishen_token')
+    if (!token) { setAuth(false); return }
+    fetch('http://localhost:3001/api/auth/me', { headers:{ Authorization:`Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(user => setAuth({ user, token }))
+      .catch(() => { localStorage.removeItem('caishen_token'); setAuth(false) })
+  }, [])
+
+  const handleLogout = () => { localStorage.removeItem('caishen_token'); setAuth(false) }
+
+  if (auth === null) return (
+    <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',background:'var(--bg-primary)',color:'var(--text-muted)',fontSize:13}}>
+      <i className="ti ti-loader-2 spin" style={{fontSize:20,marginRight:8}} aria-hidden="true"/> Loading…
+    </div>
+  )
+  if (!auth) return <Login onLogin={setAuth}/>
+
+  return (
+    <AuthContext.Provider value={auth}>
+      <MainApp auth={auth} onLogout={handleLogout}/>
+    </AuthContext.Provider>
+  )
+}
+
+function MainApp({ auth, onLogout }) {
   const [nav, setNav] = useState('dashboard')
   const [trail, setTrail] = useState([{id:'dashboard',label:'Dashboard'}])
   const [collapsed, setCollapsed] = useState(false)
@@ -562,6 +891,7 @@ export default function App() {
   const [accounts, setAccounts] = useState([])
   const [transactions, setTransactions] = useState([])
   const [properties, setProperties] = useState([])
+  const isAdmin = auth?.user?.role === 'admin'
 
   useEffect(()=>{
     axios.get(`${API}/status`).then(r=>setStatus(r.data)).catch(()=>{})
@@ -598,15 +928,16 @@ export default function App() {
     if(nav.startsWith('prop_')) return <PropertyDetail propId={nav.replace('prop_','')} properties={properties}/>
     if(nav==='personal') return <PersonalSpending transactions={transactions} onUpdate={setTransactions}/>
     if(nav==='transactions') return <TransactionTransfer transactions={transactions} onUpdate={setTransactions}/>
-    if(nav==='connections') return <ConnectionsScreen status={status} onSync={()=>{ axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])); axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])) }}/>
+    if(nav==='connections') return <ConnectionsScreen status={status} accounts={accounts} onSync={()=>{ axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])); axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])) }}/>
     if(nav==='equity') return <PlaceholderScreen label="Equities"/>
     if(nav==='retirement') return <PlaceholderScreen label="Retirement"/>
     if(nav==='crypto') return <PlaceholderScreen label="Crypto"/>
     if(nav==='cash') return <PlaceholderScreen label="Cash Accounts"/>
     if(nav==='taxes') return <PlaceholderScreen label="Tax Center"/>
     if(nav==='projections') return <Projections/>
-    if(nav==='advisor') return <PlaceholderScreen label="AI Advisor"/>
-    if(nav==='data') return <DataVault onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])}/>
+    if(nav==='advisor')    return <Advisor/>
+    if(nav==='accounting') return <Accounting/>
+    if(nav==='data')       return <DataVault onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])}/>
     return null
   }
 
@@ -633,17 +964,22 @@ export default function App() {
                 onClick={()=>{ setNav(a.id); setTrail([{id:'dashboard',label:'Dashboard'},{id:a.id,label:a.label}]) }}/>
             ))}
             {!collapsed && <p style={{fontSize:10,fontWeight:500,color:'var(--text-muted)',margin:'12px 14px 4px',textTransform:'uppercase',letterSpacing:'0.8px'}}>Tools</p>}
-            {NAV_TOOLS.map(t=>(
+            {NAV_TOOLS.filter(t => !t.adminOnly || isAdmin).map(t=>(
               <NavBtn key={t.id} id={t.id} label={t.label} icon={t.icon} active={nav===t.id} collapsed={collapsed} color="var(--blue)"
                 onClick={()=>go(t.id,t.label)}/>
             ))}
           </nav>
-          {!collapsed && (
-            <div style={{padding:'10px 14px',borderTop:'0.5px solid var(--border)'}}>
-              <p style={{fontSize:11,color:'var(--text-muted)',margin:0}}>Net worth</p>
-              <p style={{fontSize:14,fontWeight:500,margin:'2px 0 0',color:'var(--teal)'}}>$4.18M</p>
-            </div>
-          )}
+          <div style={{padding: collapsed ? '10px 8px' : '10px 14px', borderTop:'0.5px solid var(--border)', display:'flex', alignItems:'center', justifyContent: collapsed ? 'center' : 'space-between'}}>
+            {!collapsed && (
+              <div>
+                <p style={{fontSize:11,color:'var(--text-muted)',margin:0}}>{auth.user.displayName || auth.user.username}</p>
+                <p style={{fontSize:10,color:'var(--text-muted)',margin:'1px 0 0',textTransform:'uppercase',letterSpacing:'0.5px'}}>{auth.user.role}</p>
+              </div>
+            )}
+            <button onClick={onLogout} title="Sign out" style={{background:'none',border:'none',color:'var(--text-muted)',padding:4,cursor:'pointer'}}>
+              <Icon name="ti-logout" size={15}/>
+            </button>
+          </div>
         </aside>
 
         {/* Main */}

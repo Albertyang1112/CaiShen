@@ -110,7 +110,12 @@ MASTER_PASSWORD=[user chosen]
 
 # App
 PORT=3001
-AUTO_SYNC_INTERVAL=60
+AUTO_SYNC_INTERVAL=5
+
+# Plaid webhooks (real-time push — requires public HTTPS URL)
+# Local dev: run "ngrok http 3001" then set to ngrok URL + /api/plaid/webhook
+# Example: PLAID_WEBHOOK_URL=https://abc123.ngrok.io/api/plaid/webhook
+PLAID_WEBHOOK_URL=
 
 # Anthropic (not yet configured - waiting)
 ANTHROPIC_API_KEY=
@@ -185,24 +190,42 @@ Albert owns 5 rental properties. These are hardcoded in multiple places:
 - Persistent storage — files saved to `vault/` folder, metadata in `data/vault.json`
 - Deleted folders archived to `vault/_deleted/`, not permanently removed
 
-### Connections
+### Connections & Live Sync
 - Plaid connection screen with Connect account button (react-plaid-link)
 - QuickBooks OAuth connect button
 - Setup checklist showing what's configured
 - Disconnect button per Plaid institution
-- Sync all button
+- Sync all button (manual)
+- **Chase bank account connected and live** — 74+ transactions synced in production
+- **Auto-sync via node-cron** — polls every `AUTO_SYNC_INTERVAL` minutes (default 5) while server is running
+- **Server-Sent Events (SSE)** at `/api/events` — server pushes a `data-updated` event to all open browser tabs after every sync; browser auto-refreshes accounts + transactions without page reload
+- SSE reconnects automatically after 5s if connection drops
+- **Plaid webhook endpoint** at `/api/plaid/webhook` — handles `TRANSACTIONS` webhook events for true real-time push; requires `PLAID_WEBHOOK_URL` in `.env` pointing to a public HTTPS URL (use ngrok for local dev)
+- Plaid transactions mapped to CaiShen categories via `PLAID_CAT_MAP` in `plaid.js`
+- Plaid transactions include `month` field (`YYYY-MM`) for Personal Spending month filter compatibility
+
+### AI Advisor
+- **Chat tab** — real-time streaming chat with Claude Opus 4.7; full financial context injected as cached system prompt
+- **Proactive Insights tab** — AI generates 5 insights on demand; cached to `data/insights.json`; cards with priority + category badges
+- Backend: `server/advisor.js` — `POST /api/advisor/chat` (SSE streaming), `GET /api/advisor/insights`, `POST /api/advisor/generate-insights` (async fire-and-forget)
+- Uses `@anthropic-ai/sdk` with `claude-opus-4-7` and `thinking: {type: 'adaptive'}`
+- Prompt caching via `cache_control: {type: 'ephemeral'}` on the financial context system prompt
+- Context includes: all accounts, properties with NOI/ROI, last 150 transactions, 30-day spending by category, net worth summary, CA tax context
+- Graceful "not configured" UI when `ANTHROPIC_API_KEY` is missing; shows exact setup instructions
+- Suggested prompts on empty chat; auto-scroll; auto-resize textarea; Clear button
+- Streaming cursor blink animation during assistant response generation
 
 ---
 
 ## What's NOT Built Yet ⏳
 - **Tax Return Tab** — 1040, Schedule E, Schedule D, Schedule C, AMT, year-over-year, PDF export
-- **AI Advisor** — needs Anthropic API key (not yet obtained)
+- **AI Advisor API key** — infrastructure built and ready; just needs `ANTHROPIC_API_KEY` in `.env`
 - **Equities & RSU Tracker** — vesting schedule, ISO/NSO planner
 - **Crypto Module** — wallet dashboard, cost basis, Koinly import
 - **Retirement Planner** — 401k, Roth, projections
-- **PDF parsing with AI** — waiting on Anthropic key; pdf2json works for text PDFs only; scanned PDFs need Claude Vision
-- **QuickBooks full integration** — OAuth connects but redirect URI issue needs fixing (production keys needed)
-- **Plaid live sync** — keys are in, Plaid initializes, but create-link-token was returning 404 (being debugged)
+- **PDF parsing with AI** — pdf2json handles text PDFs; scanned PDFs need Claude Vision (add API key first)
+- **QuickBooks full integration** — OAuth connects but redirect URI is invalid; needs correct redirect URI registered in Intuit developer portal with production keys
+- **Plaid webhook real-time push** — endpoint built and ready; needs ngrok (or deployed server) to get a public HTTPS URL, then set `PLAID_WEBHOOK_URL` in `.env`
 - **Monthly statement generator** — PDF export of combined account statements
 - **LLC formation analyzer**
 - **Business plan builder**
@@ -210,9 +233,7 @@ Albert owns 5 rental properties. These are hardcoded in multiple places:
 ---
 
 ## Current Issues Being Debugged
-1. **Plaid create-link-token returning 404** — routes are mounted correctly, Plaid initializes in production mode, but the endpoint isn't being hit. Likely a routing issue in index.js.
-2. **QuickBooks redirect_uri invalid** — needs production keys + correct redirect URI added in Intuit developer portal
-3. **QuickBooks initialized 3 times** — QB routes are being mounted twice in index.js causing duplicate initialization
+1. **QuickBooks redirect_uri invalid** — needs correct redirect URI registered in Intuit developer portal; OAuth flow starts but callback fails
 
 ---
 
@@ -222,9 +243,17 @@ Albert owns 5 rental properties. These are hardcoded in multiple places:
 - **No SheetJS (xlsx)** — replaced with ExcelJS (0 vulnerabilities)
 - **PDF preview uses iframe** — decided to use native browser PDF rendering, but not yet implemented (still using pdf2json text extraction)
 - **QuickBooks over file parsing** — instead of parsing 1,978 uploaded files, pull data directly from QB which already has everything categorized
-- **Plaid for live bank data** — production keys obtained, development access approved
+- **Plaid for live bank data** — production keys obtained, Chase connected, live sync working
 - **Transaction state lifted to App.jsx** — PersonalSpending and TransactionTransfer share the same transactions array via props
 - **Auto-backup before every write** — writeData() in index.js auto-backups to backups/ folder, keeps last 30
+- **Plaid products: `['transactions']` only** — `balances` is not a Plaid product (auto-included with all connections); `investments` requires separate Plaid approval. Do not add either back to linkTokenCreate.
+- **QuickBooks module exports `{ authRouter, apiRouter }`** — single factory call initializes one OAuthClient; `authRouter` mounts at `/auth/quickbooks`, `apiRouter` at `/api/quickbooks`. Do NOT require the module twice.
+- **plaid.js factory signature: `(readData, writeData, notifyClients)`** — `notifyClients` is passed from index.js and called after every sync to trigger SSE push to browser. Default is `() => {}` so it's safe to call without it.
+- **SSE for live UI updates** — server pushes `data-updated` events via `/api/events`; App.jsx `EventSource` re-fetches accounts + transactions on each event. Reconnects after 5s on error.
+- **AI Advisor uses official `@anthropic-ai/sdk`** — not raw axios. Uses `claude-opus-4-7` with `thinking: {type: 'adaptive'}`. No beta headers needed for adaptive thinking. No sampling params (temperature etc.) — they 400 on Opus 4.7.
+- **AI Advisor chat uses SSE streaming via fetch** — `EventSource` only supports GET; chat is POST, so use `fetch()` + `response.body.getReader()` for streaming. Server uses `client.messages.stream()` + `.on('text', ...)`.
+- **AI Advisor insights are fire-and-forget** — `POST /api/advisor/generate-insights` responds with `{status:'generating'}` immediately; generation runs async in background; frontend polls `/api/advisor/insights` until `generatedAt` is newer than trigger time.
+- **Prompt caching on financial context** — advisor system prompt uses `cache_control: {type: 'ephemeral'}` to cache the large financial context block for 5 minutes, reducing cost on repeated chat turns.
 
 ---
 
