@@ -1,7 +1,7 @@
 # CaiShen — Project Context for Claude
 
 ## What is CaiShen?
-CaiShen (财神, Chinese god of wealth) is a personal finance OS built as a local Node.js + React app. It runs entirely on the user's machine — no cloud database, no external servers. All financial data stays local. It is being built for personal use first, with commercialization as a future goal.
+CaiShen (财神, Chinese god of wealth) is a personal finance OS built as a local Node.js + React app. It runs entirely on the user's machine — no cloud database, no external servers. All financial data stays local. User accounts are stored in a hosted PostgreSQL database (Neon) so anyone who clones the project shares the same user list. It is being built for personal use first, with commercialization as a future goal.
 
 ---
 
@@ -19,29 +19,32 @@ CaiShen (财神, Chinese god of wealth) is a personal finance OS built as a loca
 ```
 CaiShen/
 ├── server/
-│   ├── index.js          ← Express backend (port 3001)
+│   ├── index.js          ← Express backend (port 3001) — async IIFE startup
+│   ├── auth.js           ← JWT auth, signup, login, 2FA, device trust (uses DB)
+│   ├── db.js             ← PostgreSQL connection pool + schema init (Neon)
 │   ├── plaid.js          ← Plaid OAuth + sync (live bank connections)
 │   ├── quickbooks.js     ← QuickBooks OAuth + sync
-│   └── vault.js          ← Data Vault file storage API
+│   ├── vault.js          ← Data Vault file storage API
+│   ├── advisor.js        ← AI Advisor (Claude Opus 4.7 streaming)
+│   ├── accounting.js     ← Chart of accounts, invoices, bills, journal entries
+│   └── statements.js     ← Auto-generate monthly PDF bank statements
 ├── client/
 │   └── src/
 │       ├── App.jsx           ← Main app, routing, sidebar, state
 │       ├── App.css           ← Not used much — styles in index.css
 │       ├── index.css         ← All CSS variables and global styles
 │       ├── main.jsx          ← React entry point
+│       ├── Login.jsx         ← Login, signup, 2FA verification screens
 │       ├── PersonalSpending.jsx     ← CSV upload, auto-categorization, friend sidebar
 │       ├── TransactionTransfer.jsx  ← Move/split transactions, auto-transfer rules
 │       ├── Projections.jsx          ← Tax projections, property sale optimizer, net worth
 │       └── DataVault.jsx            ← File browser, folder upload, PDF/Excel preview
 ├── data/                 ← Local JSON storage (gitignored)
-│   ├── accounts.json
-│   ├── transactions.json
-│   ├── properties.json
-│   ├── connections.json
-│   ├── tax_years.json
-│   ├── settings.json
-│   └── vault.json
+│   ├── users/            ← Per-user financial data directories (data/users/{userId}/)
+│   │   └── {userId}/     ← accounts.json, transactions.json, properties.json, etc.
+│   └── settings.json     ← Global app settings
 ├── vault/                ← Uploaded files stored here (gitignored)
+│   └── users/{userId}/   ← Per-user vault files
 ├── backups/              ← Auto-backups before every data write (gitignored)
 ├── .env                  ← API keys (gitignored, NEVER commit)
 ├── .gitignore
@@ -73,6 +76,10 @@ Runs on http://localhost:5173
 ## Tech Stack
 ### Backend
 - Node.js + Express
+- **pg** — PostgreSQL client (Neon hosted DB for user accounts)
+- bcryptjs — password hashing
+- jsonwebtoken — JWT auth tokens
+- nodemailer — 2FA email sending (Gmail SMTP)
 - multer — file uploads
 - plaid — Plaid API SDK
 - intuit-oauth — QuickBooks OAuth
@@ -81,7 +88,7 @@ Runs on http://localhost:5173
 - crypto-js — encryption
 - axios — HTTP requests
 - pdf2json — PDF text extraction (server-side, no vulnerabilities)
-- pdf-parse — installed but had issues, replaced by pdf2json
+- pdfkit — PDF generation (monthly statements)
 - sharp — installed for future image processing
 
 ### Frontend
@@ -96,30 +103,108 @@ Runs on http://localhost:5173
 ## API Keys & .env Structure
 ```
 # Plaid
-PLAID_CLIENT_ID=6a0b879d613f95000efc0e78
-PLAID_SECRET=[production secret - rotated, get new one from dashboard]
+PLAID_CLIENT_ID=...
+PLAID_SECRET=...
 PLAID_ENV=production
 
 # QuickBooks
-QB_CLIENT_ID=[production client id]
-QB_CLIENT_SECRET=[production client secret]
+QB_CLIENT_ID=...
+QB_CLIENT_SECRET=...
 QB_REDIRECT_URI=http://localhost:3001/auth/quickbooks/callback
 
+# Anthropic (AI Advisor)
+ANTHROPIC_API_KEY=...
+
+# Etherscan (optional — for ETH wallet on-chain lookup; free at etherscan.io)
+ETHERSCAN_API_KEY=...
+
 # Security
-MASTER_PASSWORD=[user chosen]
+MASTER_PASSWORD=[user chosen — seeds default admin on first boot]
+ADMIN_EMAIL=[admin's email for 2FA]
+
+# Database (Neon PostgreSQL — shared user accounts)
+DATABASE_URL=postgresql://neondb_owner:[password]@[host]/neondb?sslmode=require
+
+# Email (2FA sender — dedicated Gmail + App Password)
+EMAIL_FROM=caishen.sender@gmail.com
+EMAIL_PASS=[16-char Gmail App Password]
+EMAIL_SMTP=smtp.gmail.com   (optional, default)
+EMAIL_PORT=587               (optional, default)
 
 # App
 PORT=3001
 AUTO_SYNC_INTERVAL=5
 
 # Plaid webhooks (real-time push — requires public HTTPS URL)
-# Local dev: run "ngrok http 3001" then set to ngrok URL + /api/plaid/webhook
-# Example: PLAID_WEBHOOK_URL=https://abc123.ngrok.io/api/plaid/webhook
 PLAID_WEBHOOK_URL=
-
-# Anthropic (not yet configured - waiting)
-ANTHROPIC_API_KEY=
 ```
+
+---
+
+## Architecture: Per-User Data Isolation
+
+All financial data is stored in per-user directories via the `makeIO(userId)` factory pattern:
+
+```js
+// server/index.js
+function makeIO(userId) {
+  return {
+    read:  (file) => readData(file, userId),   // reads from data/users/{userId}/
+    write: (file, data) => writeData(file, data, userId)
+  };
+}
+```
+
+All module factories receive `makeIO` and call it with `req.user.id` per request:
+- `require('./plaid')(makeIO, notifyClients)`
+- `require('./vault')(VAULT_DIR, makeIO)`
+- `require('./advisor')(makeIO)`
+- `require('./accounting')(makeIO)`
+- `require('./statements')(makeIO, VAULT_DIR)`
+- `require('./quickbooks')(makeIO)`
+
+**User accounts** live in Neon PostgreSQL (shared, hosted).
+**Financial data** lives in `data/users/{userId}/` (local, private).
+
+On first boot, `migrateAdminData()` copies any existing root `data/*.json` files into `data/users/1/`.
+
+---
+
+## Authentication & 2FA
+
+- **`server/db.js`** — PostgreSQL pool + `initSchema()` (creates `users` table if not exists)
+- **`server/auth.js`** — factory `module.exports = function()`, exports `{ router, verifyToken, requireAdmin }` + static `module.exports.ensureDefaultAdmin(readData)`
+- **`server/index.js`** — async IIFE startup: `initSchema()` → `authMod()` → `ensureDefaultAdmin(readData)` → all routes → `app.listen()`
+
+### Login flow
+1. POST `/api/auth/login` with `{ username, password, deviceId }`
+2. `deviceId` is a UUID stored in `localStorage` (`caishen_device_id`), auto-generated on first visit
+3. If device is in `user.trusted_devices` → JWT issued immediately
+4. If device is new AND user has an email → 6-digit code generated, emailed via nodemailer, `{ needs2FA: true, tempId, maskedEmail }` returned
+5. POST `/api/auth/verify-2fa` with `{ tempId, code, deviceId }` → deviceId added to `trusted_devices` in DB → JWT issued
+
+### Signup flow
+- POST `/api/auth/signup` with `{ username, email, password }`
+- Email required (used for 2FA on new devices)
+- Role: `viewer` by default
+- Admin can promote via `POST /api/auth/users`
+
+### DB schema
+```sql
+CREATE TABLE users (
+  id              TEXT PRIMARY KEY,
+  username        TEXT UNIQUE NOT NULL,
+  email           TEXT UNIQUE,
+  password_hash   TEXT NOT NULL,
+  role            TEXT NOT NULL DEFAULT 'viewer',
+  display_name    TEXT,
+  trusted_devices JSONB NOT NULL DEFAULT '[]',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+```
+
+### Migration
+On first boot with empty DB, `ensureDefaultAdmin(readData)` checks for existing `data/users.json` and migrates all users to DB automatically.
 
 ---
 
@@ -141,17 +226,26 @@ Albert owns 5 rental properties. These are hardcoded in multiple places:
 - Each asset class is clickable and drills into its own dashboard
 - Breadcrumb navigation
 - Sidebar: Overview / Asset Classes / Tools sections
+- Logout button always visible in sidebar (collapsed and expanded)
 
 ### Asset Class Dashboards
 - **Real Estate** — portfolio summary + individual property dashboards (Haas, Kobe, Bay Hill, Muirfield, Alcita)
 - **Equities** — placeholder (positions, RSU tracker coming)
-- **Crypto** — placeholder (wallet dashboard coming)
+- **Crypto** — full module (see Crypto section below)
 - **Retirement** — placeholder
 - **Cash** — placeholder
+
+### Login / Auth
+- Sign in + Create account tabs (underline tab style)
+- 2FA screen with masked email display and large code input
+- Device ID auto-generated (UUID) and stored in localStorage
+- Trusted devices — 2FA only on new devices, skipped on known ones
+- Logout button in sidebar footer (always visible, collapsed and expanded)
 
 ### Personal Spending
 - CSV upload (drag & drop or browse)
 - Auto-categorizes using Chase's own Category column first, then keyword fallback
+- Chase CSV parser handles "Posting Date" header (checking accounts) and "Transaction Date" (credit cards)
 - 13 categories: Dining, Groceries, Shopping, Transport, Travel, Entertainment, Fitness, Health, Subscriptions, Coffee, Tech, Utilities, Other
 - Month filter (dropdown + sidebar bar chart)
 - Income/credits tracked separately from expenses
@@ -172,6 +266,8 @@ Albert owns 5 rental properties. These are hardcoded in multiple places:
 ### Projections
 - 4 tabs: Tax Projections, Property Sale, Net Worth, RSU & ISO
 - **Tax Projections** — sliders for W-2, RSU, crypto, RE income, LTCG, ISO; live federal/state/NIIT/AMT breakdown; quarterly estimates; scenario comparison
+  - **Year baseline** — loads prior year actuals from `tax_years.json`; auto-selects last year on open; "Save {year}" button POSTs to `POST /api/tax-years`
+  - **Tax advisor recommendations** — 8 rule-based tips computed from slider values (AMT trigger, standard deduction, LTCG shift, depreciation, RSU bracket, NIIT, quarterly reminders, retirement contributions)
 - **Property Sale** — select property, adjust price/years held; full proceeds breakdown; depreciation recapture; tax-optimal price finder with bar chart; bracket threshold warnings
 - **Net Worth** — savings/appreciation/return sliders; bar chart + year-by-year table
 - **RSU & ISO** — vest tax impact calculator; ISO AMT planner with safe exercise zone
@@ -187,31 +283,59 @@ Albert owns 5 rental properties. These are hardcoded in multiple places:
 - Folder upload (preserves folder structure)
 - Folder merge prompt (4 options: Merge, Replace, Keep, Save as new)
 - Auto-tags folders named after properties (Haas, Kobe, etc.)
-- Persistent storage — files saved to `vault/` folder, metadata in `data/vault.json`
+- Persistent storage — files saved to `vault/users/{userId}/`, metadata in per-user `vault.json`
 - Deleted folders archived to `vault/_deleted/`, not permanently removed
+- **Auto-generated monthly PDF statements** — generated from Plaid transactions; stored in `Bank Statements/{Institution}/{Year}/` in vault; skips already-existing statements
+- **Import CSV History button** in toolbar — Chase CSV parser (`parseHistoryCSV` in DataVault.jsx); account selector (Plaid accounts); deduplication via `POST /api/import-history`; step-by-step Chase download instructions
 
 ### Connections & Live Sync
 - Plaid connection screen with Connect account button (react-plaid-link)
-- QuickBooks OAuth connect button
+- QuickBooks UI hardcoded to "Keys not configured" — QB keys are placeholder values; do not change until real keys obtained
 - Setup checklist showing what's configured
 - Disconnect button per Plaid institution
 - Sync all button (manual)
-- **Chase bank account connected and live** — 74+ transactions synced in production
-- **Auto-sync via node-cron** — polls every `AUTO_SYNC_INTERVAL` minutes (default 5) while server is running
+- **Sync full history** button — shows warning modal (dimmed background) explaining Plaid's history limits (e.g. Chase only provides ~4 months via API); user confirms before Plaid sync runs; modal directs to Data Vault for older history via CSV
+- **Chase bank account connected and live** — production, live sync working
+- **Auto-sync via node-cron** — polls every `AUTO_SYNC_INTERVAL` minutes; iterates all users from DB
 - **Server-Sent Events (SSE)** at `/api/events` — server pushes a `data-updated` event to all open browser tabs after every sync; browser auto-refreshes accounts + transactions without page reload
 - SSE reconnects automatically after 5s if connection drops
-- **Plaid webhook endpoint** at `/api/plaid/webhook` — handles `TRANSACTIONS` webhook events for true real-time push; requires `PLAID_WEBHOOK_URL` in `.env` pointing to a public HTTPS URL (use ngrok for local dev)
+- **Plaid webhook endpoint** at `/api/plaid/webhook` — handles `TRANSACTIONS` webhook events; searches all user data dirs to find owner of item_id
 - Plaid transactions mapped to CaiShen categories via `PLAID_CAT_MAP` in `plaid.js`
 - Plaid transactions include `month` field (`YYYY-MM`) for Personal Spending month filter compatibility
 
+### Crypto (`client/src/Crypto.jsx`)
+Full Koinly-style crypto tracker. Four tabs:
+- **Portfolio** — FIFO cost basis engine computes holdings from manual transactions; live prices from CoinGecko free API; shows quantity, avg cost, live price, value, unrealized P&L, return %
+- **Transactions** — manual ledger (buy/sell/receive/send/transfer in/out); CSV export; data stored in `crypto_txns.json`
+- **Tax Report** — YTD short-term/long-term realized gains from FIFO; estimated tax at 37% ST rate; rule-based tax optimization tips (harvesting, ST→LT shift, etc.)
+- **Wallets** — two features:
+  1. **Quick address lookup** — paste any public address; server auto-detects chain (BTC/ETH/SOL/LTC/DOGE) and fetches live balance + last 25 txns from free blockchain APIs
+  2. **Saved wallets** — name, type, address, exchange, notes; each card with address gets "Sync on-chain" button that expands inline with balance + transactions + block explorer links
+
+**On-chain APIs** (all free, no keys required except Etherscan optional):
+- BTC: Blockstream.info
+- ETH: Etherscan (add `ETHERSCAN_API_KEY` to `.env` for higher rate limits)
+- SOL: Solana public mainnet RPC
+- LTC/DOGE: BlockCypher
+
+**Server endpoint**: `GET /api/wallet-lookup?address=<addr>` — chain detection via regex, returns `{ chain, address, balance, transactions[] }`
+
+**Data files**: `crypto_txns.json` and `wallets.json` per user in `data/users/{userId}/`
+
+**COINS map** supports: BTC, ETH, SOL, ADA, DOT, AVAX, MATIC, LINK, UNI, USDC, USDT, XRP, BNB, DOGE, LTC
+
+### Settings
+- **Data & Privacy card** — "Export all data" button downloads full JSON backup via `GET /api/backup` as a blob file download
+- Export includes: accounts, transactions, properties, tax years, crypto transactions, wallets, invoices, bills, chart of accounts
+
 ### AI Advisor
 - **Chat tab** — real-time streaming chat with Claude Opus 4.7; full financial context injected as cached system prompt
-- **Proactive Insights tab** — AI generates 5 insights on demand; cached to `data/insights.json`; cards with priority + category badges
+- **Proactive Insights tab** — AI generates 5 insights on demand; cached to per-user `insights.json`; cards with priority + category badges
 - Backend: `server/advisor.js` — `POST /api/advisor/chat` (SSE streaming), `GET /api/advisor/insights`, `POST /api/advisor/generate-insights` (async fire-and-forget)
 - Uses `@anthropic-ai/sdk` with `claude-opus-4-7` and `thinking: {type: 'adaptive'}`
 - Prompt caching via `cache_control: {type: 'ephemeral'}` on the financial context system prompt
 - Context includes: all accounts, properties with NOI/ROI, last 150 transactions, 30-day spending by category, net worth summary, CA tax context
-- Graceful "not configured" UI when `ANTHROPIC_API_KEY` is missing; shows exact setup instructions
+- Graceful "not configured" UI when `ANTHROPIC_API_KEY` is missing
 - Suggested prompts on empty chat; auto-scroll; auto-resize textarea; Clear button
 - Streaming cursor blink animation during assistant response generation
 
@@ -219,14 +343,12 @@ Albert owns 5 rental properties. These are hardcoded in multiple places:
 
 ## What's NOT Built Yet ⏳
 - **Tax Return Tab** — 1040, Schedule E, Schedule D, Schedule C, AMT, year-over-year, PDF export
-- **AI Advisor API key** — infrastructure built and ready; just needs `ANTHROPIC_API_KEY` in `.env`
-- **Equities & RSU Tracker** — vesting schedule, ISO/NSO planner
-- **Crypto Module** — wallet dashboard, cost basis, Koinly import
+- **Equities & RSU Tracker** — vesting schedule, ISO/NSO planner (Projections has RSU calc but no position tracker)
 - **Retirement Planner** — 401k, Roth, projections
-- **PDF parsing with AI** — pdf2json handles text PDFs; scanned PDFs need Claude Vision (add API key first)
-- **QuickBooks full integration** — OAuth connects but redirect URI is invalid; needs correct redirect URI registered in Intuit developer portal with production keys
-- **Plaid webhook real-time push** — endpoint built and ready; needs ngrok (or deployed server) to get a public HTTPS URL, then set `PLAID_WEBHOOK_URL` in `.env`
-- **Monthly statement generator** — PDF export of combined account statements
+- **PDF parsing with AI** — pdf2json handles text PDFs; scanned PDFs need Claude Vision (add ANTHROPIC_API_KEY)
+- **QuickBooks full integration** — UI shows "not configured"; needs real API keys registered in Intuit developer portal + correct redirect URI
+- **Plaid webhook real-time push** — endpoint built; needs ngrok public URL set in `PLAID_WEBHOOK_URL`
+- **Crypto: auto-import from on-chain** — wallet lookup is read-only; transactions must still be entered manually
 - **LLC formation analyzer**
 - **Business plan builder**
 
@@ -241,19 +363,32 @@ Albert owns 5 rental properties. These are hardcoded in multiple places:
 - **No AI for categorization during development** — keyword matching only until Anthropic key obtained
 - **No pdfjs-dist** — removed due to vulnerabilities; using pdf2json server-side instead
 - **No SheetJS (xlsx)** — replaced with ExcelJS (0 vulnerabilities)
-- **PDF preview uses iframe** — decided to use native browser PDF rendering, but not yet implemented (still using pdf2json text extraction)
-- **QuickBooks over file parsing** — instead of parsing 1,978 uploaded files, pull data directly from QB which already has everything categorized
+- **QuickBooks over file parsing** — instead of parsing uploaded files, pull data directly from QB
 - **Plaid for live bank data** — production keys obtained, Chase connected, live sync working
 - **Transaction state lifted to App.jsx** — PersonalSpending and TransactionTransfer share the same transactions array via props
 - **Auto-backup before every write** — writeData() in index.js auto-backups to backups/ folder, keeps last 30
-- **Plaid products: `['transactions']` only** — `balances` is not a Plaid product (auto-included with all connections); `investments` requires separate Plaid approval. Do not add either back to linkTokenCreate.
-- **QuickBooks module exports `{ authRouter, apiRouter }`** — single factory call initializes one OAuthClient; `authRouter` mounts at `/auth/quickbooks`, `apiRouter` at `/api/quickbooks`. Do NOT require the module twice.
-- **plaid.js factory signature: `(readData, writeData, notifyClients)`** — `notifyClients` is passed from index.js and called after every sync to trigger SSE push to browser. Default is `() => {}` so it's safe to call without it.
-- **SSE for live UI updates** — server pushes `data-updated` events via `/api/events`; App.jsx `EventSource` re-fetches accounts + transactions on each event. Reconnects after 5s on error.
-- **AI Advisor uses official `@anthropic-ai/sdk`** — not raw axios. Uses `claude-opus-4-7` with `thinking: {type: 'adaptive'}`. No beta headers needed for adaptive thinking. No sampling params (temperature etc.) — they 400 on Opus 4.7.
-- **AI Advisor chat uses SSE streaming via fetch** — `EventSource` only supports GET; chat is POST, so use `fetch()` + `response.body.getReader()` for streaming. Server uses `client.messages.stream()` + `.on('text', ...)`.
-- **AI Advisor insights are fire-and-forget** — `POST /api/advisor/generate-insights` responds with `{status:'generating'}` immediately; generation runs async in background; frontend polls `/api/advisor/insights` until `generatedAt` is newer than trigger time.
-- **Prompt caching on financial context** — advisor system prompt uses `cache_control: {type: 'ephemeral'}` to cache the large financial context block for 5 minutes, reducing cost on repeated chat turns.
+- **Plaid products: `['transactions']` only** — `balances` is not a Plaid product; `investments` requires separate approval. Do not add either back to linkTokenCreate.
+- **QuickBooks module exports `{ authRouter, apiRouter }`** — single factory call; `authRouter` mounts at `/auth/quickbooks`, `apiRouter` at `/api/quickbooks`. Do NOT require the module twice.
+- **All server modules use `makeIO(userId)` factory** — signature pattern: `module.exports = function(makeIO, ...)`. Each handler calls `makeIO(req.user.id)` to get scoped read/write. accounting.js injects via `router.use()` middleware into `req.read`/`req.write`.
+- **QuickBooks OAuth state encodes userId** — `state: 'caishen-qb-{userId}'` so callback (no JWT) can find the right user's data
+- **SSE for live UI updates** — server pushes `data-updated` events via `/api/events`; App.jsx `EventSource` re-fetches on each event. Reconnects after 5s on error.
+- **AI Advisor uses official `@anthropic-ai/sdk`** — Uses `claude-opus-4-7` with `thinking: {type: 'adaptive'}`. No sampling params — they 400 on Opus 4.7.
+- **AI Advisor chat uses SSE streaming via fetch** — `EventSource` only supports GET; chat is POST, so use `fetch()` + `response.body.getReader()`. Server uses `client.messages.stream()` + `.on('text', ...)`.
+- **AI Advisor insights are fire-and-forget** — responds `{status:'generating'}` immediately; frontend polls until `generatedAt` is newer.
+- **Prompt caching on financial context** — `cache_control: {type: 'ephemeral'}` caches system prompt for 5 minutes.
+- **User accounts in hosted PostgreSQL (Neon)** — financial data stays local; only the users table is shared. Anyone cloning the repo and adding `DATABASE_URL` to `.env` shares the same user list.
+- **index.js uses async IIFE** — entire route setup + server start is inside `(async () => { ... })()` so DB init and admin seeding can be awaited before the server accepts requests.
+- **Cron job reads users from DB** — `SELECT id, username FROM users` instead of `readData('users.json')`.
+- **2FA email uses nodemailer + Gmail SMTP** — `EMAIL_FROM` / `EMAIL_PASS` (App Password) in `.env`. Falls back to console.log if not configured.
+- **Login screen tabs use underline style** — active tab has blue bottom border, not pill/card background.
+- **Crypto wallet lookup routes through server** — `GET /api/wallet-lookup` hits blockchain APIs server-side to avoid CORS issues; uses axios (already a dep).
+- **QuickBooks hardcoded as "not configured"** — placeholder API keys exist in .env but aren't real; QB card in Connections is hardcoded to show coral "Keys not configured" — do not revert to dynamic check until real keys are added.
+- **Plaid `optional_products: ['statements']` removed** — caused "account not enabled" error; CaiShen generates its own PDFs via pdfkit from transaction data, not Plaid's Statements API.
+- **Import CSV History moved to Data Vault** — was in Connections screen; now lives in Data Vault toolbar. `parseHistoryCSV` and `ImportHistoryModal` are in `DataVault.jsx`.
+- **Sync full history has warning modal** — clicking the button shows a modal explaining Plaid's ~4-month history limit before proceeding; directs user to Data Vault for older history via CSV import.
+- **"Accounting" renamed to "Report"** in sidebar `NAV_TOOLS`.
+- **Settings has data export** — `GET /api/backup` returns full JSON as blob download; wired to "Export all data" button in Settings.
+- **Projections saves/loads year baselines** — `POST /api/tax-years` upserts a year record; `GET /api/tax-years` (reads `tax_years.json`) loads them; auto-selects prior year on open.
 
 ---
 

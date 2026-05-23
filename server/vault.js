@@ -1,7 +1,8 @@
-const express = require('express');
-const multer  = require('multer');
-const path    = require('path');
-const fs      = require('fs');
+const express  = require('express');
+const multer   = require('multer');
+const path     = require('path');
+const fs       = require('fs');
+const archiver = require('archiver');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -206,6 +207,48 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
       meta.files[idx] = { ...meta.files[idx], ...req.body, updatedAt: new Date().toISOString() };
       writeMeta(meta, userId);
       res.json(meta.files[idx]);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── GET /api/vault/export — download entire vault as ZIP ──────────────
+  router.get('/export', (req, res) => {
+    const userId   = req.user.id;
+    const vaultDir = getUserVaultDir(userId);
+    const meta     = readMeta(userId);
+
+    if (!meta.files.length) {
+      return res.status(400).json({ error: 'Vault is empty — nothing to export.' });
+    }
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="caishen-vault-${userId}-${Date.now()}.zip"`);
+
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    archive.on('error', e => { console.error('ZIP error:', e.message); res.status(500).end(); });
+    archive.pipe(res);
+
+    for (const file of meta.files) {
+      const filePath = path.join(vaultDir, file.folderPath, file.name);
+      if (fs.existsSync(filePath)) {
+        archive.file(filePath, { name: path.join(file.folderPath, file.name) });
+      }
+    }
+
+    archive.finalize();
+  });
+
+  // ── DELETE /api/vault — permanently wipe all vault data ──────────────
+  router.delete('/', (req, res) => {
+    try {
+      const userId   = req.user.id;
+      const vaultDir = getUserVaultDir(userId);
+
+      if (fs.existsSync(vaultDir)) {
+        fs.rmSync(vaultDir, { recursive: true, force: true });
+      }
+
+      writeMeta({ folders: [], files: [] }, userId);
+      res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 

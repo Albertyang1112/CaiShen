@@ -1,4 +1,7 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
+import axios from 'axios'
+
+const API = 'http://localhost:3001/api'
 
 // ── Tax calculation helpers ───────────────────────────────────────────
 function calcFederalTax(taxableIncome) {
@@ -133,6 +136,53 @@ export default function Projections() {
   const [deductions, setDeductions] = useState(89)
   const [stateRate, setStateRate] = useState(13.3)
 
+  // Baseline year (prior year actuals)
+  const [savedYears, setSavedYears]   = useState([])
+  const [baseline, setBaseline]       = useState(null)   // loaded prior year record
+  const [saveMsg, setSaveMsg]         = useState('')
+
+  useEffect(() => {
+    axios.get(`${API}/tax-years`)
+      .then(r => {
+        const years = r.data || []
+        setSavedYears(years)
+        // Auto-load most recent prior year as baseline
+        const thisYear = new Date().getFullYear()
+        const prior = years.find(y => y.year === thisYear - 1) || years[0]
+        if (prior) setBaseline(prior)
+      })
+      .catch(() => {})
+  }, [])
+
+  const loadBaseline = useCallback((year) => {
+    if (!year) return
+    setW2(year.w2 ?? w2)
+    setRsu(year.rsu ?? rsu)
+    setCryptoGain(year.cryptoGain ?? cryptoGain)
+    setReIncome(year.reIncome ?? reIncome)
+    setLtcg(year.ltcg ?? ltcg)
+    setIsoExercise(year.isoExercise ?? isoExercise)
+    setDeductions(year.deductions ?? deductions)
+    if (year.stateRate) setStateRate(year.stateRate)
+    setSaveMsg(`Loaded ${year.year} actuals as starting point`)
+    setTimeout(() => setSaveMsg(''), 3000)
+  }, [w2, rsu, cryptoGain, reIncome, ltcg, isoExercise, deductions])
+
+  const saveThisYear = async () => {
+    const thisYear = new Date().getFullYear()
+    const entry = { year: thisYear, w2, rsu, cryptoGain, reIncome, ltcg, isoExercise, deductions, stateRate }
+    try {
+      await axios.post(`${API}/tax-years`, entry)
+      setSavedYears(prev => {
+        const idx = prev.findIndex(y => y.year === thisYear)
+        if (idx >= 0) { const u = [...prev]; u[idx] = entry; return u }
+        return [entry, ...prev].sort((a, b) => b.year - a.year)
+      })
+      setSaveMsg(`${thisYear} actuals saved — available as baseline next year`)
+      setTimeout(() => setSaveMsg(''), 4000)
+    } catch (e) { setSaveMsg('Save failed: ' + e.message); setTimeout(() => setSaveMsg(''), 3000) }
+  }
+
   // Net worth inputs
   const [annualSavings, setAnnualSavings] = useState(150)
   const [reAppreciation, setReAppreciation] = useState(5)
@@ -223,6 +273,56 @@ export default function Projections() {
     currentNW: 4180000, annualSavings, reAppreciation, portfolioReturn, years: projectionYears
   }), [annualSavings, reAppreciation, portfolioReturn, projectionYears])
 
+  // ── AI Tax Advisor recommendations ───────────────────────────────────
+  const taxTips = useMemo(() => {
+    const tips = []
+    const { grossIncome, totalTax, effectiveRate, marginalRate, amtAdditional,
+            amtLiability, federalTax, stateTax, niit, quarterly, taxableOrdinary, deductionUsed } = taxCalc
+    const itemized = deductions * 1000
+
+    if (amtAdditional > 0)
+      tips.push({ priority: 'high', color: 'var(--coral)', icon: 'ti-alert-triangle',
+        title: 'AMT triggered — reduce ISO exercise',
+        body: `Exercising ${isoExercise}K of ISOs adds ${fd(amtAdditional)} in AMT on top of regular tax. Reduce exercise to under ${Math.max(0, isoExercise - Math.ceil(isoExercise * 0.3))}K to stay below the AMT crossover point. Consider spreading ISOs across multiple tax years.` })
+
+    if (itemized < 29200)
+      tips.push({ priority: 'medium', color: 'var(--amber)', icon: 'ti-coin',
+        title: 'Standard deduction beats your itemized',
+        body: `Your itemized deductions (${fd(itemized)}) are below the standard deduction ($29,200). Consider bunching 2 years of charitable donations into one year via a Donor-Advised Fund to clear the standard deduction threshold and itemize in alternating years.` })
+
+    if (marginalRate >= 35 && ltcg === 0)
+      tips.push({ priority: 'medium', color: 'var(--amber)', icon: 'ti-trending-up',
+        title: 'Shift income to long-term capital gains',
+        body: `Your marginal rate is ${marginalRate}%. LTCG rates cap at 20% for your income level — a ${(marginalRate - 20)}% advantage per dollar. Consider repositioning appreciated assets from ordinary-income strategies to buy-and-hold to reduce your effective rate.` })
+
+    if (reIncome * 1000 > 50000 && itemized > 29200)
+      tips.push({ priority: 'medium', color: 'var(--blue)', icon: 'ti-building-estate',
+        title: 'Maximize RE deductions (depreciation, cost seg)',
+        body: `With ${fd(reIncome * 1000)} in RE net income, a cost segregation study on any recently acquired property could accelerate depreciation and generate a large paper loss to offset ordinary income this year.` })
+
+    if (rsu > 0 && marginalRate >= 32)
+      tips.push({ priority: 'medium', color: 'var(--purple)', icon: 'ti-gift',
+        title: `RSU vesting adds ${fd(rsu * 1000)} at ${marginalRate}% ordinary rate`,
+        body: `RSUs vest as ordinary income. If you have flexibility, deferring vest into a lower-income year could save ${fd(rsu * 1000 * 0.05)} if your rate drops by 5%. Alternatively, contribute the vest to a 401(k) or Mega Backdoor Roth to recapture some of the tax.` })
+
+    if (grossIncome > 200000 && (ltcg + cryptoGain) > 0)
+      tips.push({ priority: 'low', color: 'var(--pink)', icon: 'ti-wave-sine',
+        title: '3.8% NIIT applies to your investment income',
+        body: `Net Investment Income Tax adds ${fd(niit)} to your bill. To reduce NIIT exposure, shift investments into tax-exempt municipal bonds or maximize real estate professional status to reclassify passive RE income as active.` })
+
+    if (quarterly > 30000)
+      tips.push({ priority: 'low', color: 'var(--teal)', icon: 'ti-calendar',
+        title: `Quarterly estimates: ${fd(quarterly)} due each period`,
+        body: `With ~${fd(totalTax)} in projected tax, your safe-harbor quarterly payment is ${fd(quarterly)} (due Apr 15, Jun 15, Sep 15, Jan 15). Pay via EFTPS to avoid underpayment penalties. California also requires quarterly payments to FTB.` })
+
+    if (w2 * 1000 > 100000)
+      tips.push({ priority: 'low', color: 'var(--teal)', icon: 'ti-building-bank',
+        title: 'Maximize pre-tax retirement contributions',
+        body: `401(k) contributions reduce your taxable income at ${marginalRate}% marginal rate. Max 2025 contribution is $23,500 ($31,000 if 50+). If your employer offers a Mega Backdoor Roth, you can shelter up to $70,000 total — significant at your bracket.` })
+
+    return tips
+  }, [taxCalc, isoExercise, w2, rsu, cryptoGain, reIncome, ltcg, deductions])
+
   const tabs = [
     { id: 'tax', label: 'Tax Projections', icon: 'ti-receipt-tax' },
     { id: 'sale', label: 'Property Sale', icon: 'ti-building-estate' },
@@ -247,8 +347,49 @@ export default function Projections() {
       {tab === 'tax' && (
         <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 16 }}>
           <div>
+            {/* Baseline year controls */}
             <div className="card" style={{ marginBottom: 12 }}>
-              <p style={{ fontSize: 13, fontWeight: 500, margin: '0 0 16px' }}>Income inputs</p>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <p style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>Year baseline</p>
+                <button onClick={saveThisYear}
+                  style={{ fontSize: 11, padding: '4px 10px', background: 'var(--teal-light)', color: 'var(--teal)', borderColor: 'var(--teal)' }}>
+                  <i className="ti ti-device-floppy" aria-hidden="true" /> Save {new Date().getFullYear()}
+                </button>
+              </div>
+              {saveMsg && (
+                <div style={{ fontSize: 11, color: 'var(--teal)', padding: '5px 8px', background: 'var(--teal-light)', borderRadius: 'var(--radius-sm)', marginBottom: 8, lineHeight: 1.4 }}>
+                  {saveMsg}
+                </div>
+              )}
+              {savedYears.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {savedYears.slice(0, 3).map(y => (
+                    <div key={y.year} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)' }}>
+                      <span style={{ fontSize: 12, fontWeight: 500, flex: 1 }}>{y.year} actuals</span>
+                      <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{fd((y.w2 || 0) + (y.rsu || 0) + (y.reIncome || 0))}K income</span>
+                      <button onClick={() => loadBaseline(y)}
+                        style={{ fontSize: 11, padding: '3px 8px', background: 'var(--blue-light)', color: 'var(--blue)', borderColor: 'var(--blue)' }}>
+                        Load
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+                  Save this year's actuals after filing and they'll appear here as a baseline for next year's projections.
+                </p>
+              )}
+            </div>
+
+            <div className="card" style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <p style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>Income inputs</p>
+                {baseline && (
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    {new Date().getFullYear()} projection
+                  </span>
+                )}
+              </div>
               <SliderRow label="W-2 Income" value={w2} setValue={setW2} min={100} max={800} color="var(--blue)" />
               <SliderRow label="RSU Vesting" value={rsu} setValue={setRsu} min={0} max={500} color="var(--purple)" />
               <SliderRow label="Crypto Gains (ST)" value={cryptoGain} setValue={setCryptoGain} min={0} max={300} color="var(--amber)" />
@@ -257,7 +398,7 @@ export default function Projections() {
               <SliderRow label="ISO Exercise Spread" value={isoExercise} setValue={setIsoExercise} min={0} max={500} color="var(--coral)" />
             </div>
             <div className="card">
-              <p style={{ fontSize: 13, fontWeight: 500, margin: '0 0 16px' }}>Deductions & rates</p>
+              <p style={{ fontSize: 13, fontWeight: 500, margin: '0 0 16px' }}>Deductions &amp; rates</p>
               <SliderRow label="Itemized Deductions" value={deductions} setValue={setDeductions} min={29} max={200} color="var(--green)" />
               <SliderRow label="CA State Tax Rate" value={stateRate} setValue={setStateRate} min={1} max={13.3} step={0.1} prefix="" suffix="%" color="var(--coral)" />
             </div>
@@ -340,6 +481,42 @@ export default function Projections() {
                   <ScenarioCard key={i} label={label} income={scenarios[i].income} tax={tax} rate={rate} afterTax={afterTax} highlight={i === 2} />
                 ))}
               </div>
+            </div>
+
+            {/* AI Tax Advisor */}
+            <div className="card">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+                <div style={{ width: 32, height: 32, borderRadius: 'var(--radius-md)', background: 'var(--purple-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <i className="ti ti-brain" style={{ fontSize: 16, color: 'var(--purple)' }} aria-hidden="true" />
+                </div>
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>Tax advisor recommendations</p>
+                  <p style={{ fontSize: 11, color: 'var(--text-secondary)', margin: '1px 0 0' }}>
+                    Based on your current projection — {taxTips.length} item{taxTips.length !== 1 ? 's' : ''} flagged
+                  </p>
+                </div>
+              </div>
+              {taxTips.length === 0 ? (
+                <div style={{ padding: '12px 14px', background: 'var(--teal-light)', borderRadius: 'var(--radius-sm)', borderLeft: '3px solid var(--teal)' }}>
+                  <p style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 500, margin: '0 0 3px' }}>Your tax position looks clean</p>
+                  <p style={{ fontSize: 11, color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
+                    No urgent optimization flags at your current income levels. Adjust the sliders to model different scenarios.
+                  </p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {taxTips.map((tip, i) => (
+                    <div key={i} style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)', borderLeft: `3px solid ${tip.color}` }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
+                        <i className={`ti ${tip.icon}`} style={{ fontSize: 13, color: tip.color, flexShrink: 0 }} aria-hidden="true" />
+                        <p style={{ fontSize: 12, fontWeight: 500, margin: 0, color: tip.color }}>{tip.title}</p>
+                        <span style={{ marginLeft: 'auto', fontSize: 10, padding: '1px 6px', borderRadius: 10, background: tip.color.replace(')', '-light)').replace('var(--', 'var(--'), color: tip.color, textTransform: 'uppercase', letterSpacing: '0.5px', flexShrink: 0 }}>{tip.priority}</span>
+                      </div>
+                      <p style={{ fontSize: 11, color: 'var(--text-secondary)', margin: 0, lineHeight: 1.6 }}>{tip.body}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -36,6 +36,8 @@ const defaultUserFiles = {
   'vendors.json':           [],
   'journal_entries.json':   [],
   'vault.json':             { folders: [], files: [] },
+  'crypto_txns.json':       [],
+  'wallets.json':           [],
 };
 
 // Global files (not per-user)
@@ -198,6 +200,32 @@ app.delete('/api/properties/:id', (req, res) => {
   res.json({ success: true });
 });
 
+// ── Routes: Transactions CRUD ─────────────────────────────────────────
+app.post('/api/transactions', (req, res) => {
+  const uid  = req.user.id;
+  const txs  = readData('transactions.json', uid) || [];
+  const newTx = { id: `manual_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, ...req.body, source: req.body.source || 'manual', createdAt: new Date().toISOString() };
+  txs.push(newTx);
+  writeData('transactions.json', txs, uid);
+  res.json(newTx);
+});
+app.patch('/api/transactions/:id', (req, res) => {
+  const uid = req.user.id;
+  const txs = readData('transactions.json', uid) || [];
+  const idx = txs.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Not found' });
+  txs[idx] = { ...txs[idx], ...req.body, updatedAt: new Date().toISOString() };
+  writeData('transactions.json', txs, uid);
+  res.json(txs[idx]);
+});
+app.delete('/api/transactions/:id', (req, res) => {
+  const uid = req.user.id;
+  const txs = readData('transactions.json', uid) || [];
+  if (!txs.find(t => t.id === req.params.id)) return res.status(404).json({ error: 'Not found' });
+  writeData('transactions.json', txs.filter(t => t.id !== req.params.id), uid);
+  res.json({ success: true });
+});
+
 // ── Routes: Vault (per-user) ──────────────────────────────────────────
 app.use('/api/vault', require('./vault')(VAULT_DIR, makeIO));
 
@@ -271,6 +299,145 @@ app.post('/api/import-history', (req, res) => {
   res.json({ imported: toAdd.length, skipped: transactions.length - toAdd.length });
 });
 
+// ── Routes: Tax Years ─────────────────────────────────────────────────
+app.post('/api/tax-years', (req, res) => {
+  const uid   = req.user.id;
+  const years = readData('tax_years.json', uid) || [];
+  const entry = { ...req.body, savedAt: new Date().toISOString() };
+  const idx   = years.findIndex(y => y.year === entry.year);
+  if (idx >= 0) years[idx] = entry; else years.push(entry);
+  years.sort((a, b) => b.year - a.year);
+  writeData('tax_years.json', years, uid);
+  res.json(entry);
+});
+
+// ── Routes: Crypto transactions ───────────────────────────────────────
+app.get('/api/crypto/transactions', (req, res) => {
+  res.json(readData('crypto_txns.json', req.user.id) || []);
+});
+app.post('/api/crypto/transactions', (req, res) => {
+  const uid  = req.user.id;
+  const txns = readData('crypto_txns.json', uid) || [];
+  const tx   = { ...req.body, id: `ctx_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, createdAt: new Date().toISOString() };
+  txns.push(tx);
+  writeData('crypto_txns.json', txns, uid);
+  res.json(tx);
+});
+app.patch('/api/crypto/transactions/:id', (req, res) => {
+  const uid  = req.user.id;
+  const txns = readData('crypto_txns.json', uid) || [];
+  const idx  = txns.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Not found' });
+  txns[idx] = { ...txns[idx], ...req.body };
+  writeData('crypto_txns.json', txns, uid);
+  res.json(txns[idx]);
+});
+app.delete('/api/crypto/transactions/:id', (req, res) => {
+  const uid = req.user.id;
+  writeData('crypto_txns.json', (readData('crypto_txns.json', uid) || []).filter(t => t.id !== req.params.id), uid);
+  res.json({ success: true });
+});
+
+// ── Routes: Wallets ───────────────────────────────────────────────────
+app.get('/api/wallets', (req, res) => {
+  res.json(readData('wallets.json', req.user.id) || []);
+});
+app.post('/api/wallets', (req, res) => {
+  const uid     = req.user.id;
+  const wallets = readData('wallets.json', uid) || [];
+  const wallet  = { ...req.body, id: `wallet_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, createdAt: new Date().toISOString() };
+  wallets.push(wallet);
+  writeData('wallets.json', wallets, uid);
+  res.json(wallet);
+});
+app.delete('/api/wallets/:id', (req, res) => {
+  const uid = req.user.id;
+  writeData('wallets.json', (readData('wallets.json', uid) || []).filter(w => w.id !== req.params.id), uid);
+  res.json({ success: true });
+});
+
+// ── On-chain wallet lookup ─────────────────────────────────────────────
+function detectChain(addr) {
+  const a = addr.trim()
+  if (/^(1|3)[a-km-zA-HJ-NP-Z1-9]{25,34}$/.test(a) || /^bc1[ac-hj-np-z02-9]{6,87}$/i.test(a)) return 'BTC'
+  if (/^0x[0-9a-fA-F]{40}$/.test(a)) return 'ETH'
+  if (/^[LM][a-km-zA-HJ-NP-Z1-9]{26,33}$/.test(a) || /^ltc1[a-z0-9]{6,87}$/i.test(a)) return 'LTC'
+  if (/^D[5-9A-HJ-NP-U][1-9A-HJ-NP-Za-km-z]{32}$/.test(a)) return 'DOGE'
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a)) return 'SOL'
+  return null
+}
+
+app.get('/api/wallet-lookup', async (req, res) => {
+  const address = (req.query.address || '').trim();
+  if (!address) return res.status(400).json({ error: 'Address required' });
+  const chain = detectChain(address);
+  if (!chain) return res.status(400).json({ error: 'Unrecognized address format. Supported: BTC, ETH, SOL, LTC, DOGE' });
+  const ax = require('axios');
+  try {
+    if (chain === 'BTC') {
+      const [infoRes, txRes] = await Promise.all([
+        ax.get(`https://blockstream.info/api/address/${address}`),
+        ax.get(`https://blockstream.info/api/address/${address}/txs`),
+      ]);
+      const d = infoRes.data;
+      const balance = (d.chain_stats.funded_txo_sum - d.chain_stats.spent_txo_sum) / 1e8;
+      const transactions = (txRes.data || []).slice(0, 25).map(tx => {
+        const received = (tx.vout || []).filter(o => o.scriptpubkey_address === address).reduce((s, o) => s + (o.value || 0), 0);
+        const sent = (tx.vin || []).filter(i => i.prevout?.scriptpubkey_address === address).reduce((s, i) => s + (i.prevout?.value || 0), 0);
+        return { hash: tx.txid, date: tx.status.confirmed ? new Date(tx.status.block_time * 1000).toISOString().split('T')[0] : 'Pending', amount: (received - sent) / 1e8, confirmed: tx.status.confirmed };
+      });
+      return res.json({ chain, address, balance, transactions });
+    }
+
+    if (chain === 'ETH') {
+      const key = process.env.ETHERSCAN_API_KEY || 'YourApiKeyToken';
+      const base = 'https://api.etherscan.io/api';
+      const [balRes, txRes] = await Promise.all([
+        ax.get(`${base}?module=account&action=balance&address=${address}&apikey=${key}`),
+        ax.get(`${base}?module=account&action=txlist&address=${address}&sort=desc&page=1&offset=25&apikey=${key}`),
+      ]);
+      const balance = parseInt(balRes.data.result || '0') / 1e18;
+      const rawTxs = Array.isArray(txRes.data.result) ? txRes.data.result : [];
+      const transactions = rawTxs.slice(0, 25).map(tx => {
+        const isSend = tx.from.toLowerCase() === address.toLowerCase();
+        return { hash: tx.hash, date: new Date(parseInt(tx.timeStamp) * 1000).toISOString().split('T')[0], amount: (parseInt(tx.value || '0') / 1e18) * (isSend ? -1 : 1), confirmed: parseInt(tx.confirmations || '0') > 0, from: tx.from, to: tx.to };
+      });
+      return res.json({ chain, address, balance, transactions });
+    }
+
+    if (chain === 'SOL') {
+      const rpc = 'https://api.mainnet-beta.solana.com';
+      const [balRes, sigRes] = await Promise.all([
+        ax.post(rpc, { jsonrpc: '2.0', id: 1, method: 'getBalance', params: [address] }),
+        ax.post(rpc, { jsonrpc: '2.0', id: 2, method: 'getSignaturesForAddress', params: [address, { limit: 25 }] }),
+      ]);
+      const balance = (balRes.data.result?.value || 0) / 1e9;
+      const transactions = (sigRes.data.result || []).map(s => ({ hash: s.signature, date: s.blockTime ? new Date(s.blockTime * 1000).toISOString().split('T')[0] : 'Pending', amount: null, confirmed: !s.err }));
+      return res.json({ chain, address, balance, transactions });
+    }
+
+    if (chain === 'LTC' || chain === 'DOGE') {
+      const coin = chain === 'LTC' ? 'ltc' : 'doge';
+      const [balRes, txRes] = await Promise.all([
+        ax.get(`https://api.blockcypher.com/v1/${coin}/main/addrs/${address}/balance`),
+        ax.get(`https://api.blockcypher.com/v1/${coin}/main/addrs/${address}/full?limit=25`),
+      ]);
+      const balance = (balRes.data.final_balance || 0) / 1e8;
+      const transactions = (txRes.data.txs || []).slice(0, 25).map(tx => {
+        const received = (tx.outputs || []).filter(o => (o.addresses || []).includes(address)).reduce((s, o) => s + (o.value || 0), 0);
+        const sent = (tx.inputs || []).filter(i => (i.addresses || []).includes(address)).reduce((s, i) => s + (i.output_value || 0), 0);
+        return { hash: tx.hash, date: tx.received ? tx.received.split('T')[0] : 'Pending', amount: (received - sent) / 1e8, confirmed: (tx.confirmations || 0) > 0 };
+      });
+      return res.json({ chain, address, balance, transactions });
+    }
+
+    res.status(400).json({ error: 'Chain not supported' });
+  } catch (e) {
+    console.error('Wallet lookup error:', e.response?.data || e.message);
+    res.status(500).json({ error: e.response?.data?.error_message || e.message });
+  }
+});
+
 // ── Routes: Backup & Export ───────────────────────────────────────────
 app.get('/api/backup', (req, res) => {
   const uid = req.user.id;
@@ -281,6 +448,8 @@ app.get('/api/backup', (req, res) => {
     invoices: readData('invoices.json', uid), bills: readData('bills.json', uid),
     vendors: readData('vendors.json', uid), journalEntries: readData('journal_entries.json', uid),
     chartOfAccounts: readData('chart_of_accounts.json', uid),
+    cryptoTransactions: readData('crypto_txns.json', uid),
+    wallets: readData('wallets.json', uid),
   };
   res.setHeader('Content-Disposition', `attachment; filename=caishen-backup-${Date.now()}.json`);
   res.setHeader('Content-Type', 'application/json');
@@ -344,7 +513,7 @@ app.get('/api/status', (req, res) => {
   res.json({
     status: 'running', version: '1.0.0',
     plaidConfigured:   !!(process.env.PLAID_CLIENT_ID && process.env.PLAID_CLIENT_ID !== 'paste_your_client_id_here'),
-    qbConfigured:      !!(process.env.QB_CLIENT_ID    && process.env.QB_CLIENT_ID    !== 'paste_your_qb_client_id_here'),
+    qbConfigured:      !!(process.env.QB_CLIENT_ID && process.env.QB_CLIENT_SECRET && process.env.QB_CLIENT_ID !== 'paste_your_qb_client_id_here' && process.env.QB_CLIENT_SECRET !== 'paste_your_qb_client_secret_here' && process.env.QB_CLIENT_ID.length > 10 && process.env.QB_CLIENT_SECRET.length > 10),
     advisorConfigured: !!(process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY !== 'your_anthropic_api_key_here'),
     dataDir: DATA_DIR, uptime: process.uptime()
   });

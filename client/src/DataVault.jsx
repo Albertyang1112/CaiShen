@@ -570,8 +570,191 @@ function FolderNode({ folder, folders, files, selectedId, onSelect, depth=0 }) {
   )
 }
 
+// ── Chase CSV import helpers ──────────────────────────────────────────
+const CHASE_CAT_MAP = {
+  'food & drink':       'Dining',
+  'restaurants':        'Dining',
+  'groceries':          'Groceries',
+  'supermarkets':       'Groceries',
+  'gas':                'Transport',
+  'automotive':         'Transport',
+  'travel':             'Travel',
+  'airlines':           'Travel',
+  'hotels & resorts':   'Travel',
+  'entertainment':      'Entertainment',
+  'shopping':           'Shopping',
+  'merchandise':        'Shopping',
+  'health & wellness':  'Health',
+  'medical':            'Health',
+  'utilities':          'Utilities',
+  'bills & utilities':  'Utilities',
+  'home':               'Repairs',
+  'insurance':          'Insurance',
+  'mortgage & rent':    'Mortgage',
+  'personal':           'Other',
+  'education':          'Other',
+  'fees & charges':     'Other',
+  'business services':  'Other',
+  'payments':           'Other',
+  'transfer':           'Other',
+}
+
+function parseCSVLine(line) {
+  const fields = []
+  let cur = '', inQ = false
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]
+    if (c === '"') { inQ = !inQ }
+    else if (c === ',' && !inQ) { fields.push(cur.trim()); cur = '' }
+    else cur += c
+  }
+  fields.push(cur.trim())
+  return fields
+}
+
+function parseHistoryCSV(text) {
+  const lines = text.trim().split('\n').filter(l => l.trim())
+  if (lines.length < 2) return null
+  const headers = parseCSVLine(lines[0]).map(h => h.toLowerCase())
+  const dateIdx = headers.findIndex(h => ['date','transaction date','posting date'].includes(h))
+  const descIdx = headers.findIndex(h => ['description','merchant','name','details'].some(k => h.includes(k)))
+  const amtIdx  = headers.findIndex(h => ['amount','debit'].some(k => h.includes(k)))
+  const catIdx  = headers.findIndex(h => h.includes('category') || h === 'type')
+  if (dateIdx === -1 || descIdx === -1 || amtIdx === -1) return null
+  const txs = []
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseCSVLine(lines[i])
+    const dateRaw = cols[dateIdx] || ''
+    const desc    = cols[descIdx] || ''
+    const amtRaw  = cols[amtIdx]  || '0'
+    const catRaw  = catIdx >= 0 ? (cols[catIdx] || '') : ''
+    let amount    = parseFloat(amtRaw.replace(/[$,]/g,''))
+    if (isNaN(amount)) continue
+    // Normalize date to YYYY-MM-DD
+    const parts = dateRaw.split('/')
+    let date = dateRaw
+    if (parts.length === 3) {
+      const [m, d, y] = parts
+      date = `${y.length === 2 ? '20'+y : y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`
+    }
+    // Categorize
+    const chaseCat = CHASE_CAT_MAP[catRaw.toLowerCase().trim()] || null
+    const category = chaseCat || categorize(desc)
+    txs.push({ date, desc: desc.replace(/"/g,''), amount, category })
+  }
+  return txs.length ? txs : null
+}
+
+// ── Import CSV History modal ───────────────────────────────────────────
+function ImportHistoryModal({ accounts, onClose, onImported }) {
+  const plaidAccounts = (accounts || []).filter(a => a.source === 'plaid')
+  const [step, setStep]           = useState(plaidAccounts.length ? 1 : 0)
+  const [file, setFile]           = useState(null)
+  const [parsed, setParsed]       = useState(null)
+  const [parseError, setParseError] = useState(null)
+  const [accountId, setAccountId] = useState(plaidAccounts[0]?.id || '')
+  const [importing, setImporting] = useState(false)
+  const [result, setResult]       = useState(null)
+  const fileRef2 = useRef()
+
+  const handleFile = async (f) => {
+    setFile(f); setParseError(null); setParsed(null)
+    const text = await f.text()
+    const txs  = parseHistoryCSV(text)
+    if (!txs) { setParseError('Could not parse CSV. Make sure it has Date, Description, and Amount columns.'); return }
+    setParsed(txs)
+  }
+
+  const doImport = async () => {
+    if (!parsed || !accountId) return
+    setImporting(true)
+    try {
+      const res = await axios.post('http://localhost:3001/api/import-history', { transactions: parsed, accountId })
+      setResult(res.data)
+      onImported?.(res.data)
+    } catch (e) {
+      setParseError(e.response?.data?.error || e.message)
+    }
+    setImporting(false)
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+      <div className="card" style={{ maxWidth:520, width:'92%', padding:28 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:18 }}>
+          <p style={{ fontSize:16, fontWeight:600, margin:0 }}>Import CSV History</p>
+          <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--text-secondary)', padding:0, fontSize:18, cursor:'pointer' }}>✕</button>
+        </div>
+
+        {result ? (
+          <div>
+            <div style={{ padding:'14px 16px', background:'var(--teal-light)', borderRadius:'var(--radius-md)', border:'0.5px solid var(--teal)', marginBottom:18 }}>
+              <p style={{ margin:0, fontSize:14, color:'var(--teal)', fontWeight:500 }}>
+                <i className="ti ti-circle-check" aria-hidden="true"/> Import complete
+              </p>
+              <p style={{ margin:'6px 0 0', fontSize:13, color:'var(--teal)' }}>
+                {result.imported} transactions added · {result.skipped} duplicates skipped
+              </p>
+            </div>
+            <button onClick={onClose} style={{ width:'100%' }}>Done</button>
+          </div>
+        ) : (
+          <>
+            <div style={{ padding:'10px 14px', background:'var(--bg-secondary)', borderRadius:'var(--radius-sm)', borderLeft:'3px solid var(--blue)', fontSize:12, color:'var(--text-secondary)', lineHeight:1.7, marginBottom:18 }}>
+              <strong style={{ color:'var(--text-primary)' }}>How to export from Chase:</strong><br/>
+              1. Go to <a href="https://www.chase.com" target="_blank" rel="noreferrer" style={{ color:'var(--blue)' }}>chase.com</a> → Account → Statements &amp; Activity<br/>
+              2. Set your date range and click <em>Download account activity</em><br/>
+              3. Choose <strong>CSV</strong> format and download<br/>
+              4. Upload the file below — deduplication is automatic
+            </div>
+
+            <div style={{ marginBottom:14 }}>
+              <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'0 0 6px' }}>Select account to import into</p>
+              {plaidAccounts.length ? (
+                <select value={accountId} onChange={e => setAccountId(e.target.value)}
+                  style={{ width:'100%', padding:'8px 10px', background:'var(--bg-secondary)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)', color:'var(--text-primary)', fontSize:13 }}>
+                  {plaidAccounts.map(a => (
+                    <option key={a.id} value={a.id}>{a.name} ···{a.last4} ({a.institution})</option>
+                  ))}
+                </select>
+              ) : (
+                <p style={{ fontSize:12, color:'var(--coral)', margin:0 }}>No Plaid accounts connected. Connect a bank first in Connections.</p>
+              )}
+            </div>
+
+            <div
+              onClick={() => fileRef2.current?.click()}
+              style={{ border:'1.5px dashed var(--border)', borderRadius:'var(--radius-md)', padding:'24px 20px', textAlign:'center', cursor:'pointer', background:'var(--bg-secondary)', marginBottom:14 }}>
+              <i className="ti ti-table-import" style={{ fontSize:22, color:'var(--text-muted)', display:'block', marginBottom:6 }} aria-hidden="true"/>
+              <p style={{ fontSize:13, color:'var(--text-secondary)', margin:0 }}>
+                {file ? file.name : 'Click to select Chase CSV file'}
+              </p>
+              {parsed && (
+                <p style={{ fontSize:12, color:'var(--teal)', margin:'4px 0 0' }}>{parsed.length} transactions found</p>
+              )}
+            </div>
+            <input ref={fileRef2} type="file" accept=".csv" style={{ display:'none' }} onChange={e => e.target.files[0] && handleFile(e.target.files[0])}/>
+
+            {parseError && (
+              <p style={{ fontSize:12, color:'var(--coral)', margin:'0 0 12px' }}>{parseError}</p>
+            )}
+
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+              <button onClick={onClose} style={{ background:'var(--bg-secondary)', color:'var(--text-secondary)', borderColor:'var(--border)' }}>Cancel</button>
+              <button onClick={doImport} disabled={!parsed || !accountId || importing || !plaidAccounts.length}
+                style={{ background:'var(--amber-light)', color:'var(--amber)', borderColor:'var(--amber)' }}>
+                {importing ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Importing…</> : <><i className="ti ti-table-import" aria-hidden="true"/> Import {parsed ? parsed.length+' transactions' : ''}</>}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── MAIN COMPONENT ────────────────────────────────────────────────────
-export default function DataVault({ onImportTransactions }) {
+export default function DataVault({ onImportTransactions, accounts }) {
   const [meta, setMeta]             = useState({ folders:[], files:[] })
   const [loading, setLoading]       = useState(true)
   const [uploading, setUploading]   = useState(false)
@@ -586,6 +769,10 @@ export default function DataVault({ onImportTransactions }) {
   const [uploadError, setUploadError]   = useState(null)
   const [uploadSuccess, setUploadSuccess] = useState(null)
   const [sidebarWidth, setSidebarWidth] = useState(210)
+  const [exporting, setExporting]   = useState(false)
+  const [wiping, setWiping]         = useState(false)
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [showWipeConfirm, setShowWipeConfirm] = useState(false)
   const folderRef  = useRef()
   const fileRef    = useRef()
   const dividerDrag = useRef(null)
@@ -615,6 +802,37 @@ export default function DataVault({ onImportTransactions }) {
       setUploadError('Cannot connect to backend. Run npm start in the CaiShen root folder.')
     }
     setLoading(false)
+  }
+
+  const exportVault = async () => {
+    if (!meta.files.length) { setUploadError('Vault is empty — nothing to export.'); return }
+    setExporting(true)
+    try {
+      const token = localStorage.getItem('caishen_token') || ''
+      const res   = await fetch(`${API}/export`, { headers: { Authorization: `Bearer ${token}` } })
+      if (!res.ok) { const e = await res.json(); throw new Error(e.error || 'Export failed'); }
+      const blob  = await res.blob()
+      const url   = URL.createObjectURL(blob)
+      const a     = document.createElement('a')
+      a.href      = url
+      a.download  = `caishen-vault-${new Date().toISOString().split('T')[0]}.zip`
+      document.body.appendChild(a); a.click()
+      setTimeout(() => { URL.revokeObjectURL(url); document.body.removeChild(a) }, 1000)
+      setUploadSuccess('✓ Vault exported as ZIP')
+    } catch (e) { setUploadError('Export failed: ' + e.message) }
+    setExporting(false)
+  }
+
+  const wipeVault = async () => {
+    setShowWipeConfirm(false)
+    setWiping(true)
+    try {
+      await axios.delete(API)
+      setMeta({ folders: [], files: [] })
+      setSelectedFolderId(null)
+      setUploadSuccess('✓ Vault wiped — all files permanently removed from server')
+    } catch (e) { setUploadError('Wipe failed: ' + e.message) }
+    setWiping(false)
   }
 
   useEffect(() => { load() }, [])
@@ -725,6 +943,25 @@ export default function DataVault({ onImportTransactions }) {
           {['pdf','csv','excel','image','word','text','other'].map(t=><option key={t} value={t}>{t.toUpperCase()}</option>)}
         </select>
         <span style={{ fontSize:11, color:'var(--text-secondary)' }}>{meta.files.length} files · {formatSize(totalSize)}</span>
+        <div style={{ marginLeft:'auto', display:'flex', gap:6 }}>
+          <button onClick={() => setShowImportModal(true)}
+            title="Import Chase or other bank CSV to add historical transactions"
+            style={{ fontSize:12, background:'var(--amber-light)', color:'var(--amber)', borderColor:'var(--amber)' }}>
+            <i className="ti ti-table-import" aria-hidden="true"/> Import CSV history
+          </button>
+          <button onClick={exportVault} disabled={exporting || !meta.files.length}
+            title="Download all vault files as a ZIP"
+            style={{ fontSize:12, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)' }}>
+            <i className={`ti ${exporting?'ti-loader-2 spin':'ti-download'}`} aria-hidden="true"/>
+            {' '}{exporting ? 'Exporting…' : 'Download all'}
+          </button>
+          <button onClick={() => setShowWipeConfirm(true)} disabled={wiping || !meta.files.length}
+            title="Permanently delete all vault files from the server"
+            style={{ fontSize:12, background:'var(--coral-light)', color:'var(--coral)', borderColor:'var(--coral)' }}>
+            <i className={`ti ${wiping?'ti-loader-2 spin':'ti-trash'}`} aria-hidden="true"/>
+            {' '}{wiping ? 'Wiping…' : 'Wipe vault'}
+          </button>
+        </div>
         <input ref={folderRef} type="file" webkitdirectory="" multiple style={{ display:'none' }} onChange={e=>handleFiles(e.target.files)}/>
         <input ref={fileRef}   type="file" multiple          style={{ display:'none' }} onChange={e=>handleFiles(e.target.files)}/>
       </div>
@@ -827,6 +1064,43 @@ export default function DataVault({ onImportTransactions }) {
           file={previewFile}
           onClose={()=>setPreviewFile(null)}
           onImportTransactions={txs=>{ onImportTransactions?.(txs); setPreviewFile(null) }}
+        />
+      )}
+
+      {/* Wipe vault confirmation modal */}
+      {showWipeConfirm && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <div className="card" style={{ maxWidth:420, width:'90%', padding:28 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
+              <i className="ti ti-alert-triangle" style={{ fontSize:22, color:'var(--coral)' }} aria-hidden="true"/>
+              <p style={{ fontSize:16, fontWeight:600, margin:0 }}>Wipe vault?</p>
+            </div>
+            <p style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.7, margin:'0 0 8px' }}>
+              This permanently deletes <strong>all files</strong> from the server. Your data will no longer be accessible from any device.
+            </p>
+            <p style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.7, margin:'0 0 20px' }}>
+              Download a backup first if you want to keep a local copy. <strong>This action cannot be undone.</strong>
+            </p>
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+              <button onClick={() => setShowWipeConfirm(false)}
+                style={{ background:'var(--bg-secondary)', color:'var(--text-secondary)', borderColor:'var(--border)' }}>
+                Cancel
+              </button>
+              <button onClick={wipeVault}
+                style={{ background:'var(--coral)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', padding:'9px 16px', fontWeight:500, cursor:'pointer', fontSize:13 }}>
+                <i className="ti ti-trash" aria-hidden="true"/> Yes, wipe everything
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import CSV history modal */}
+      {showImportModal && (
+        <ImportHistoryModal
+          accounts={accounts}
+          onClose={() => setShowImportModal(false)}
+          onImported={() => setShowImportModal(false)}
         />
       )}
 

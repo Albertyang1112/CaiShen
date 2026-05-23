@@ -6,6 +6,7 @@ import TransactionTransfer from './TransactionTransfer'
 import DataVault from './DataVault'
 import Advisor from './Advisor'
 import Accounting from './Accounting'
+import Crypto from './Crypto'
 import Login from './Login'
 import { usePlaidLink } from 'react-plaid-link'
 
@@ -76,20 +77,20 @@ const FRIEND_COMMENTS = {
 const ASSET_CLASSES = [
   {id:'re',label:'Real Estate',icon:'ti-building-estate',color:'var(--blue)'},
   {id:'equity',label:'Equities',icon:'ti-chart-candle',color:'var(--purple)'},
-  {id:'retirement',label:'Retirement',icon:'ti-piggy-bank',color:'var(--teal)'},
+  {id:'retirement',label:'Retirement',icon:'ti-briefcase',color:'var(--teal)'},
   {id:'crypto',label:'Crypto',icon:'ti-currency-bitcoin',color:'var(--amber)'},
   {id:'cash',label:'Cash',icon:'ti-wallet',color:'var(--green)'},
   {id:'personal',label:'Personal Spending',icon:'ti-receipt',color:'var(--pink)'},
 ]
 const NAV_TOOLS = [
-  {id:'connections',   label:'Connections',   icon:'ti-plug',             adminOnly:true},
-  {id:'data',          label:'Data Vault',    icon:'ti-database',         adminOnly:true},
+  {id:'connections',   label:'Connections',   icon:'ti-plug',             adminOnly:false},
+  {id:'data',          label:'Data Vault',    icon:'ti-database',         adminOnly:false},
   {id:'taxes',         label:'Tax Center',    icon:'ti-receipt-tax',      adminOnly:false},
   {id:'projections',   label:'Projections',   icon:'ti-trending-up',      adminOnly:false},
   {id:'transactions',  label:'Transactions',  icon:'ti-arrows-exchange',  adminOnly:false},
-  {id:'accounting',    label:'Accounting',    icon:'ti-building-bank',    adminOnly:false},
+  {id:'accounting',    label:'Report',        icon:'ti-building-bank',    adminOnly:false},
   {id:'advisor',       label:'AI Advisor',    icon:'ti-brain',            adminOnly:false},
-  {id:'settings',      label:'Settings',      icon:'ti-settings',         adminOnly:true},
+  {id:'settings',      label:'Settings',      icon:'ti-settings',         adminOnly:false},
 ]
 
 // ── Small components ──────────────────────────────────────────────────
@@ -335,206 +336,16 @@ function PropertyDetail({propId, properties}) {
   )
 }
 
-// ── CSV history import helpers ────────────────────────────────────────
-const CHASE_CAT_MAP = {
-  'food & drink':'Dining', 'restaurants':'Dining', 'groceries':'Groceries',
-  'shopping':'Shopping', 'travel':'Travel', 'gas':'Transport', 'automotive':'Transport',
-  'entertainment':'Entertainment', 'health & wellness':'Health', 'personal care':'Health',
-  'bills & utilities':'Utilities', 'payment':'Income', 'payments':'Income',
-  'transfer':'Transfer', 'atm':'Other', 'fees & adjustments':'Other',
-}
-
-function parseCSVLine(line) {
-  const cols = []; let cur = '', inQ = false
-  for (const ch of line) {
-    if (ch === '"') inQ = !inQ
-    else if (ch === ',' && !inQ) { cols.push(cur.trim()); cur = '' }
-    else cur += ch
-  }
-  cols.push(cur.trim())
-  return cols.map(c => c.replace(/^"|"$/g, '').trim())
-}
-
-function parseHistoryCSV(text) {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
-  // Find header row
-  const headerIdx = lines.findIndex(l => {
-    const low = l.toLowerCase()
-    return low.includes('transaction date') || low.includes('post date') ||
-           (low.includes('date') && low.includes('description') && low.includes('amount'))
-  })
-  if (headerIdx < 0) return []
-
-  const headers = parseCSVLine(lines[headerIdx]).map(h => h.toLowerCase())
-  const dateIdx = headers.findIndex(h =>
-    h === 'transaction date' || h === 'posting date' || h === 'date' || h.includes('transaction date')
-  )
-  const fallbackDateIdx = headers.findIndex(h => h.includes('date'))
-  const descIdx = headers.findIndex(h => h.includes('description'))
-  const amtIdx  = headers.findIndex(h => h === 'amount')
-  const catIdx  = headers.findIndex(h => h === 'category')
-
-  const effectiveDateIdx = dateIdx >= 0 ? dateIdx : fallbackDateIdx
-  if (effectiveDateIdx < 0 || descIdx < 0 || amtIdx < 0) return []
-
-  const txs = []
-  for (const line of lines.slice(headerIdx + 1)) {
-    const cols = parseCSVLine(line)
-    if (cols.length <= amtIdx) continue
-    const rawDate = cols[effectiveDateIdx] || ''
-    const desc    = cols[descIdx] || ''
-    const amtStr  = cols[amtIdx]  || ''
-    const cat     = catIdx >= 0 ? cols[catIdx] : ''
-
-    // Parse MM/DD/YYYY or MM-DD-YYYY
-    const parts = rawDate.split(/[\/\-]/)
-    if (parts.length < 3) continue
-    const [mo, dy, yr] = parts.length === 3 && parts[2].length === 4
-      ? parts : [parts[1], parts[2], parts[0]] // try YYYY-MM-DD fallback
-    if (!mo || !dy || !yr) continue
-    const date = `${yr}-${mo.padStart(2,'0')}-${dy.padStart(2,'0')}`
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
-
-    const amount = parseFloat(amtStr.replace(/[$,]/g, ''))
-    if (isNaN(amount) || amount === 0) continue
-
-    txs.push({
-      date,
-      desc: desc || 'Unknown',
-      amount, // Chase CSV: negative = debit, positive = credit — matches our convention
-      category: CHASE_CAT_MAP[cat.toLowerCase()] || 'Other',
-    })
-  }
-  return txs
-}
-
-function ImportHistoryModal({ plaidAccounts, onImported, onClose }) {
-  const [parsed,   setParsed]   = useState(null)  // { txs, fileName, dateRange }
-  const [accountId, setAccountId] = useState(plaidAccounts[0]?.id || '')
-  const [importing, setImporting] = useState(false)
-  const [error,    setError]    = useState(null)
-  const fileRef = useRef()
-
-  const handleFile = (file) => {
-    if (!file) return
-    setError(null)
-    const reader = new FileReader()
-    reader.onload = e => {
-      const txs = parseHistoryCSV(e.target.result)
-      if (!txs.length) { setError('Could not parse this file. Make sure it is a Chase CSV export.'); return }
-      const dates = txs.map(t => t.date).sort()
-      setParsed({ txs, fileName: file.name, dateRange: `${dates[0]} → ${dates[dates.length-1]}`, months: new Set(txs.map(t => t.date.slice(0,7))).size })
-    }
-    reader.readAsText(file)
-  }
-
-  const doImport = async () => {
-    if (!parsed || !accountId) return
-    setImporting(true)
-    setError(null)
-    try {
-      const r = await axios.post(`${API}/import-history`, { transactions: parsed.txs, accountId })
-      const stmts = await axios.post(`${API}/statements/generate`)
-      onImported({ ...r.data, statements: stmts.data })
-    } catch(e) {
-      setError(e.response?.data?.error || e.message)
-      setImporting(false)
-    }
-  }
-
-  return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.75)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:3000 }}>
-      <div style={{ background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'1.5rem', width:500 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:16 }}>
-          <div style={{ width:38, height:38, borderRadius:'var(--radius-md)', background:'var(--purple-light)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-            <i className="ti ti-table-import" style={{ fontSize:19, color:'var(--purple)' }}/>
-          </div>
-          <div>
-            <p style={{ fontSize:14, fontWeight:500, margin:0 }}>Import CSV History</p>
-            <p style={{ fontSize:12, color:'var(--text-secondary)', margin:0 }}>Generate statements for years Plaid can't reach</p>
-          </div>
-          <button onClick={onClose} style={{ marginLeft:'auto', background:'none', border:'none', color:'var(--text-muted)', fontSize:18, padding:4, cursor:'pointer' }}>✕</button>
-        </div>
-
-        {/* Instructions */}
-        <div style={{ background:'var(--bg-secondary)', borderRadius:'var(--radius-md)', padding:'10px 14px', marginBottom:14, fontSize:12, lineHeight:1.7 }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
-            <p style={{ margin:0, fontWeight:500, color:'var(--text-secondary)' }}>How to download from Chase.com:</p>
-            <a href="https://secure.chase.com" target="_blank" rel="noreferrer"
-              style={{ display:'inline-flex', alignItems:'center', gap:5, fontSize:11, fontWeight:500, color:'var(--blue)', background:'var(--blue-light)', border:'0.5px solid var(--blue)', borderRadius:'var(--radius-sm)', padding:'3px 9px', textDecoration:'none', flexShrink:0 }}>
-              <i className="ti ti-external-link" style={{ fontSize:12 }}/> Open Chase.com
-            </a>
-          </div>
-          <ol style={{ margin:0, paddingLeft:18, color:'var(--text-muted)' }}>
-            <li>Sign in — on the dashboard, scroll to your checking account card</li>
-            <li>Click <strong style={{ color:'var(--text-secondary)' }}>See all transactions</strong> at the bottom of the card</li>
-            <li>In the <strong style={{ color:'var(--text-secondary)' }}>Showing</strong> dropdown, select <strong style={{ color:'var(--text-secondary)' }}>All transactions</strong></li>
-            <li>Click the <strong style={{ color:'var(--text-secondary)' }}>download icon ↓</strong> in the top-right corner ("Download account activity")</li>
-            <li>Choose <strong style={{ color:'var(--text-secondary)' }}>Spreadsheet (Excel, CSV)</strong> → Download</li>
-          </ol>
-          <p style={{ margin:'8px 0 0', color:'var(--text-muted)', fontSize:11 }}>
-            If Chase limits the date range, download multiple files and import them one at a time — duplicates are skipped automatically.
-          </p>
-        </div>
-
-        {/* File drop / picker */}
-        <div
-          onClick={() => fileRef.current.click()}
-          onDragOver={e => e.preventDefault()}
-          onDrop={e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]) }}
-          style={{ border:`1.5px dashed ${parsed ? 'var(--teal)' : 'var(--border)'}`, borderRadius:'var(--radius-md)', padding:'20px', textAlign:'center', cursor:'pointer', marginBottom:14, background: parsed ? 'var(--teal-light)' : 'var(--bg-secondary)', transition:'all 0.15s' }}>
-          <input ref={fileRef} type="file" accept=".csv" style={{ display:'none' }} onChange={e => handleFile(e.target.files[0])}/>
-          {parsed ? (
-            <div>
-              <i className="ti ti-circle-check" style={{ fontSize:22, color:'var(--teal)', display:'block', marginBottom:6 }}/>
-              <p style={{ fontSize:13, fontWeight:500, margin:'0 0 2px', color:'var(--teal)' }}>{parsed.fileName}</p>
-              <p style={{ fontSize:12, color:'var(--text-secondary)', margin:0 }}>
-                <strong>{parsed.txs.length.toLocaleString()}</strong> transactions · <strong>{parsed.months}</strong> months · {parsed.dateRange}
-              </p>
-            </div>
-          ) : (
-            <div>
-              <i className="ti ti-upload" style={{ fontSize:22, color:'var(--text-muted)', display:'block', marginBottom:6 }}/>
-              <p style={{ fontSize:13, color:'var(--text-secondary)', margin:0 }}>Drop CSV file here or click to browse</p>
-            </div>
-          )}
-        </div>
-
-        {/* Account selector */}
-        {plaidAccounts.length > 1 && (
-          <div style={{ marginBottom:14 }}>
-            <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'0 0 6px' }}>Associate with account:</p>
-            <select value={accountId} onChange={e => setAccountId(e.target.value)} style={{ width:'100%', fontSize:13, padding:'7px 10px' }}>
-              {plaidAccounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.institution}) ••••{a.last4}</option>)}
-            </select>
-          </div>
-        )}
-
-        {error && <p style={{ fontSize:12, color:'var(--coral)', margin:'0 0 12px' }}>{error}</p>}
-
-        <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
-          <button onClick={onClose} style={{ fontSize:12 }}>Cancel</button>
-          <button onClick={doImport} disabled={!parsed || !accountId || importing}
-            style={{ fontSize:12, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
-            <i className={`ti ${importing ? 'ti-loader-2 spin' : 'ti-table-import'}`}/>
-            {' '}{importing ? 'Importing…' : `Import & generate statements`}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function ConnectionsScreen({status, accounts, onSync}) {
-  const [syncing, setSyncing]         = useState(false)
+  const [syncing, setSyncing]               = useState(false)
   const [historyRunning, setHistoryRunning] = useState(false)
-  const [plaidConns, setPlaidConns]   = useState([])
-  const [linkToken, setLinkToken]     = useState(null)
-  const [linkError, setLinkError]     = useState(null)
-  const [qbStatus, setQbStatus]       = useState(null)
-  const [connecting, setConnecting]   = useState(false)
-  const [stmtResult, setStmtResult]   = useState(null)
-  const [showImportModal, setShowImportModal] = useState(false)
+  const [plaidConns, setPlaidConns]         = useState([])
+  const [linkToken, setLinkToken]           = useState(null)
+  const [linkError, setLinkError]           = useState(null)
+  const [qbStatus, setQbStatus]             = useState(null)
+  const [connecting, setConnecting]         = useState(false)
+  const [stmtResult, setStmtResult]         = useState(null)
+  const [showHistoryWarning, setShowHistoryWarning] = useState(false)
 
   const plaidAccounts = (accounts || []).filter(a => a.source === 'plaid')
 
@@ -749,74 +560,60 @@ function ConnectionsScreen({status, accounts, onSync}) {
               </button>
             )}
             {plaidConns.length > 0 && (
-              <button onClick={syncFullHistory} disabled={syncing || historyRunning}
+              <button onClick={() => setShowHistoryWarning(true)} disabled={syncing || historyRunning}
                 title="Pull up to 2 years of transaction history from Plaid, then generate statements for every month found"
                 style={{ fontSize:12, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
                 <i className={`ti ${historyRunning ? 'ti-loader-2 spin' : 'ti-clock-down'}`} aria-hidden="true"/>
                 {' '}{historyRunning ? 'Pulling history…' : 'Sync full history'}
               </button>
             )}
-            {plaidConns.length > 0 && (
-              <button onClick={() => setShowImportModal(true)} disabled={syncing || historyRunning}
-                title="Import Chase CSV export to get statements older than 2 years"
-                style={{ fontSize:12, background:'var(--amber-light)', color:'var(--amber)', borderColor:'var(--amber)' }}>
-                <i className="ti ti-table-import" aria-hidden="true"/> Import CSV history
-              </button>
-            )}
           </div>
         </div>
-        {showImportModal && (
-          <ImportHistoryModal
-            plaidAccounts={plaidAccounts}
-            onImported={(result) => {
-              setShowImportModal(false)
-              setStmtResult({ generated: result.statements?.generated ?? 0, skipped: result.statements?.skipped ?? 0 })
-              onSync?.()
-            }}
-            onClose={() => setShowImportModal(false)}
-          />
+
+        {showHistoryWarning && (
+          <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <div className="card" style={{ maxWidth:480, width:'90%', padding:28 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
+                <i className="ti ti-alert-triangle" style={{ fontSize:22, color:'var(--amber)' }} aria-hidden="true"/>
+                <p style={{ fontSize:16, fontWeight:600, margin:0 }}>Heads up — Plaid history limits</p>
+              </div>
+              <p style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.7, margin:'0 0 12px' }}>
+                Plaid can only pull as far back as your bank allows — typically <strong>90 days to 2 years</strong> depending on your institution. For example, Chase sometimes only provides the last 4 months of transactions via the API.
+              </p>
+              <p style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.7, margin:'0 0 18px' }}>
+                For older history, you'll need to <strong>import CSV exports manually</strong>. Use the <em>Import CSV History</em> button in the <strong>Data Vault</strong> to import Chase or other bank CSV files — deduplication is automatic.
+              </p>
+              <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+                <button onClick={() => setShowHistoryWarning(false)}
+                  style={{ background:'var(--bg-secondary)', color:'var(--text-secondary)', borderColor:'var(--border)' }}>
+                  Cancel
+                </button>
+                <button onClick={() => { setShowHistoryWarning(false); syncFullHistory() }}
+                  style={{ background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
+                  <i className="ti ti-clock-down" aria-hidden="true"/> Pull Plaid history anyway
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* QuickBooks */}
         <div className="card">
           <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
-            <div style={{ width:38, height:38, borderRadius:'var(--radius-md)', background:'var(--green-light)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-              <i className="ti ti-file-spreadsheet" style={{ fontSize:19, color:'var(--green)' }} aria-hidden="true"/>
+            <div style={{ width:38, height:38, borderRadius:'var(--radius-md)', background:'var(--coral-light)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <i className="ti ti-file-spreadsheet" style={{ fontSize:19, color:'var(--coral)' }} aria-hidden="true"/>
             </div>
             <div>
               <p style={{ fontSize:14, fontWeight:500, margin:0 }}>QuickBooks</p>
-              <p style={{ fontSize:12, color:status?.qbConfigured?'var(--teal)':'var(--coral)', margin:0 }}>
-                {status?.qbConfigured ? '✓ API keys configured' : '⚠ Add keys to .env to enable'}
-              </p>
+              <p style={{ fontSize:12, color:'var(--coral)', margin:0, display:'flex', alignItems:'center', gap:4 }}>
+                  <i className="ti ti-circle-x" style={{ fontSize:13 }} aria-hidden="true"/> Keys not configured
+                </p>
             </div>
           </div>
 
-          {qbStatus?.connected ? (
-            <div style={{ marginBottom:12 }}>
-              <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px', background:'var(--teal-light)', borderRadius:'var(--radius-sm)', marginBottom:8 }}>
-                <i className="ti ti-circle-check" style={{ fontSize:14, color:'var(--teal)' }} aria-hidden="true"/>
-                <div style={{ flex:1 }}>
-                  <p style={{ fontSize:13, fontWeight:500, margin:0, color:'var(--teal)' }}>Connected</p>
-                  <p style={{ fontSize:11, color:'var(--text-secondary)', margin:0 }}>
-                    Last sync: {qbStatus.lastSync ? new Date(qbStatus.lastSync).toLocaleString() : 'Never'}
-                  </p>
-                </div>
-              </div>
-              <button onClick={syncQB} disabled={syncing} className="sync-btn" style={{ fontSize:12 }}>
-                <i className="ti ti-refresh" aria-hidden="true"/> {syncing ? 'Syncing...' : 'Sync QuickBooks'}
-              </button>
+          <div style={{ padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'var(--radius-sm)', borderLeft:'3px solid var(--coral)', fontSize:12, color:'var(--text-secondary)', lineHeight:1.6 }}>
+              QuickBooks integration is not configured yet. Real API keys will be added in a future update.
             </div>
-          ) : (
-            <>
-              <p style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:12, lineHeight:1.6 }}>
-                Connect QuickBooks to automatically pull all transactions, expenses, P&L reports, and receipts. No manual CSV exports needed.
-              </p>
-              <button onClick={connectQB} disabled={!status?.qbConfigured}
-                style={{ fontSize:12, background:'var(--green-light)', color:'var(--green)', borderColor:'var(--green)' }}>
-                <i className="ti ti-plug" aria-hidden="true"/> Connect QuickBooks
-              </button>
-            </>
-          )}
         </div>
       </div>
 
@@ -830,9 +627,9 @@ function ConnectionsScreen({status, accounts, onSync}) {
           { label:'Plaid account created at plaid.com',                         done:status?.plaidConfigured },
           { label:'Plaid keys added to .env',                                   done:status?.plaidConfigured },
           { label:'Bank account connected via Plaid',                           done:plaidConns.length>0 },
-          { label:'QuickBooks developer account at developer.intuit.com',       done:status?.qbConfigured },
-          { label:'QuickBooks keys added to .env',                              done:status?.qbConfigured },
-          { label:'QuickBooks account connected',                               done:qbStatus?.connected },
+          { label:'QuickBooks developer account at developer.intuit.com',       done:false },
+          { label:'QuickBooks keys added to .env',                              done:false },
+          { label:'QuickBooks account connected',                               done:false },
         ].map((item,i)=>(
           <div key={i} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 0', borderBottom:'0.5px solid var(--border)' }}>
             <i className={`ti ${item.done?'ti-circle-check':'ti-circle'}`} style={{ fontSize:16, color:item.done?'var(--teal)':'var(--text-muted)', flexShrink:0 }} aria-hidden="true"/>
@@ -850,6 +647,213 @@ function PlaceholderScreen({label}) {
       <Icon name="ti-tools" size={40} color="var(--text-muted)"/>
       <p style={{fontSize:16,fontWeight:500,margin:'14px 0 6px'}}>{label}</p>
       <p style={{fontSize:13,color:'var(--text-secondary)'}}>This module is coming in the next build iteration.</p>
+    </div>
+  )
+}
+
+const AUTH_API = 'http://localhost:3001/api/auth'
+
+function SettingsScreen({ auth }) {
+  const [twoFaStatus, setTwoFaStatus] = useState(null)
+  const [setupStep, setSetupStep]     = useState(null)  // null | 'scanning' | 'done'
+  const [qrData, setQrData]           = useState(null)
+  const [code, setCode]               = useState('')
+  const [loading, setLoading]         = useState(false)
+  const [error, setError]             = useState('')
+  const [success, setSuccess]         = useState('')
+  const [exporting, setExporting]     = useState(false)
+
+  useEffect(() => {
+    axios.get(`${AUTH_API}/2fa/status`)
+      .then(r => setTwoFaStatus(r.data))
+      .catch(() => {})
+  }, [])
+
+  const startTotpSetup = async () => {
+    setLoading(true); setError(''); setSuccess('')
+    try {
+      const r = await axios.post(`${AUTH_API}/2fa/setup-totp`)
+      setQrData(r.data)
+      setSetupStep('scanning')
+    } catch (e) { setError(e.response?.data?.error || e.message) }
+    setLoading(false)
+  }
+
+  const confirmTotp = async () => {
+    if (!code.trim()) { setError('Enter the 6-digit code from your app'); return }
+    setLoading(true); setError('')
+    try {
+      await axios.post(`${AUTH_API}/2fa/confirm-totp`, { code: code.trim() })
+      setTwoFaStatus({ method: 'totp', totpConfigured: true })
+      setSetupStep('done')
+      setSuccess("Authenticator app enabled! You'll use it next time you sign in from a new device.")
+    } catch (e) { setError(e.response?.data?.error || e.message) }
+    setLoading(false)
+  }
+
+  const switchToEmail = async () => {
+    setLoading(true); setError(''); setSuccess('')
+    try {
+      await axios.post(`${AUTH_API}/2fa/set-email`)
+      setTwoFaStatus({ method: 'email', totpConfigured: false })
+      setSetupStep(null); setQrData(null); setCode('')
+      setSuccess('Switched to email verification.')
+    } catch (e) { setError(e.response?.data?.error || e.message) }
+    setLoading(false)
+  }
+
+  const exportAllData = async () => {
+    setExporting(true)
+    try {
+      const token = localStorage.getItem('caishen_token')
+      const res = await fetch(`${API}/backup`, { headers: { Authorization: `Bearer ${token}` } })
+      const blob = await res.blob()
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `caishen-backup-${new Date().toISOString().slice(0,10)}.json`
+      a.click()
+    } catch (e) { setError('Export failed: ' + e.message) }
+    setExporting(false)
+  }
+
+  const isTotp = twoFaStatus?.method === 'totp'
+
+  return (
+    <div style={{ maxWidth: 540 }}>
+      {/* Account info */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+          <div style={{ width:44, height:44, borderRadius:12, background:'var(--blue-light)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+            <i className="ti ti-user" style={{ fontSize:22, color:'var(--blue)' }} aria-hidden="true"/>
+          </div>
+          <div>
+            <p style={{ fontSize:15, fontWeight:500, margin:0 }}>{auth.user.displayName || auth.user.username}</p>
+            <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'2px 0 0', textTransform:'uppercase', letterSpacing:'0.5px' }}>{auth.user.role}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* 2FA */}
+      <div className="card">
+        <p style={{ fontSize:14, fontWeight:500, margin:'0 0 4px' }}>Two-factor authentication</p>
+        <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'0 0 16px', lineHeight:1.5 }}>
+          2FA is required whenever you sign in from a new device. Choose your preferred verification method.
+        </p>
+
+        {error && (
+          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', background:'var(--coral-light)', borderRadius:'var(--radius-md)', fontSize:12, color:'var(--coral)', border:'0.5px solid var(--coral)', marginBottom:12 }}>
+            <i className="ti ti-alert-circle" aria-hidden="true"/> {error}
+          </div>
+        )}
+        {success && (
+          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', background:'var(--teal-light)', borderRadius:'var(--radius-md)', fontSize:12, color:'var(--teal)', border:'0.5px solid var(--teal)', marginBottom:12 }}>
+            <i className="ti ti-circle-check" aria-hidden="true"/> {success}
+          </div>
+        )}
+
+        {/* Current method */}
+        {twoFaStatus && (
+          <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'var(--bg-secondary)', borderRadius:'var(--radius-md)', marginBottom:16 }}>
+            <i className={`ti ${isTotp ? 'ti-lock' : 'ti-device-mobile'}`}
+               style={{ fontSize:18, color: isTotp ? 'var(--blue)' : 'var(--amber)' }} aria-hidden="true"/>
+            <div style={{ flex:1 }}>
+              <p style={{ fontSize:13, fontWeight:500, margin:0 }}>
+                {isTotp ? 'Authenticator app' : 'Email code'}
+              </p>
+              <p style={{ fontSize:11, color:'var(--text-secondary)', margin:'1px 0 0' }}>
+                {isTotp ? 'Google Authenticator, Authy, or any TOTP app' : 'A 6-digit code is sent to your email address'}
+              </p>
+            </div>
+            <span className="badge" style={{ background: isTotp ? 'var(--blue-light)' : 'var(--amber-light)', color: isTotp ? 'var(--blue)' : 'var(--amber)' }}>
+              Active
+            </span>
+          </div>
+        )}
+
+        {/* Start TOTP setup */}
+        {!isTotp && setupStep === null && (
+          <button onClick={startTotpSetup} disabled={loading}
+            style={{ fontSize:13, background:'var(--blue-light)', color:'var(--blue)', borderColor:'var(--blue)' }}>
+            {loading
+              ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Generating…</>
+              : <><i className="ti ti-lock" aria-hidden="true"/> Set up authenticator app</>}
+          </button>
+        )}
+
+        {/* QR scan step */}
+        {setupStep === 'scanning' && qrData && (
+          <div>
+            <p style={{ fontSize:13, color:'var(--text-secondary)', margin:'0 0 14px', lineHeight:1.6 }}>
+              Scan this QR code with <strong>Google Authenticator</strong>, <strong>Authy</strong>, or any TOTP app, then enter the 6-digit code to confirm.
+            </p>
+            <div style={{ display:'flex', gap:20, alignItems:'flex-start', marginBottom:16 }}>
+              <div style={{ flexShrink:0, padding:8, background:'#fff', borderRadius:8, border:'1px solid var(--border)' }}>
+                <img src={qrData.qrDataUrl} alt="QR code for authenticator setup" style={{ width:160, height:160, display:'block' }}/>
+              </div>
+              <div>
+                <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'0 0 6px', fontWeight:500 }}>Or enter key manually</p>
+                <p style={{ fontSize:12, fontFamily:'monospace', background:'var(--bg-secondary)', padding:'6px 10px', borderRadius:'var(--radius-sm)', letterSpacing:2, margin:0, wordBreak:'break-all', lineHeight:1.8 }}>
+                  {qrData.secret}
+                </p>
+                <p style={{ fontSize:11, color:'var(--text-muted)', margin:'6px 0 0', lineHeight:1.5 }}>
+                  App → Add account → Enter setup key
+                </p>
+              </div>
+            </div>
+            <label style={{ fontSize:12, color:'var(--text-secondary)', display:'block', marginBottom:6 }}>
+              Enter the 6-digit code from your app to confirm setup
+            </label>
+            <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+              <input
+                value={code}
+                onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="000000"
+                maxLength={6}
+                autoFocus
+                style={{ width:130, padding:'9px 12px', fontSize:20, textAlign:'center', letterSpacing:6 }}
+                autoComplete="one-time-code"
+                onKeyDown={e => e.key === 'Enter' && confirmTotp()}
+              />
+              <button onClick={confirmTotp} disabled={loading || code.length < 6}
+                style={{ fontSize:13, background:'var(--blue)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', padding:'9px 16px', cursor:'pointer', fontWeight:500 }}>
+                {loading ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Verifying…</> : 'Confirm'}
+              </button>
+              <button onClick={() => { setSetupStep(null); setQrData(null); setCode(''); setError('') }}
+                style={{ fontSize:12 }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Post-confirm message */}
+        {setupStep === 'done' && (
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <i className="ti ti-circle-check" style={{ color:'var(--teal)', fontSize:16 }} aria-hidden="true"/>
+            <span style={{ fontSize:13, color:'var(--text-secondary)' }}>Authenticator app enabled! You'll use it next time you sign in from a new device.</span>
+          </div>
+        )}
+      </div>
+
+      {/* Data & Privacy */}
+      <div className="card" style={{ marginTop: 16 }}>
+        <p style={{ fontSize:14, fontWeight:500, margin:'0 0 4px' }}>Data &amp; privacy</p>
+        <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'0 0 16px', lineHeight:1.5 }}>
+          All your financial data lives locally on this machine. Export a full JSON backup at any time, or use it to restore on another device.
+        </p>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <button onClick={exportAllData} disabled={exporting}
+            style={{ fontSize:13, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)' }}>
+            {exporting
+              ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Exporting…</>
+              : <><i className="ti ti-download" aria-hidden="true"/> Export all data</>}
+          </button>
+        </div>
+        <div style={{ marginTop:14, padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'var(--radius-sm)', fontSize:11, color:'var(--text-muted)', lineHeight:1.6 }}>
+          Backup includes: accounts, transactions, properties, tax years, crypto transactions, invoices, bills, chart of accounts, and journal entries.
+          It does <strong>not</strong> include vault files — use the Data Vault's "Download all" button for those.
+        </div>
+      </div>
     </div>
   )
 }
@@ -931,13 +935,14 @@ function MainApp({ auth, onLogout }) {
     if(nav==='connections') return <ConnectionsScreen status={status} accounts={accounts} onSync={()=>{ axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])); axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])) }}/>
     if(nav==='equity') return <PlaceholderScreen label="Equities"/>
     if(nav==='retirement') return <PlaceholderScreen label="Retirement"/>
-    if(nav==='crypto') return <PlaceholderScreen label="Crypto"/>
+    if(nav==='crypto') return <Crypto/>
     if(nav==='cash') return <PlaceholderScreen label="Cash Accounts"/>
     if(nav==='taxes') return <PlaceholderScreen label="Tax Center"/>
     if(nav==='projections') return <Projections/>
     if(nav==='advisor')    return <Advisor/>
     if(nav==='accounting') return <Accounting/>
-    if(nav==='data')       return <DataVault onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])}/>
+    if(nav==='data')       return <DataVault accounts={accounts} onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])}/>
+    if(nav==='settings')   return <SettingsScreen auth={auth}/>
     return null
   }
 
