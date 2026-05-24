@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import axios from 'axios'
+import * as pdfjsLib from 'pdfjs-dist'
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
-const API = 'http://localhost:3001/api/vault'
+const API = '/api/vault'
 
 const FILE_ICONS = {
   pdf:   { icon:'ti-file-type-pdf',   color:'var(--coral)'  },
@@ -57,36 +60,75 @@ const formatSize = (bytes) => {
 
 const fd = (n) => (n<0?'-$':'$') + Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
 
-// ── PDF preview — native browser renderer via authenticated blob URL ──
+// ── PDF preview — rendered via PDF.js (no browser plugin needed) ─────
+function PDFPage({ pdf, pageNum, scale }) {
+  const canvasRef = useRef(null)
+
+  useEffect(() => {
+    let renderTask = null
+    let cancelled  = false
+
+    ;(async () => {
+      try {
+        const page     = await pdf.getPage(pageNum)
+        if (cancelled) return
+        const viewport = page.getViewport({ scale })
+        const canvas   = canvasRef.current
+        if (!canvas || cancelled) return
+        canvas.width  = viewport.width
+        canvas.height = viewport.height
+        renderTask = page.render({ canvasContext: canvas.getContext('2d'), viewport })
+        await renderTask.promise
+      } catch (e) {
+        if (!cancelled) console.error('PDF render error page', pageNum, e)
+      }
+    })()
+
+    return () => { cancelled = true; renderTask?.cancel() }
+  }, [pdf, pageNum, scale])
+
+  return (
+    <canvas ref={canvasRef} style={{ display:'block', maxWidth:'100%', boxShadow:'0 2px 12px rgba(0,0,0,0.4)', borderRadius:2 }}/>
+  )
+}
+
 function PDFPreview({ url, onTransactions }) {
-  const [blobUrl, setBlobUrl] = useState(null)
+  const [pdf, setPdf]         = useState(null)
+  const [numPages, setNumPages] = useState(0)
+  const [scale, setScale]     = useState(1.4)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
 
   useEffect(() => {
-    let objUrl = null
+    let cancelled = false
     const token = localStorage.getItem('caishen_token') || ''
 
-    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob() })
-      .then(blob => {
-        objUrl = URL.createObjectURL(blob)
-        setBlobUrl(objUrl)
+    const load = async () => {
+      try {
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = await res.arrayBuffer()
+        if (cancelled) return
+
+        const loaded = await pdfjsLib.getDocument({ data }).promise
+        if (cancelled) return
+        setPdf(loaded)
+        setNumPages(loaded.numPages)
         setLoading(false)
 
-        // Background: attempt text extraction for transaction import
+        // Background text extraction for transaction import
+        const blob = new Blob([data], { type: 'application/pdf' })
         const fd = new FormData()
         fd.append('file', blob, 'document.pdf')
-        axios.post('http://localhost:3001/api/pdf-render', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
-          .then(res => {
-            const txs = parseTransactionsFromText(res.data.text || '')
-            if (txs.length > 0) onTransactions?.(txs)
-          })
-          .catch(() => {}) // silently skip extraction if it fails
-      })
-      .catch(e => { setError(e.message); setLoading(false) })
-
-    return () => { if (objUrl) URL.revokeObjectURL(objUrl) }
+        axios.post('/api/pdf-render', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+          .then(r => { const txs = parseTransactionsFromText(r.data.text || ''); if (txs.length) onTransactions?.(txs) })
+          .catch(() => {})
+      } catch (e) {
+        if (!cancelled) { setError(e.message); setLoading(false) }
+      }
+    }
+    load()
+    return () => { cancelled = true }
   }, [url])
 
   if (loading) return (
@@ -99,14 +141,31 @@ function PDFPreview({ url, onTransactions }) {
   if (error) return (
     <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem' }}>
       <i className="ti ti-alert-circle" style={{ fontSize:36, color:'var(--amber)', marginBottom:12 }} aria-hidden="true"/>
-      <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:16 }}>Could not load PDF</p>
-      <a href={url} download style={{ fontSize:13, padding:'8px 16px', background:'var(--blue-light)', color:'var(--blue)', border:'0.5px solid var(--blue)', borderRadius:'var(--radius-sm)', textDecoration:'none' }}>
-        Download PDF instead
-      </a>
+      <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:16 }}>Could not load PDF: {error}</p>
     </div>
   )
 
-  return <iframe src={`${blobUrl}#navpanes=0`} title="PDF Preview" style={{ flex:1, width:'100%', border:'none', display:'block' }}/>
+  return (
+    <>
+      {/* Toolbar */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, padding:'6px 16px', background:'var(--bg-secondary)', borderBottom:'0.5px solid var(--border)', flexShrink:0 }}>
+        <span style={{ fontSize:12, color:'var(--text-secondary)' }}>{numPages} page{numPages !== 1 ? 's' : ''}</span>
+        <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:6 }}>
+          <button onClick={() => setScale(s => Math.max(0.6, +(s - 0.2).toFixed(1)))}
+            style={{ fontSize:16, background:'none', border:'0.5px solid var(--border)', borderRadius:4, width:28, height:28, cursor:'pointer', color:'var(--text-secondary)', lineHeight:1 }}>−</button>
+          <span style={{ fontSize:12, color:'var(--text-secondary)', minWidth:38, textAlign:'center' }}>{Math.round(scale * 100)}%</span>
+          <button onClick={() => setScale(s => Math.min(3, +(s + 0.2).toFixed(1)))}
+            style={{ fontSize:16, background:'none', border:'0.5px solid var(--border)', borderRadius:4, width:28, height:28, cursor:'pointer', color:'var(--text-secondary)', lineHeight:1 }}>+</button>
+        </div>
+      </div>
+      {/* Pages */}
+      <div style={{ flex:1, overflowY:'auto', background:'#525659', padding:'20px 16px', display:'flex', flexDirection:'column', gap:16, alignItems:'center' }}>
+        {Array.from({ length: numPages }, (_, i) => (
+          <PDFPage key={i} pdf={pdf} pageNum={i + 1} scale={scale} />
+        ))}
+      </div>
+    </>
+  )
 }
 
 // ── CSV preview ───────────────────────────────────────────────────────

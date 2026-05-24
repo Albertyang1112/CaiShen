@@ -12,7 +12,7 @@ app.use(cors());
 app.use(express.json());
 
 // ── Static client files ───────────────────────────────────────────────
-app.use(express.static(path.join(__dirname, '../client')));
+app.use(express.static(path.join(__dirname, '../client-dist')));
 
 // ── Directory setup ───────────────────────────────────────────────────
 const DATA_DIR   = path.join(__dirname, '../data');
@@ -352,7 +352,7 @@ app.get('/api/status', (req, res) => {
 
 // ── Catch-all ─────────────────────────────────────────────────────────
 app.get('/{*path}', (req, res) => {
-  const indexPath = path.join(__dirname, '../client/index.html');
+  const indexPath = path.join(__dirname, '../client-dist/index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {

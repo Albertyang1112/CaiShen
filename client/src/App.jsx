@@ -27,7 +27,7 @@ axios.interceptors.response.use(r => r, err => {
   return Promise.reject(err)
 })
 
-const API = 'http://localhost:3001/api'
+const API = '/api'
 
 // ── Formatting ────────────────────────────────────────────────────────
 const fmt = (n, d=0) => { if(Math.abs(n)>=1e6) return (n/1e6).toFixed(1)+'M'; if(Math.abs(n)>=1e3) return (n/1e3).toFixed(d)+'K'; return Math.abs(n).toFixed(d); }
@@ -658,7 +658,7 @@ function ConnectionsScreen({status, accounts, onSync}) {
   }
 
   const connectQB = () => {
-    window.open('http://localhost:3001/auth/quickbooks/connect', '_blank', 'width=600,height=700')
+    window.open('/auth/quickbooks/connect', '_blank', 'width=600,height=700')
   }
 
   const syncQB = async () => {
@@ -861,7 +861,7 @@ export default function App() {
   useEffect(() => {
     const token = localStorage.getItem('caishen_token')
     if (!token) { setAuth(false); return }
-    fetch('http://localhost:3001/api/auth/me', { headers:{ Authorization:`Bearer ${token}` } })
+    fetch('/api/auth/me', { headers:{ Authorization:`Bearer ${token}` } })
       .then(r => r.ok ? r.json() : Promise.reject())
       .then(user => setAuth({ user, token }))
       .catch(() => { localStorage.removeItem('caishen_token'); setAuth(false) })
@@ -904,7 +904,7 @@ function MainApp({ auth, onLogout }) {
   useEffect(()=>{
     let es, retryTimer
     const connect = () => {
-      es = new EventSource(`http://localhost:3001/api/events`)
+      es = new EventSource(`/api/events`)
       es.onmessage = () => {
         axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])).catch(()=>{})
         axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])).catch(()=>{})

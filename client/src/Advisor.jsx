@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 
-const API = 'http://localhost:3001/api'
+const API = '/api'
 const getToken = () => localStorage.getItem('caishen_token') || ''
 const authHeaders = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` })
 
@@ -34,8 +34,28 @@ export default function Advisor() {
   const [insights, setInsights]   = useState([])
   const [insightsAt, setInsightsAt] = useState(null)
   const [genLoading, setGenLoading] = useState(false)
+  const [speakingIdx, setSpeakingIdx] = useState(null)
   const bottomRef = useRef(null)
   const inputRef  = useRef(null)
+
+  useEffect(() => () => window.speechSynthesis.cancel(), [])
+
+  const speak = (text, idx) => {
+    window.speechSynthesis.cancel()
+    if (speakingIdx === idx) { setSpeakingIdx(null); return }
+    const clean = text
+      .replace(/\*\*(.+?)\*\*/gs, '$1')
+      .replace(/\*(.+?)\*/gs, '$1')
+      .replace(/#{1,6}\s+/gm, '')
+      .replace(/`{1,3}[\s\S]*?`{1,3}/g, '')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .trim()
+    const utterance = new SpeechSynthesisUtterance(clean)
+    utterance.onend = () => setSpeakingIdx(null)
+    utterance.onerror = () => setSpeakingIdx(null)
+    setSpeakingIdx(idx)
+    window.speechSynthesis.speak(utterance)
+  }
 
   useEffect(() => {
     fetch(`${API}/advisor/status`)
@@ -225,7 +245,12 @@ export default function Advisor() {
               </div>
             )}
 
-            {messages.map((m, i) => <Bubble key={i} role={m.role} content={m.content}/>)}
+            {messages.map((m, i) => (
+              <Bubble key={i} role={m.role} content={m.content}
+                onSpeak={m.role === 'assistant' ? () => speak(m.content, i) : null}
+                isSpeaking={speakingIdx === i}
+              />
+            ))}
 
             {streaming && streamText && <Bubble role="assistant" content={streamText} streaming/>}
 
@@ -314,7 +339,7 @@ export default function Advisor() {
   )
 }
 
-function Bubble({ role, content, streaming }) {
+function Bubble({ role, content, streaming, onSpeak, isSpeaking }) {
   const isUser = role === 'user'
   return (
     <div style={{ display:'flex', justifyContent: isUser ? 'flex-end' : 'flex-start', gap:10, alignItems:'flex-start' }}>
@@ -341,6 +366,12 @@ function Bubble({ role, content, streaming }) {
           <span style={{ display:'inline-block', width:2, height:14, background:'var(--purple)', marginLeft:2, verticalAlign:'text-bottom', animation:'cursor-blink 0.7s step-end infinite' }}/>
         )}
       </div>
+      {!isUser && onSpeak && !streaming && (
+        <button onClick={onSpeak} title={isSpeaking ? 'Stop' : 'Read aloud'}
+          style={{ background:'none', border:'none', cursor:'pointer', padding:'4px 2px', color: isSpeaking ? 'var(--purple)' : 'var(--text-muted)', borderRadius:4, flexShrink:0, alignSelf:'center', lineHeight:1 }}>
+          <i className={`ti ${isSpeaking ? 'ti-player-stop-filled' : 'ti-volume'}`} style={{ fontSize:14 }} aria-hidden="true"/>
+        </button>
+      )}
       {isUser && (
         <div style={{ width:28, height:28, borderRadius:'50%', background:'var(--blue-light)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, marginTop:2 }}>
           <i className="ti ti-user" style={{ fontSize:13, color:'var(--blue)' }} aria-hidden="true"/>

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 
-const API = 'http://localhost:3001/api/auth'
+const API = '/api/auth'
 
 function getOrCreateDeviceId() {
   let id = localStorage.getItem('caishen_device_id')

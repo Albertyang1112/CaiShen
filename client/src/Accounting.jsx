@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import axios from 'axios'
 
-const API = 'http://localhost:3001/api/accounting'
+const API = '/api/accounting'
 
 const PROPS = [
   { id:'haas',      name:'Haas'      },
