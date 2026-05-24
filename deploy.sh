@@ -32,27 +32,27 @@ echo "  ✓ Code cloned to /var/www/caishen"
 echo "▶ Writing .env..."
 cat > /var/www/caishen/.env << 'ENVEOF'
 # Plaid
-PLAID_CLIENT_ID=6a0b879d613f95000efc0e78
-PLAID_SECRET=589ff4296e4585b136bd0b4326e3be
+PLAID_CLIENT_ID=your_plaid_client_id
+PLAID_SECRET=your_plaid_secret
 PLAID_ENV=production
 
 # QuickBooks
-QB_CLIENT_ID=AB9DZshQRAWW0suxC7Ph9KkpeZb4pHN8mJYuuiRpH1VXWeepzM
-QB_CLIENT_SECRET=2x2i5gF3uAilkubrGbzsVsCAhw1B2NHG2HTY3Tem
+QB_CLIENT_ID=your_qb_client_id
+QB_CLIENT_SECRET=your_qb_client_secret
 QB_REDIRECT_URI=https://mycaishen.ai/auth/quickbooks/callback
 
-# Anthropic (AI Advisor — add your key here)
-ANTHROPIC_API_KEY=
+# Anthropic (AI Advisor)
+ANTHROPIC_API_KEY=your_anthropic_key
 
 # Security
-MASTER_PASSWORD=hello123
+MASTER_PASSWORD=change_me
 
 # Database
-DATABASE_URL=postgresql://neondb_owner:npg_zs2EOdXwt9BF@ep-wandering-fire-ak3q0g9u.c-3.us-west-2.aws.neon.tech/neondb?sslmode=require
+DATABASE_URL=your_neon_database_url
 
 # Email (2FA)
-EMAIL_FROM=albertyang203@gmail.com
-EMAIL_PASS=wavh bhzt ymnk mhwt
+EMAIL_FROM=your_email@gmail.com
+EMAIL_PASS=your_gmail_app_password
 
 # App
 PORT=3001
