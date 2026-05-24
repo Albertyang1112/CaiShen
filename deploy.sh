@@ -118,8 +118,9 @@ echo "  ✓ Nginx configured"
 
 # ── 7. SSL certificate ──────────────────────────────────────────────────
 echo "▶ Getting SSL certificate (requires DNS to be pointing here)..."
+read -p "Enter your email for SSL certificate (Let's Encrypt): " SSL_EMAIL
 certbot --nginx -d mycaishen.ai -d www.mycaishen.ai \
-  --non-interactive --agree-tos --email albertyang203@gmail.com \
+  --non-interactive --agree-tos --email "$SSL_EMAIL" \
   --redirect 2>&1
 echo "  ✓ SSL certificate installed"
 
@@ -128,7 +129,7 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  ✓ CaiShen is live at https://mycaishen.ai"
 echo ""
-echo "  Login: admin / hello123"
+echo "  Login: admin / <your MASTER_PASSWORD from .env>"
 echo "  API:   https://mycaishen.ai/api/status"
 echo ""
 echo "  Next steps:"
