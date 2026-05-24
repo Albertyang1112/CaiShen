@@ -135,7 +135,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
       const tokenRequest = {
         user: { client_user_id: req.user.id },
         client_name: 'CaiShen', products: ['transactions'],
-        optional_products: ['statements'], country_codes: ['US'], language: 'en',
+        country_codes: ['US'], language: 'en',
       };
       if (process.env.PLAID_WEBHOOK_URL) tokenRequest.webhook = process.env.PLAID_WEBHOOK_URL;
       const response = await plaidClient.linkTokenCreate(tokenRequest);
