@@ -439,31 +439,60 @@ function parseTransactionsFromText(text) {
   return txs.slice(0, 500)
 }
 
-// ── File preview modal (Discord-style) ───────────────────────────────
-function FilePreviewModal({ file, onClose, onImportTransactions }) {
-  const [extracted, setExtracted] = useState([])
-  const [importing, setImporting] = useState(false)
-  const [imported, setImported]   = useState(false)
+// ── File preview modal ────────────────────────────────────────────────
+function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged }) {
+  const [parseState, setParseState] = useState('idle') // idle | loading | done | error
+  const [parseResult, setParseResult] = useState(null)  // { transactions, count, accountId, accountName }
+  const [parseError, setParseError]   = useState(null)
+  const [selAccountId, setSelAccountId] = useState(null)  // user-selected account when tags have none
+  const [importing, setImporting]     = useState(false)
+  const [importResult, setImportResult] = useState(null)
   const fileUrl = `${API}/file/${file.id}`
+  const isPdf   = file.type === 'pdf'
 
-  const handleTransactions = useCallback((txs) => {
-    setExtracted(txs)
-  }, [])
+  // Kick off AI extraction
+  const extract = async () => {
+    setParseState('loading')
+    setParseError(null)
+    setParseResult(null)
+    setImportResult(null)
+    try {
+      const res = await axios.post(`${API}/parse-statement/${file.id}`)
+      setParseResult(res.data)
+      setSelAccountId(res.data.accountId || (accounts[0]?.id ?? null))
+      setParseState('done')
+    } catch (e) {
+      setParseError(e.response?.data?.error || e.message)
+      setParseState('error')
+    }
+  }
 
-  const doImport = () => {
+  // Import extracted transactions via the same deduplicating endpoint as CSV import
+  const doImport = async () => {
+    if (!parseResult?.transactions?.length) return
+    const accountId = selAccountId || parseResult.accountId
+    if (!accountId) { setParseError('Select an account to import into.'); return }
     setImporting(true)
-    onImportTransactions?.(extracted)
-    setImported(true)
+    try {
+      const res = await axios.post('/api/import-history', {
+        transactions: parseResult.transactions.map(t => ({ ...t, account: accountId })),
+        accountId,
+      })
+      setImportResult(res.data)
+      onTransactionsChanged?.()
+    } catch (e) {
+      setParseError(e.response?.data?.error || e.message)
+    }
     setImporting(false)
   }
 
   const renderContent = () => {
     switch (file.type) {
-        case 'pdf':   return <PDFPreview url={fileUrl} onTransactions={handleTransactions}/>
-        case 'csv':   return <CSVPreview url={fileUrl} onTransactions={handleTransactions}/>
-        case 'excel': return <ExcelPreview url={fileUrl} onTransactions={handleTransactions}/>
-        case 'image': return <ImagePreview url={fileUrl}/>
-        default:
+      case 'pdf':   return <PDFPreview url={fileUrl}/>
+      case 'csv':   return <CSVPreview url={fileUrl}/>
+      case 'excel': return <ExcelPreview url={fileUrl}/>
+      case 'image': return <ImagePreview url={fileUrl}/>
+      default:
         return (
           <div style={{ padding:'3rem', textAlign:'center', color:'var(--text-secondary)' }}>
             <i className={`ti ${FILE_ICONS[file.type]?.icon||'ti-file'}`} style={{ fontSize:48, display:'block', marginBottom:12, color:FILE_ICONS[file.type]?.color }} aria-hidden="true"/>
@@ -480,23 +509,36 @@ function FilePreviewModal({ file, onClose, onImportTransactions }) {
   return (
     <div onClick={onClose} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000, padding:'16px' }}>
       <div onClick={e=>e.stopPropagation()} style={{ background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-lg)', width:'min(1380px, 97vw)', height:'93vh', display:'flex', flexDirection:'column', overflow:'hidden' }}>
-        {/* Modal header */}
+
+        {/* Header */}
         <div style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 16px', borderBottom:'0.5px solid var(--border)', background:'var(--bg-secondary)', flexShrink:0 }}>
           <i className={`ti ${FILE_ICONS[file.type]?.icon||'ti-file'}`} style={{ fontSize:18, color:FILE_ICONS[file.type]?.color }} aria-hidden="true"/>
           <div style={{ flex:1, minWidth:0 }}>
             <p style={{ fontSize:14, fontWeight:500, margin:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{file.name}</p>
             <p style={{ fontSize:11, color:'var(--text-secondary)', margin:'1px 0 0' }}>{file.folderPath} · {formatSize(file.size)} · {new Date(file.createdAt).toLocaleDateString()}</p>
           </div>
-          <div style={{ display:'flex', gap:6, flexShrink:0 }}>
-            {extracted.length > 0 && !imported && (
-              <button onClick={doImport} disabled={importing}
-                style={{ fontSize:12, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)' }}>
-                <i className="ti ti-download" aria-hidden="true"/> Import {extracted.length} transactions
+          <div style={{ display:'flex', gap:6, alignItems:'center', flexShrink:0 }}>
+            {/* AI extract button — only for PDFs */}
+            {isPdf && parseState === 'idle' && (
+              <button onClick={extract}
+                style={{ fontSize:12, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
+                <i className="ti ti-sparkles" aria-hidden="true"/> Extract Transactions
               </button>
             )}
-            {imported && (
+            {isPdf && parseState === 'loading' && (
+              <span style={{ fontSize:12, color:'var(--purple)', display:'flex', alignItems:'center', gap:5 }}>
+                <i className="ti ti-loader-2" style={{ animation:'spin 1s linear infinite' }} aria-hidden="true"/>
+                AI reading statement…
+              </span>
+            )}
+            {isPdf && parseState === 'done' && !importResult && (
+              <span style={{ fontSize:12, color:'var(--teal)' }}>
+                <i className="ti ti-circle-check" aria-hidden="true"/> {parseResult.count} transactions found
+              </span>
+            )}
+            {isPdf && importResult && (
               <span style={{ fontSize:12, color:'var(--teal)', display:'flex', alignItems:'center', gap:5 }}>
-                <i className="ti ti-circle-check" aria-hidden="true"/> Imported
+                <i className="ti ti-circle-check" aria-hidden="true"/> {importResult.imported} imported · {importResult.skipped} duplicates skipped
               </span>
             )}
             <a href={fileUrl} download={file.name}
@@ -512,25 +554,53 @@ function FilePreviewModal({ file, onClose, onImportTransactions }) {
           {renderContent()}
         </div>
 
-        {/* Extracted transactions preview */}
-        {extracted.length > 0 && (
-          <div style={{ borderTop:'0.5px solid var(--border)', padding:'10px 16px', background:'var(--bg-secondary)', flexShrink:0, maxHeight:180, overflowY:'auto' }}>
-            <p style={{ fontSize:12, fontWeight:500, margin:'0 0 8px', color:'var(--text-secondary)' }}>
-              EXTRACTED TRANSACTIONS ({extracted.length})
-            </p>
-            {extracted.slice(0,8).map((t,i)=>{
-              const { icon, color } = CATEGORIES[t.category] || CATEGORIES['Other']
-              return (
-                <div key={i} style={{ display:'flex', alignItems:'center', gap:10, padding:'5px 0', borderBottom:'0.5px solid var(--border)', fontSize:12 }}>
-                  <i className={`ti ${icon}`} style={{ fontSize:13, color, flexShrink:0 }} aria-hidden="true"/>
-                  <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', color:'var(--text-secondary)' }}>{t.desc}</span>
-                  <span style={{ color:'var(--text-secondary)', flexShrink:0 }}>{t.date}</span>
-                  <span style={{ fontWeight:500, color:t.amount>=0?'var(--teal)':'var(--coral)', flexShrink:0, minWidth:70, textAlign:'right' }}>{fd(t.amount)}</span>
-                  <span style={{ fontSize:10, padding:'1px 6px', background:'var(--bg-card)', borderRadius:3, color, flexShrink:0 }}>{t.category}</span>
+        {/* Extraction results panel */}
+        {isPdf && (parseState === 'done' || parseState === 'error') && (
+          <div style={{ borderTop:'0.5px solid var(--border)', padding:'12px 16px', background:'var(--bg-secondary)', flexShrink:0 }}>
+            {parseError && (
+              <p style={{ fontSize:12, color:'var(--coral)', margin:'0 0 8px' }}>
+                <i className="ti ti-alert-circle" aria-hidden="true"/> {parseError}
+              </p>
+            )}
+
+            {parseState === 'done' && !importResult && (
+              <>
+                {/* Transaction preview rows */}
+                <div style={{ maxHeight:160, overflowY:'auto', marginBottom:10 }}>
+                  {parseResult.transactions.slice(0, 8).map((t, i) => (
+                    <div key={i} style={{ display:'flex', alignItems:'center', gap:10, padding:'4px 0', borderBottom:'0.5px solid var(--border)', fontSize:12 }}>
+                      <span style={{ color:'var(--text-secondary)', minWidth:78, flexShrink:0 }}>{t.date}</span>
+                      <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', color:'var(--text-primary)' }}>{t.desc}</span>
+                      <span style={{ fontWeight:500, color:t.amount>=0?'var(--teal)':'var(--coral)', flexShrink:0, minWidth:80, textAlign:'right' }}>{fd(t.amount)}</span>
+                    </div>
+                  ))}
+                  {parseResult.count > 8 && (
+                    <p style={{ fontSize:11, color:'var(--text-secondary)', margin:'5px 0 0', textAlign:'center' }}>
+                      + {parseResult.count - 8} more
+                    </p>
+                  )}
                 </div>
-              )
-            })}
-            {extracted.length > 8 && <p style={{ fontSize:11, color:'var(--text-secondary)', margin:'6px 0 0', textAlign:'center' }}>+{extracted.length-8} more transactions</p>}
+
+                {/* Account selector + import button */}
+                <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                  <select
+                    value={selAccountId || ''}
+                    onChange={e => setSelAccountId(e.target.value)}
+                    style={{ flex:1, padding:'6px 8px', background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)', color:'var(--text-primary)', fontSize:12 }}>
+                    {!selAccountId && <option value="">— Select account —</option>}
+                    {accounts.map(a => (
+                      <option key={a.id} value={a.id}>{a.name}{a.institution ? ` (${a.institution})` : ''}</option>
+                    ))}
+                  </select>
+                  <button onClick={doImport} disabled={importing || !selAccountId}
+                    style={{ fontSize:12, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)', whiteSpace:'nowrap' }}>
+                    {importing
+                      ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Importing…</>
+                      : <><i className="ti ti-database-import" aria-hidden="true"/> Import {parseResult.count} transactions</>}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -706,14 +776,16 @@ function parseHistoryCSV(text) {
 
 // ── Import CSV History modal ───────────────────────────────────────────
 function ImportHistoryModal({ accounts, onClose, onImported }) {
-  const plaidAccounts = (accounts || []).filter(a => a.source === 'plaid')
-  const [step, setStep]           = useState(plaidAccounts.length ? 1 : 0)
-  const [file, setFile]           = useState(null)
-  const [parsed, setParsed]       = useState(null)
-  const [parseError, setParseError] = useState(null)
-  const [accountId, setAccountId] = useState(plaidAccounts[0]?.id || '')
-  const [importing, setImporting] = useState(false)
-  const [result, setResult]       = useState(null)
+  const allAccounts = accounts || []
+  const [file, setFile]               = useState(null)
+  const [parsed, setParsed]           = useState(null)
+  const [parseError, setParseError]   = useState(null)
+  const [accountId, setAccountId]     = useState(allAccounts[0]?.id || '__new__')
+  const [importing, setImporting]     = useState(false)
+  const [result, setResult]           = useState(null)
+  const [newAcctName, setNewAcctName] = useState('')
+  const [newAcctInst, setNewAcctInst] = useState('')
+  const [creatingAcct, setCreatingAcct] = useState(false)
   const fileRef2 = useRef()
 
   const handleFile = async (f) => {
@@ -725,17 +797,34 @@ function ImportHistoryModal({ accounts, onClose, onImported }) {
   }
 
   const doImport = async () => {
-    if (!parsed || !accountId) return
+    if (!parsed) return
     setImporting(true)
+    setParseError(null)
     try {
-      const res = await axios.post('http://localhost:3001/api/import-history', { transactions: parsed, accountId })
+      let targetId = accountId
+      if (accountId === '__new__') {
+        if (!newAcctName.trim()) { setParseError('Enter an account name.'); setImporting(false); return }
+        setCreatingAcct(true)
+        const r = await axios.post('/api/accounts', {
+          name: newAcctName.trim(),
+          institution: newAcctInst.trim() || newAcctName.trim(),
+          type: 'depository',
+          subtype: 'checking',
+        })
+        targetId = r.data.id
+        setCreatingAcct(false)
+      }
+      const res = await axios.post('/api/import-history', { transactions: parsed, accountId: targetId })
       setResult(res.data)
       onImported?.(res.data)
     } catch (e) {
       setParseError(e.response?.data?.error || e.message)
+      setCreatingAcct(false)
     }
     setImporting(false)
   }
+
+  const showNewAcctFields = accountId === '__new__'
 
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}>
@@ -769,15 +858,20 @@ function ImportHistoryModal({ accounts, onClose, onImported }) {
 
             <div style={{ marginBottom:14 }}>
               <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'0 0 6px' }}>Select account to import into</p>
-              {plaidAccounts.length ? (
-                <select value={accountId} onChange={e => setAccountId(e.target.value)}
-                  style={{ width:'100%', padding:'8px 10px', background:'var(--bg-secondary)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)', color:'var(--text-primary)', fontSize:13 }}>
-                  {plaidAccounts.map(a => (
-                    <option key={a.id} value={a.id}>{a.name} ···{a.last4} ({a.institution})</option>
-                  ))}
-                </select>
-              ) : (
-                <p style={{ fontSize:12, color:'var(--coral)', margin:0 }}>No Plaid accounts connected. Connect a bank first in Connections.</p>
+              <select value={accountId} onChange={e => setAccountId(e.target.value)}
+                style={{ width:'100%', padding:'8px 10px', background:'var(--bg-secondary)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)', color:'var(--text-primary)', fontSize:13, marginBottom: showNewAcctFields ? 8 : 0 }}>
+                {allAccounts.map(a => (
+                  <option key={a.id} value={a.id}>{a.name}{a.last4 ? ` ···${a.last4}` : ''}{a.institution ? ` (${a.institution})` : ''}</option>
+                ))}
+                <option value="__new__">+ Create new account…</option>
+              </select>
+              {showNewAcctFields && (
+                <div style={{ display:'flex', gap:8 }}>
+                  <input value={newAcctName} onChange={e => setNewAcctName(e.target.value)} placeholder="Account name (e.g. Chase Checking)"
+                    style={{ flex:2, padding:'7px 10px', background:'var(--bg-secondary)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)', color:'var(--text-primary)', fontSize:13 }}/>
+                  <input value={newAcctInst} onChange={e => setNewAcctInst(e.target.value)} placeholder="Institution (optional)"
+                    style={{ flex:1, padding:'7px 10px', background:'var(--bg-secondary)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)', color:'var(--text-primary)', fontSize:13 }}/>
+                </div>
               )}
             </div>
 
@@ -800,9 +894,11 @@ function ImportHistoryModal({ accounts, onClose, onImported }) {
 
             <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
               <button onClick={onClose} style={{ background:'var(--bg-secondary)', color:'var(--text-secondary)', borderColor:'var(--border)' }}>Cancel</button>
-              <button onClick={doImport} disabled={!parsed || !accountId || importing || !plaidAccounts.length}
+              <button onClick={doImport} disabled={!parsed || importing || (showNewAcctFields && !newAcctName.trim())}
                 style={{ background:'var(--amber-light)', color:'var(--amber)', borderColor:'var(--amber)' }}>
-                {importing ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Importing…</> : <><i className="ti ti-table-import" aria-hidden="true"/> Import {parsed ? parsed.length+' transactions' : ''}</>}
+                {importing
+                  ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> {creatingAcct ? 'Creating account…' : 'Importing…'}</>
+                  : <><i className="ti ti-table-import" aria-hidden="true"/> Import {parsed ? parsed.length+' transactions' : ''}</>}
               </button>
             </div>
           </>
@@ -813,7 +909,7 @@ function ImportHistoryModal({ accounts, onClose, onImported }) {
 }
 
 // ── MAIN COMPONENT ────────────────────────────────────────────────────
-export default function DataVault({ onImportTransactions, accounts }) {
+export default function DataVault({ onImportTransactions, onTransactionsChanged, accounts, transactions = [] }) {
   const [meta, setMeta]             = useState({ folders:[], files:[] })
   const [loading, setLoading]       = useState(true)
   const [uploading, setUploading]   = useState(false)
@@ -890,6 +986,7 @@ export default function DataVault({ onImportTransactions, accounts }) {
       setMeta({ folders: [], files: [] })
       setSelectedFolderId(null)
       setUploadSuccess('✓ Vault wiped — all files permanently removed from server')
+      onTransactionsChanged?.()
     } catch (e) { setUploadError('Wipe failed: ' + e.message) }
     setWiping(false)
   }
@@ -951,13 +1048,23 @@ export default function DataVault({ onImportTransactions, accounts }) {
 
   const deleteFile = async (fileId) => {
     if (!window.confirm('Delete this file?')) return
-    try { await axios.delete(`${API}/file/${fileId}`); setPreviewFile(null); await load() }
+    try {
+      await axios.delete(`${API}/file/${fileId}`)
+      setPreviewFile(null)
+      await load()
+      onTransactionsChanged?.()
+    }
     catch (e) { setUploadError('Delete failed: ' + e.message) }
   }
 
   const deleteFolder = async (folderId) => {
     if (!window.confirm('Delete folder? Files will be archived, not permanently removed.')) return
-    try { await axios.delete(`${API}/folder/${folderId}`); setSelectedFolderId(null); await load() }
+    try {
+      await axios.delete(`${API}/folder/${folderId}`)
+      setSelectedFolderId(null)
+      await load()
+      onTransactionsChanged?.()
+    }
     catch (e) { setUploadError('Delete failed: ' + e.message) }
   }
 
@@ -965,9 +1072,24 @@ export default function DataVault({ onImportTransactions, accounts }) {
   const rootFolders    = meta.folders.filter(f => !f.parentId)
   const selectedFolder = selectedFolderId ? meta.folders.find(f=>f.id===selectedFolderId) : null
 
-  const visibleFiles = (selectedFolder
-    ? meta.files.filter(f => f.folderId === selectedFolderId)
-    : meta.files
+  // Subfolders of the current location (shown first in explorer)
+  const childFolders = selectedFolderId
+    ? meta.folders.filter(f => f.parentId === selectedFolderId)
+    : rootFolders
+
+  // Recursive file count for a folder
+  const countInFolder = (folderId) => {
+    const direct = meta.files.filter(f => f.folderId === folderId).length
+    const children = meta.folders.filter(f => f.parentId === folderId)
+    return direct + children.reduce((s, c) => s + countInFolder(c.id), 0)
+  }
+
+  // When searching: match all files. Otherwise: only direct children of current folder.
+  const visibleFiles = (search
+    ? meta.files
+    : selectedFolderId
+      ? meta.files.filter(f => f.folderId === selectedFolderId)
+      : meta.files.filter(f => !meta.folders.some(folder => folder.id === f.folderId))
   ).filter(f => {
     if (search && !f.name.toLowerCase().includes(search.toLowerCase())) return false
     if (filterType !== 'all' && f.type !== filterType) return false
@@ -975,6 +1097,31 @@ export default function DataVault({ onImportTransactions, accounts }) {
   })
 
   const totalSize  = meta.files.reduce((s,f)=>s+(f.size||0),0)
+
+  // Build a month→accountId→txs lookup for statement summaries
+  const acctByName = {}
+  for (const a of accounts) acctByName[a.name] = a.id
+
+  const stmtSummary = (file) => {
+    const { year, month, account: acctName } = file.tags || {}
+    if (!year || !month) return null
+    const monthStr = `${year}-${String(month).padStart(2,'0')}`
+    const acctId   = acctByName[acctName]
+    const txs = transactions.filter(t =>
+      !t.pending &&
+      t.month === monthStr &&
+      (acctId ? t.account === acctId : t.institution === file.tags?.institution)
+    )
+    if (!txs.length) return null
+    const income   = txs.filter(t => t.amount > 0).reduce((s,t) => s + t.amount, 0)
+    const spending = txs.filter(t => t.amount < 0).reduce((s,t) => s + t.amount, 0)
+    return { income, spending, net: income + spending, count: txs.length }
+  }
+
+  const fmtMoney = (n) => {
+    const abs = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits:2, maximumFractionDigits:2 })
+    return (n < 0 ? '-$' : '$') + abs
+  }
 
   if (loading) return (
     <div style={{ textAlign:'center', padding:'4rem', color:'var(--text-secondary)' }}>
@@ -1076,42 +1223,97 @@ export default function DataVault({ onImportTransactions, accounts }) {
           <span style={{ width:2, height:'40px', borderRadius:2, background:'var(--border)', transition:'background 0.15s', pointerEvents:'none' }}/>
         </div>
 
-        {/* File grid */}
+        {/* Explorer panel */}
         <div style={{ flex:1, minWidth:0, background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-lg)', overflow:'hidden', display:'flex', flexDirection:'column' }}>
-          <div style={{ padding:'10px 16px', borderBottom:'0.5px solid var(--border)', background:'var(--bg-secondary)', display:'flex', alignItems:'center', gap:10 }}>
+          {/* Header */}
+          <div style={{ padding:'10px 16px', borderBottom:'0.5px solid var(--border)', background:'var(--bg-secondary)', display:'flex', alignItems:'center', gap:8 }}>
+            {selectedFolder && (
+              <button onClick={()=>setSelectedFolderId(selectedFolder.parentId||null)}
+                style={{ background:'none', border:'none', color:'var(--text-muted)', cursor:'pointer', padding:'2px 6px', borderRadius:4, display:'flex', alignItems:'center', gap:4, fontSize:12 }}>
+                <i className="ti ti-arrow-left" style={{ fontSize:13 }} aria-hidden="true"/> Up
+              </button>
+            )}
             <i className={`ti ${selectedFolder?'ti-folder-open':'ti-files'}`} style={{ fontSize:14, color:'var(--amber)' }} aria-hidden="true"/>
             <p style={{ fontSize:13, fontWeight:500, margin:0 }}>{selectedFolder?.name||'All files'}</p>
-            <span style={{ fontSize:11, color:'var(--text-secondary)' }}>{visibleFiles.length} files</span>
+            <span style={{ fontSize:11, color:'var(--text-secondary)' }}>
+              {childFolders.length > 0 && `${childFolders.length} folder${childFolders.length!==1?'s':''}`}
+              {childFolders.length > 0 && visibleFiles.length > 0 && ', '}
+              {visibleFiles.length > 0 && `${visibleFiles.length} file${visibleFiles.length!==1?'s':''}`}
+            </span>
             {selectedFolder && (
               <button onClick={()=>deleteFolder(selectedFolder.id)} style={{ marginLeft:'auto', fontSize:11, color:'var(--coral)', borderColor:'var(--coral)', background:'var(--coral-light)', padding:'3px 8px' }}>
                 <i className="ti ti-trash" aria-hidden="true"/> Delete folder
               </button>
             )}
           </div>
-          <div style={{ flex:1, overflowY:'auto', padding:'12px' }}>
-            {visibleFiles.length===0 ? (
+
+          <div style={{ flex:1, overflowY:'auto', padding:'8px' }}>
+            {childFolders.length === 0 && visibleFiles.length === 0 ? (
               <div style={{ textAlign:'center', padding:'3rem', color:'var(--text-secondary)' }}>
                 <i className="ti ti-file-off" style={{ fontSize:36, display:'block', marginBottom:10 }} aria-hidden="true"/>
-                <p style={{ fontSize:13, margin:0 }}>{search?'No files match your search':'This folder is empty — upload files or drag a folder here'}</p>
+                <p style={{ fontSize:13, margin:0 }}>{search ? 'No files match your search' : 'This folder is empty — upload files or drag a folder here'}</p>
               </div>
             ) : (
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))', gap:8 }}>
-                {visibleFiles.map(file=>{
-                  const { icon, color } = FILE_ICONS[file.type]||FILE_ICONS.other
-                  const tag = file.tags?.property||file.tags?.type
+              <>
+                {/* Folder rows */}
+                {!search && childFolders.map(folder => {
+                  const count = countInFolder(folder.id)
                   return (
-                    <div key={file.id} onClick={()=>setPreviewFile(file)}
-                      style={{ background:'var(--bg-secondary)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-md)', padding:'12px 10px', cursor:'pointer', transition:'all 0.15s', textAlign:'center' }}
-                      onMouseEnter={e=>e.currentTarget.style.borderColor=color}
-                      onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>
-                      <i className={`ti ${icon}`} style={{ fontSize:30, color, display:'block', marginBottom:8 }} aria-hidden="true"/>
-                      <p style={{ fontSize:11, fontWeight:500, margin:'0 0 3px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={file.name}>{file.name}</p>
-                      <p style={{ fontSize:10, color:'var(--text-muted)', margin:'0 0 5px' }}>{formatSize(file.size)}</p>
-                      {tag && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:3, background:'var(--bg-card)', color:TAG_COLORS[tag]||'var(--text-muted)', textTransform:'capitalize' }}>{tag}</span>}
+                    <div key={folder.id} onClick={()=>setSelectedFolderId(folder.id)}
+                      style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 10px', borderRadius:'var(--radius-sm)', cursor:'pointer', transition:'background 0.1s' }}
+                      onMouseEnter={e=>e.currentTarget.style.background='var(--bg-secondary)'}
+                      onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                      <i className="ti ti-folder" style={{ fontSize:17, color:'var(--amber)', flexShrink:0 }} aria-hidden="true"/>
+                      <p style={{ fontSize:13, fontWeight:500, margin:0, flex:1 }}>{folder.name}</p>
+                      <span style={{ fontSize:11, color:'var(--text-muted)' }}>{count} item{count!==1?'s':''}</span>
+                      <i className="ti ti-chevron-right" style={{ fontSize:12, color:'var(--text-muted)' }} aria-hidden="true"/>
                     </div>
                   )
                 })}
-              </div>
+
+                {/* Divider between folders and files */}
+                {!search && childFolders.length > 0 && visibleFiles.length > 0 && (
+                  <div style={{ borderTop:'0.5px solid var(--border)', margin:'6px 0' }}/>
+                )}
+
+                {/* File rows — list with financial data */}
+                {visibleFiles.length > 0 && (
+                  <>
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 90px 90px 90px 70px', gap:12, padding:'5px 10px', fontSize:10, color:'var(--text-muted)', fontWeight:500, textTransform:'uppercase', letterSpacing:'0.5px', borderBottom:'0.5px solid var(--border)', marginBottom:2 }}>
+                      <span>File</span>
+                      <span style={{textAlign:'right'}}>Income</span>
+                      <span style={{textAlign:'right'}}>Spending</span>
+                      <span style={{textAlign:'right'}}>Net Flow</span>
+                      <span style={{textAlign:'right'}}>Size</span>
+                    </div>
+                    {visibleFiles.map((file, idx) => {
+                      const { icon, color } = FILE_ICONS[file.type]||FILE_ICONS.other
+                      const summ = file.type === 'pdf' ? stmtSummary(file) : null
+                      return (
+                        <div key={file.id} onClick={()=>setPreviewFile(file)}
+                          style={{ display:'grid', gridTemplateColumns:'1fr 90px 90px 90px 70px', gap:12, padding:'8px 10px', cursor:'pointer', borderRadius:'var(--radius-sm)', alignItems:'center', background: idx%2===1 ? 'rgba(255,255,255,0.02)' : 'transparent', transition:'background 0.1s' }}
+                          onMouseEnter={e=>e.currentTarget.style.background='var(--bg-secondary)'}
+                          onMouseLeave={e=>e.currentTarget.style.background=idx%2===1?'rgba(255,255,255,0.02)':'transparent'}>
+                          <div style={{ display:'flex', alignItems:'center', gap:9, minWidth:0 }}>
+                            <i className={`ti ${icon}`} style={{ fontSize:16, color, flexShrink:0 }} aria-hidden="true"/>
+                            <p style={{ fontSize:12, fontWeight:500, margin:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={file.name}>{file.name}</p>
+                          </div>
+                          {summ ? <>
+                            <p style={{ fontSize:12, color:'var(--teal)', margin:0, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{fmtMoney(summ.income)}</p>
+                            <p style={{ fontSize:12, color:'var(--coral)', margin:0, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{fmtMoney(Math.abs(summ.spending))}</p>
+                            <p style={{ fontSize:12, color:summ.net>=0?'var(--teal)':'var(--coral)', margin:0, textAlign:'right', fontWeight:500, fontVariantNumeric:'tabular-nums' }}>{fmtMoney(summ.net)}</p>
+                          </> : <>
+                            <p style={{ fontSize:11, color:'var(--text-muted)', margin:0, textAlign:'right' }}>—</p>
+                            <p style={{ fontSize:11, color:'var(--text-muted)', margin:0, textAlign:'right' }}>—</p>
+                            <p style={{ fontSize:11, color:'var(--text-muted)', margin:0, textAlign:'right' }}>—</p>
+                          </>}
+                          <p style={{ fontSize:11, color:'var(--text-muted)', margin:0, textAlign:'right' }}>{formatSize(file.size)}</p>
+                        </div>
+                      )
+                    })}
+                  </>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -1121,8 +1323,9 @@ export default function DataVault({ onImportTransactions, accounts }) {
       {previewFile && (
         <FilePreviewModal
           file={previewFile}
+          accounts={accounts}
           onClose={()=>setPreviewFile(null)}
-          onImportTransactions={txs=>{ onImportTransactions?.(txs); setPreviewFile(null) }}
+          onTransactionsChanged={onTransactionsChanged}
         />
       )}
 
@@ -1159,7 +1362,13 @@ export default function DataVault({ onImportTransactions, accounts }) {
         <ImportHistoryModal
           accounts={accounts}
           onClose={() => setShowImportModal(false)}
-          onImported={() => setShowImportModal(false)}
+          onImported={async () => {
+            setShowImportModal(false)
+            // Auto-generate statement PDFs from newly imported data
+            try { await axios.post('/api/statements/generate') } catch {}
+            await load()              // refresh vault file list
+            onTransactionsChanged?.() // refresh transactions in app
+          }}
         />
       )}
 

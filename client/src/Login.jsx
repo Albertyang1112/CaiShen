@@ -359,7 +359,6 @@ export default function Login({ onLogin }) {
               <div>
                 <label style={{ fontSize:12, color:'var(--text-secondary)', display:'block', marginBottom:5 }}>Password</label>
                 <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                  placeholder="••••••••"
                   style={{ width:'100%', padding:'10px 12px', fontSize:14 }}
                   autoComplete="current-password"/>
               </div>
@@ -419,7 +418,6 @@ export default function Login({ onLogin }) {
               <div>
                 <label style={{ fontSize:12, color:'var(--text-secondary)', display:'block', marginBottom:5 }}>Confirm password</label>
                 <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)}
-                  placeholder="••••••••"
                   style={{ width:'100%', padding:'10px 12px', fontSize:14 }}
                   autoComplete="new-password"/>
               </div>

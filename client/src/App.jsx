@@ -7,6 +7,7 @@ import DataVault from './DataVault'
 import Advisor from './Advisor'
 import Accounting from './Accounting'
 import Crypto from './Crypto'
+import Banking, { classifyAccount } from './Banking'
 import Login from './Login'
 import { usePlaidLink } from 'react-plaid-link'
 
@@ -31,8 +32,7 @@ axios.interceptors.response.use(r => r, err => {
 const API = '/api'
 
 // ── Formatting ────────────────────────────────────────────────────────
-const fmt = (n, d=0) => { if(Math.abs(n)>=1e6) return (n/1e6).toFixed(1)+'M'; if(Math.abs(n)>=1e3) return (n/1e3).toFixed(d)+'K'; return Math.abs(n).toFixed(d); }
-const fd = (n, d=0) => (n<0?'-$':'$')+fmt(Math.abs(n),d)
+const fd = (n, d=0) => (n<0?'-$':'$')+Math.abs(n).toLocaleString('en-US', { minimumFractionDigits:d, maximumFractionDigits:d })
 const fp = n => (n>=0?'+':'')+n.toFixed(1)+'%'
 
 // ── Static demo data (replaced by API data once connected) ───────────
@@ -74,13 +74,12 @@ const FRIEND_COMMENTS = {
 }
 
 // ── Colors ────────────────────────────────────────────────────────────
+// Opt-in asset class modules (manually added via + button)
 const ASSET_CLASSES = [
-  {id:'re',label:'Real Estate',icon:'ti-building-estate',color:'var(--blue)'},
-  {id:'equity',label:'Equities',icon:'ti-chart-candle',color:'var(--purple)'},
-  {id:'retirement',label:'Retirement',icon:'ti-briefcase',color:'var(--teal)'},
-  {id:'crypto',label:'Crypto',icon:'ti-currency-bitcoin',color:'var(--amber)'},
-  {id:'cash',label:'Cash',icon:'ti-wallet',color:'var(--green)'},
-  {id:'personal',label:'Personal Spending',icon:'ti-receipt',color:'var(--pink)'},
+  {id:'re',        label:'Real Estate',      icon:'ti-building-estate',   color:'var(--blue)'},
+  {id:'equity',    label:'Equities',         icon:'ti-chart-candle',      color:'var(--purple)'},
+  {id:'retirement',label:'Retirement',       icon:'ti-briefcase',         color:'var(--teal)'},
+  {id:'crypto',    label:'Crypto',           icon:'ti-currency-bitcoin',  color:'var(--amber)'},
 ]
 const NAV_TOOLS = [
   {id:'connections',   label:'Connections',   icon:'ti-plug',             adminOnly:false},
@@ -145,170 +144,435 @@ function StatusBar({status}) {
 }
 
 // ── Donut chart ───────────────────────────────────────────────────────
-function DonutChart({data, size=180}) {
+function DonutChart({data, size=180, nw=0}) {
   const total = data.reduce((s,d)=>s+d.value,0)
+  const cx = size/2, cy = size/2, r = size/2-10, ir = r-24
+  const center = <>{
+    <text x={cx} y={cy-8} textAnchor="middle" fontSize="14" fontWeight="500" fill="var(--text-primary)">{fd(nw)}</text>
+  }{
+    <text x={cx} y={cy+10} textAnchor="middle" fontSize="10" fill="var(--text-secondary)">net worth</text>
+  }</>
+
+  // SVG arcs can't represent a full 360° — handle single-slice as two circles
+  if (data.filter(d=>d.value>0).length === 1) {
+    const col = data.find(d=>d.value>0).rawColor
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle cx={cx} cy={cy} r={r} fill={col} opacity={0.88}/>
+        <circle cx={cx} cy={cy} r={ir} fill="var(--bg-primary)"/>
+        {center}
+      </svg>
+    )
+  }
+
   let angle = -90
-  const slices = data.map(d=>{
+  const slices = data.filter(d=>d.value>0).map(d=>{
     const deg = (d.value/total)*360, start = angle, end = angle+deg
     angle += deg
-    const r = size/2-10, cx = size/2, cy = size/2
     const toRad = a => Math.PI*a/180
     const x1=cx+r*Math.cos(toRad(start)), y1=cy+r*Math.sin(toRad(start))
-    const x2=cx+r*Math.cos(toRad(end)), y2=cy+r*Math.sin(toRad(end))
-    const ir=r-24
+    const x2=cx+r*Math.cos(toRad(end)),   y2=cy+r*Math.sin(toRad(end))
     const ix1=cx+ir*Math.cos(toRad(start)),iy1=cy+ir*Math.sin(toRad(start))
-    const ix2=cx+ir*Math.cos(toRad(end)),iy2=cy+ir*Math.sin(toRad(end))
+    const ix2=cx+ir*Math.cos(toRad(end)),  iy2=cy+ir*Math.sin(toRad(end))
     const large=deg>180?1:0
     return {...d, path:`M${x1},${y1} A${r},${r} 0 ${large},1 ${x2},${y2} L${ix2},${iy2} A${ir},${ir} 0 ${large},0 ${ix1},${iy1} Z`}
   })
-  const nw = DEMO_ACCOUNTS.reduce((s,a)=>s+a.balance,0)+DEMO_PROPS.reduce((s,p)=>s+p.value-p.mortgage,0)
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
       {slices.map((s,i)=><path key={i} d={s.path} fill={s.rawColor} opacity={0.88}/>)}
-      <text x={size/2} y={size/2-8} textAnchor="middle" fontSize="14" fontWeight="500" fill="var(--text-primary)">{fd(nw)}</text>
-      <text x={size/2} y={size/2+10} textAnchor="middle" fontSize="10" fill="var(--text-secondary)">net worth</text>
+      {center}
     </svg>
   )
 }
 
 // ── Screens ───────────────────────────────────────────────────────────
-function MainDashboard({onDrill, accounts, properties}) {
-  const accs = accounts.length ? accounts : DEMO_ACCOUNTS
-  const props = properties.length ? properties : DEMO_PROPS
-  const reVal = props.reduce((s,p)=>s+p.value,0)
-  const reMort = props.reduce((s,p)=>s+p.mortgage,0)
-  const totalAssets = accs.filter(a=>a.balance>0).reduce((s,a)=>s+a.balance,0)+reVal
-  const totalLiab = Math.abs(accs.filter(a=>a.balance<0).reduce((s,a)=>s+a.balance,0))+reMort
-  const nw = totalAssets-totalLiab
+function MainDashboard({onDrill, accounts, transactions=[], properties, onConnect, enabledClasses=[], hasTransactions=false}) {
+  const reVal  = properties.reduce((s,p)=>s+p.value,0)
+  const reMort = properties.reduce((s,p)=>s+p.mortgage,0)
   const reEquity = reVal-reMort
-  const noi = props.reduce((s,p)=>s+(p.rent-p.exp),0)
+  const noi      = properties.reduce((s,p)=>s+(p.rent-p.exp),0)
+
+  // Vault-driven balances: an account only gets a value if it has settled transactions.
+  // Balance = availableBalance (excludes pending) when data exists, $0 when vault is empty.
+  const settledAcctIds = new Set(
+    transactions.filter(t => !t.pending && t.account).map(t => t.account)
+  )
+  const acctBal = acct => {
+    if (!settledAcctIds.has(acct.id)) return 0
+    // availableBalance = what the bank shows you (may include early-released pending deposits)
+    // Fall back to balance if availableBalance not set
+    return acct.availableBalance ?? acct.balance ?? 0
+  }
+
+  // For liability-type accounts (credit cards, loans) keep their negative balance as a liability.
+  // For asset-type accounts (bank, savings) treat negative as $0 — not a liability.
+  const isLiabilityAcct = a => ['credit', 'loan'].includes((a.type || '').toLowerCase())
+
+  const acctVal = cls => accounts
+    .filter(a => classifyAccount(a) === cls)
+    .reduce((s, a) => {
+      const b = acctBal(a)
+      return s + (b > 0 ? b : 0)
+    }, 0)
+
+  const bankVal       = acctVal('bank')
+  const equityVal     = acctVal('equity')
+  const retirementVal = acctVal('retirement')
+  const cryptoVal     = acctVal('crypto')
+  const bankCount     = accounts.filter(a=>classifyAccount(a)==='bank').length
+
+  const totalAssets = accounts.reduce((s, a) => {
+    const b = acctBal(a); return s + (b > 0 ? b : 0)
+  }, 0) + reVal
+  const totalLiab = accounts.reduce((s, a) => {
+    const b = acctBal(a)
+    return s + (isLiabilityAcct(a) && b < 0 ? Math.abs(b) : 0)
+  }, 0) + reMort
+  const nw = totalAssets - totalLiab
 
   const donutData = [
-    {label:'Real Estate',value:reVal,rawColor:'#378ADD'},
-    {label:'Equities',value:342800,rawColor:'#7F77DD'},
-    {label:'Retirement',value:218000,rawColor:'#1D9E75'},
-    {label:'Crypto',value:212000,rawColor:'#BA7517'},
-    {label:'Cash',value:48250,rawColor:'#639922'},
-  ]
+    reVal > 0         && {label:'Real Estate', value:reVal,         rawColor:'#378ADD'},
+    equityVal > 0     && {label:'Equities',    value:equityVal,     rawColor:'#7F77DD'},
+    retirementVal > 0 && {label:'Retirement',  value:retirementVal, rawColor:'#1D9E75'},
+    cryptoVal > 0     && {label:'Crypto',      value:cryptoVal,     rawColor:'#BA7517'},
+    bankVal > 0       && {label:'Cash & Checking', value:bankVal,   rawColor:'#639922'},
+  ].filter(Boolean)
   const total = donutData.reduce((s,d)=>s+d.value,0)
+
+  // Cards for modules added to sidebar + Personal Spending (auto)
+  const ALL_MODULES = [
+    {id:'re',        label:'Real Estate',      icon:'ti-building-estate',  color:'var(--blue)',   val: reEquity>0?fd(reEquity):null,    sub: reVal>0?'equity · '+fd(reVal)+' value':null},
+    {id:'equity',    label:'Equities',         icon:'ti-chart-candle',     color:'var(--purple)', val: equityVal>0?fd(equityVal):null,   sub: null},
+    {id:'retirement',label:'Retirement',       icon:'ti-briefcase',        color:'var(--teal)',   val: retirementVal>0?fd(retirementVal):null, sub: null},
+    {id:'crypto',    label:'Crypto',           icon:'ti-currency-bitcoin', color:'var(--amber)',  val: cryptoVal>0?fd(cryptoVal):null,   sub: null},
+    {id:'personal',  label:'Personal Spending',icon:'ti-receipt',          color:'var(--pink)',   val: null, sub: 'view spending breakdown'},
+  ]
+  const dashModules = ALL_MODULES.filter(m =>
+    (m.id === 'personal' && hasTransactions) || enabledClasses.includes(m.id)
+  )
+
+  const noAccounts = accounts.length === 0
+
+  if (noAccounts) {
+    return (
+      <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:420,gap:20,textAlign:'center'}}>
+        <div style={{width:72,height:72,borderRadius:'50%',background:'var(--teal-light)',border:'0.5px solid var(--teal)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <Icon name="ti-building-bank" size={34} color="var(--teal)"/>
+        </div>
+        <div style={{maxWidth:360}}>
+          <p style={{margin:'0 0 8px',fontSize:20,fontWeight:600}}>Connect an account</p>
+          <p style={{margin:0,fontSize:14,color:'var(--text-secondary)',lineHeight:1.7}}>
+            Link your bank via Plaid for live balances, or import CSV transaction history to get started.
+          </p>
+        </div>
+        <button onClick={onConnect} style={{background:'var(--teal)',color:'#fff',borderColor:'var(--teal)',padding:'11px 28px',fontSize:14,fontWeight:500,marginTop:4}}>
+          <Icon name="ti-plus" size={15}/> Add Account
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div>
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:24}}>
-        <MetricCard label="Net Worth" value={fd(nw)} sub="+$142K YTD" subColor="var(--teal)" icon="ti-crown" iconColor="var(--amber)"/>
+        <MetricCard label="Net Worth" value={fd(nw)} icon="ti-crown" iconColor="var(--amber)"/>
         <MetricCard label="Total Assets" value={fd(totalAssets)} icon="ti-chart-pie" iconColor="var(--blue)"/>
-        <MetricCard label="RE Equity" value={fd(reEquity)} sub={((reEquity/reVal)*100).toFixed(0)+'% of RE value'} subColor="var(--teal)" icon="var(--building-estate)" iconColor="var(--teal)"/>
-        <MetricCard label="Monthly NOI" value={fd(noi)} sub="Real estate" subColor="var(--teal)" icon="ti-cash" iconColor="var(--teal)"/>
+        <MetricCard label="RE Equity" value={fd(reEquity)} sub={reVal>0?((reEquity/reVal)*100).toFixed(0)+'% of RE value':undefined} subColor="var(--teal)" icon="ti-building-estate" iconColor="var(--teal)"/>
+        <MetricCard label="Monthly NOI" value={fd(noi)} sub={noi>0?fd(noi*12)+'/year':undefined} subColor="var(--teal)" icon="ti-cash" iconColor="var(--teal)"/>
       </div>
-      <div style={{display:'grid',gridTemplateColumns:'auto 1fr',gap:24,alignItems:'start'}}>
+
+      {/* Legend includes all enabled classes even at $0; donut slices only non-zero */}
+      {(() => {
+        const legendData = [
+          {label:'Cash & Checking', value:bankVal,       rawColor:'#639922', always:true},
+          enabledClasses.includes('re')         && {label:'Real Estate',    value:reVal,         rawColor:'#378ADD'},
+          enabledClasses.includes('equity')     && {label:'Equities',       value:equityVal,     rawColor:'#7F77DD'},
+          enabledClasses.includes('retirement') && {label:'Retirement',     value:retirementVal, rawColor:'#1D9E75'},
+          enabledClasses.includes('crypto')     && {label:'Crypto',         value:cryptoVal,     rawColor:'#BA7517'},
+        ].filter(Boolean)
+        return (
+      <div style={{display:'grid',gridTemplateColumns:'auto 1fr',gap:32,alignItems:'start'}}>
         <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:14}}>
-          <DonutChart data={donutData} size={190}/>
+          <DonutChart data={donutData} size={190} nw={nw}/>
           <div style={{display:'flex',flexDirection:'column',gap:5,width:'100%'}}>
-            {donutData.map(d=>(
-              <div key={d.label} style={{display:'flex',alignItems:'center',gap:8,fontSize:12}}>
+            {legendData.map(d=>(
+              <div key={d.label} style={{display:'flex',alignItems:'center',gap:10,fontSize:12}}>
                 <div style={{width:9,height:9,borderRadius:2,background:d.rawColor,flexShrink:0}}/>
                 <span style={{color:'var(--text-secondary)',flex:1}}>{d.label}</span>
-                <span style={{fontWeight:500}}>{fd(d.value)}</span>
-                <span style={{color:'var(--text-muted)',width:34,textAlign:'right'}}>{((d.value/total)*100).toFixed(0)}%</span>
+                <span style={{fontWeight:500,color:d.value===0?'var(--text-muted)':undefined}}>{fd(d.value)}</span>
+                <span style={{color:'var(--text-muted)',width:36,textAlign:'right'}}>{total>0?((d.value/total)*100).toFixed(0):0}%</span>
               </div>
             ))}
           </div>
         </div>
-        <div>
-          <p className="section-title">Asset classes — click to explore</p>
+
+        {dashModules.length > 0 && (
           <div style={{display:'flex',flexDirection:'column',gap:8}}>
-            {ASSET_CLASSES.map(a=>(
-              <div key={a.id} onClick={()=>onDrill(a.id,a.label)}
-                className="card"
+            {dashModules.map(m=>(
+              <div key={m.id} onClick={()=>onDrill(m.id,m.label)} className="card"
                 style={{cursor:'pointer',display:'flex',alignItems:'center',gap:14,padding:'12px 16px',transition:'border-color 0.15s'}}
-                onMouseEnter={e=>e.currentTarget.style.borderColor=a.color.replace('var(--','').replace(')','') === a.color ? a.color : 'var(--border-light)'}
+                onMouseEnter={e=>e.currentTarget.style.borderColor=m.color}
                 onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>
-                <div style={{width:38,height:38,borderRadius:'var(--radius-md)',background:a.color.replace(')','-light)').replace('var(--','var(--'),display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,opacity:0.8}}>
-                  <Icon name={a.icon} size={19} color={a.color}/>
+                <div style={{width:38,height:38,borderRadius:'var(--radius-md)',background:m.color.replace('var(--','var(--').replace(')','-light)'),display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                  <Icon name={m.icon} size={19} color={m.color}/>
                 </div>
                 <div style={{flex:1}}>
-                  <p style={{fontSize:14,fontWeight:500,margin:0}}>{a.label}</p>
+                  <p style={{fontSize:14,fontWeight:500,margin:0}}>{m.label}</p>
+                  {m.sub && <p style={{fontSize:11,color:'var(--text-muted)',margin:'2px 0 0'}}>{m.sub}</p>}
                 </div>
+                {m.val && <span style={{fontSize:14,fontWeight:500}}>{m.val}</span>}
                 <Icon name="ti-chevron-right" size={14} color="var(--text-muted)"/>
               </div>
             ))}
           </div>
+        )}
+      </div>
+        )
+      })()}
+    </div>
+  )
+}
+
+// ── Property form (add / edit) ────────────────────────────────────────
+const PROP_COLORS = [
+  {label:'Blue',   val:'var(--blue)'},
+  {label:'Teal',   val:'var(--teal)'},
+  {label:'Purple', val:'var(--purple)'},
+  {label:'Amber',  val:'var(--amber)'},
+  {label:'Coral',  val:'var(--coral)'},
+  {label:'Green',  val:'var(--green)'},
+]
+const BLANK_PROP = {name:'',addr:'',value:'',mortgage:'',rate:'',rent:'',exp:'',sqft:'',yr:'',color:'var(--blue)'}
+
+function PropertyForm({initial, onSave, onDelete, onClose, saving}) {
+  const [form, setForm] = useState(initial || BLANK_PROP)
+  const set = (k,v) => setForm(f=>({...f,[k]:v}))
+  const isEdit = !!initial?.id
+
+  const field = (label, key, type='number', placeholder='') => (
+    <div style={{display:'flex',flexDirection:'column',gap:4}}>
+      <label style={{fontSize:11,color:'var(--text-secondary)',fontWeight:500,textTransform:'uppercase',letterSpacing:'0.5px'}}>{label}</label>
+      <input type={type} value={form[key]} placeholder={placeholder}
+        onChange={e=>set(key,type==='number'?e.target.value:e.target.value)}
+        style={{padding:'8px 10px',fontSize:13,borderRadius:'var(--radius-sm)',border:'0.5px solid var(--border)',background:'var(--bg-secondary)',color:'var(--text-primary)',width:'100%'}}/>
+    </div>
+  )
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      <div className="card" style={{width:'100%',maxWidth:540,maxHeight:'90vh',overflowY:'auto',padding:24}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
+          <p style={{fontSize:16,fontWeight:500,margin:0}}>{isEdit?'Edit Property':'Add Property'}</p>
+          <button onClick={onClose} style={{background:'none',border:'none',color:'var(--text-muted)',fontSize:18,cursor:'pointer',padding:0}}>✕</button>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+          <div style={{gridColumn:'1/-1'}}>{field('Property name','name','text','e.g. Haas')}</div>
+          <div style={{gridColumn:'1/-1'}}>{field('Address','addr','text','123 Main St, Los Angeles CA')}</div>
+          {field('Market value ($)','value','number','1250000')}
+          {field('Mortgage balance ($)','mortgage','number','780000')}
+          {field('Interest rate (%)','rate','number','3.875')}
+          {field('Monthly rent ($)','rent','number','6500')}
+          {field('Monthly expenses ($)','exp','number','2800')}
+          {field('Square footage','sqft','number','2400')}
+          {field('Year built','yr','number','2005')}
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            <label style={{fontSize:11,color:'var(--text-secondary)',fontWeight:500,textTransform:'uppercase',letterSpacing:'0.5px'}}>Color</label>
+            <div style={{display:'flex',gap:8}}>
+              {PROP_COLORS.map(c=>(
+                <button key={c.val} title={c.label} onClick={()=>set('color',c.val)}
+                  style={{width:24,height:24,borderRadius:'50%',background:c.val,border:form.color===c.val?'2px solid var(--text-primary)':'2px solid transparent',cursor:'pointer'}}/>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:8}}>
+          {isEdit
+            ? <button onClick={onDelete} disabled={saving}
+                style={{fontSize:12,color:'var(--coral)',borderColor:'var(--coral)',background:'var(--coral-light)'}}>
+                Delete property
+              </button>
+            : <span/>
+          }
+          <div style={{display:'flex',gap:8}}>
+            <button onClick={onClose} style={{fontSize:12}}>Cancel</button>
+            <button onClick={()=>onSave(form)} disabled={saving||!form.name||!form.value}
+              style={{fontSize:12,background:'var(--blue)',color:'#fff',border:'none',borderRadius:'var(--radius-md)',padding:'8px 16px',cursor:'pointer',fontWeight:500}}>
+              {saving?'Saving…':isEdit?'Save changes':'Add property'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
   )
 }
 
-function RealEstateDash({onProp, properties}) {
-  const props = properties.length ? properties : DEMO_PROPS
-  const reVal = props.reduce((s,p)=>s+p.value,0)
-  const reEquity = props.reduce((s,p)=>s+(p.value-p.mortgage),0)
-  const noi = props.reduce((s,p)=>s+(p.rent-p.exp),0)
+function RealEstateDash({onProp, properties, onRefresh}) {
+  const [showForm, setShowForm]   = useState(false)
+  const [editProp, setEditProp]   = useState(null)
+  const [saving, setSaving]       = useState(false)
+
+  const reVal    = properties.reduce((s,p)=>s+p.value,0)
+  const reEquity = properties.reduce((s,p)=>s+(p.value-p.mortgage),0)
+  const noi      = properties.reduce((s,p)=>s+(p.rent-p.exp),0)
+
+  const openAdd  = () => { setEditProp(null); setShowForm(true) }
+  const openEdit = (p,e) => { e.stopPropagation(); setEditProp(p); setShowForm(true) }
+
+  const saveProperty = async (form) => {
+    setSaving(true)
+    const body = {
+      ...form,
+      value:form.value?Number(form.value):0, mortgage:form.mortgage?Number(form.mortgage):0,
+      rate:form.rate?Number(form.rate):0, rent:form.rent?Number(form.rent):0,
+      exp:form.exp?Number(form.exp):0, sqft:form.sqft?Number(form.sqft):undefined,
+      yr:form.yr?Number(form.yr):undefined,
+    }
+    try {
+      if (form.id) await axios.put(`${API}/properties/${form.id}`, body)
+      else         await axios.post(`${API}/properties`, body)
+      await onRefresh()
+      setShowForm(false)
+    } catch(e) { alert('Save failed: '+e.message) }
+    setSaving(false)
+  }
+
+  const deleteProperty = async () => {
+    if (!window.confirm(`Delete "${editProp.name}"?`)) return
+    setSaving(true)
+    try {
+      await axios.delete(`${API}/properties/${editProp.id}`)
+      await onRefresh()
+      setShowForm(false)
+    } catch(e) { alert('Delete failed: '+e.message) }
+    setSaving(false)
+  }
+
   return (
     <div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12,marginBottom:20}}>
-        <MetricCard label="Portfolio Value" value={fd(reVal)} icon="ti-building-estate" iconColor="var(--blue)"/>
-        <MetricCard label="Total Equity" value={fd(reEquity)} sub={((reEquity/reVal)*100).toFixed(0)+'% of value'} subColor="var(--teal)" icon="ti-trending-up" iconColor="var(--teal)"/>
-        <MetricCard label="Monthly NOI" value={fd(noi)} sub={fd(noi*12)+'/year'} subColor="var(--green)" icon="ti-cash" iconColor="var(--green)"/>
+      {showForm && (
+        <PropertyForm
+          initial={editProp}
+          onSave={saveProperty}
+          onDelete={deleteProperty}
+          onClose={()=>setShowForm(false)}
+          saving={saving}/>
+      )}
+
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12,flex:1,marginRight:12}}>
+          <MetricCard label="Portfolio Value" value={fd(reVal)} icon="ti-building-estate" iconColor="var(--blue)"/>
+          <MetricCard label="Total Equity" value={fd(reEquity)} sub={reVal>0?((reEquity/reVal)*100).toFixed(0)+'% of value':undefined} subColor="var(--teal)" icon="ti-trending-up" iconColor="var(--teal)"/>
+          <MetricCard label="Monthly NOI" value={fd(noi)} sub={noi>0?fd(noi*12)+'/year':undefined} subColor="var(--green)" icon="ti-cash" iconColor="var(--green)"/>
+        </div>
+        <button onClick={openAdd} style={{flexShrink:0,fontSize:12,background:'var(--blue-light)',color:'var(--blue)',borderColor:'var(--blue)',whiteSpace:'nowrap'}}>
+          <Icon name="ti-plus" size={13}/> Add property
+        </button>
       </div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-        {props.map(p=>{
-          const noi=p.rent-p.exp, roi=((noi*12)/p.value*100).toFixed(1), ltv=((p.mortgage/p.value)*100).toFixed(0)
-          return (
-            <div key={p.id} onClick={()=>onProp(p.id,p.name)} className="card" style={{cursor:'pointer',transition:'border-color 0.15s'}}
-              onMouseEnter={e=>e.currentTarget.style.borderColor=p.color}
-              onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-                <div style={{display:'flex',alignItems:'center',gap:10}}>
-                  <div style={{width:34,height:34,borderRadius:'var(--radius-md)',background:'var(--blue-light)',display:'flex',alignItems:'center',justifyContent:'center'}}>
-                    <Icon name="ti-building-estate" size={17} color={p.color}/>
+
+      {properties.length === 0 ? (
+        <div className="card" style={{textAlign:'center',padding:'3rem'}}>
+          <Icon name="ti-building-estate" size={40} color="var(--text-muted)"/>
+          <p style={{fontSize:15,fontWeight:500,margin:'14px 0 6px'}}>No properties yet</p>
+          <p style={{fontSize:13,color:'var(--text-secondary)',marginBottom:16}}>Add your real estate portfolio to track values, equity, and cash flow.</p>
+          <button onClick={openAdd} style={{fontSize:13,background:'var(--blue-light)',color:'var(--blue)',borderColor:'var(--blue)'}}>
+            <Icon name="ti-plus" size={14}/> Add your first property
+          </button>
+        </div>
+      ) : (
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+          {properties.map(p=>{
+            const pnoi=p.rent-p.exp, roi=((pnoi*12)/p.value*100).toFixed(1), ltv=((p.mortgage/p.value)*100).toFixed(0)
+            return (
+              <div key={p.id} onClick={()=>onProp(p.id,p.name)} className="card" style={{cursor:'pointer',transition:'border-color 0.15s'}}
+                onMouseEnter={e=>e.currentTarget.style.borderColor=p.color}
+                onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                  <div style={{display:'flex',alignItems:'center',gap:10}}>
+                    <div style={{width:34,height:34,borderRadius:'var(--radius-md)',background:'var(--blue-light)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                      <Icon name="ti-building-estate" size={17} color={p.color}/>
+                    </div>
+                    <div>
+                      <p style={{fontWeight:500,fontSize:14,margin:0}}>{p.name}</p>
+                      <p style={{fontSize:11,color:'var(--text-secondary)',margin:0}}>{p.sqft?.toLocaleString()} sqft{p.yr?` · ${p.yr}`:''}</p>
+                    </div>
                   </div>
-                  <div>
-                    <p style={{fontWeight:500,fontSize:14,margin:0}}>{p.name}</p>
-                    <p style={{fontSize:11,color:'var(--text-secondary)',margin:0}}>{p.sqft?.toLocaleString()} sqft · {p.yr}</p>
+                  <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    <span className="badge" style={{background:'var(--teal-light)',color:'var(--teal)'}}>{roi}% ROI</span>
+                    <button onClick={e=>openEdit(p,e)} style={{background:'none',border:'none',color:'var(--text-muted)',padding:4,cursor:'pointer',fontSize:14,lineHeight:1}} title="Edit">
+                      <Icon name="ti-pencil" size={13}/>
+                    </button>
                   </div>
                 </div>
-                <span className="badge" style={{background:'var(--teal-light)',color:'var(--teal)'}}>{roi}% ROI</span>
-              </div>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:10}}>
-                {[['Value',fd(p.value)],['Equity',fd(p.value-p.mortgage)],['NOI/mo',fd(noi)]].map(([l,v])=>(
-                  <div key={l} style={{background:'var(--bg-secondary)',borderRadius:'var(--radius-sm)',padding:'6px 8px'}}>
-                    <p style={{fontSize:10,color:'var(--text-secondary)',margin:'0 0 2px'}}>{l}</p>
-                    <p style={{fontSize:13,fontWeight:500,margin:0}}>{v}</p>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:10}}>
+                  {[['Value',fd(p.value)],['Equity',fd(p.value-p.mortgage)],['NOI/mo',fd(pnoi)]].map(([l,v])=>(
+                    <div key={l} style={{background:'var(--bg-secondary)',borderRadius:'var(--radius-sm)',padding:'6px 8px'}}>
+                      <p style={{fontSize:10,color:'var(--text-secondary)',margin:'0 0 2px'}}>{l}</p>
+                      <p style={{fontSize:13,fontWeight:500,margin:0}}>{v}</p>
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--text-muted)',marginBottom:3}}>
+                    <span>LTV {ltv}%</span><span>{p.rate}% rate</span>
                   </div>
-                ))}
-              </div>
-              <div>
-                <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--text-muted)',marginBottom:3}}>
-                  <span>LTV {ltv}%</span><span>{p.rate}% rate</span>
+                  <div style={{height:3,background:'var(--bg-secondary)',borderRadius:2}}>
+                    <div style={{height:3,width:Math.min(100,ltv)+'%',background:p.color,borderRadius:2}}/>
+                  </div>
                 </div>
-                <div style={{height:3,background:'var(--bg-secondary)',borderRadius:2}}>
-                  <div style={{height:3,width:ltv+'%',background:p.color,borderRadius:2}}/>
-                </div>
+                {p.addr && <p style={{fontSize:11,color:'var(--text-muted)',margin:'8px 0 0'}}>{p.addr}</p>}
               </div>
-            </div>
-          )
-        })}
-      </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
 
-function PropertyDetail({propId, properties}) {
-  const props = properties.length ? properties : DEMO_PROPS
-  const p = props.find(x=>x.id===propId)
-  if(!p) return <p style={{color:'var(--text-secondary)'}}>Property not found.</p>
-  const noi=p.rent-p.exp, monthly=p.mortgage*p.rate/100/12
+function PropertyDetail({propId, properties, onRefresh}) {
+  const [showForm, setShowForm] = useState(false)
+  const [saving, setSaving]     = useState(false)
+  const p = properties.find(x=>x.id===propId)
+
+  if(!p) return (
+    <div className="card" style={{textAlign:'center',padding:'3rem'}}>
+      <Icon name="ti-building-off" size={40} color="var(--text-muted)"/>
+      <p style={{fontSize:15,fontWeight:500,margin:'14px 0 6px'}}>Property not found</p>
+      <p style={{fontSize:13,color:'var(--text-secondary)'}}>This property may have been deleted or the link is stale.</p>
+    </div>
+  )
+
+  const noi=p.rent-p.exp, monthly=p.mortgage*(p.rate/100)/12
+
+  const saveProperty = async (form) => {
+    setSaving(true)
+    const body={...form,value:Number(form.value),mortgage:Number(form.mortgage),rate:Number(form.rate),rent:Number(form.rent),exp:Number(form.exp),sqft:form.sqft?Number(form.sqft):undefined,yr:form.yr?Number(form.yr):undefined}
+    try { await axios.put(`${API}/properties/${p.id}`,body); await onRefresh(); setShowForm(false) }
+    catch(e) { alert('Save failed: '+e.message) }
+    setSaving(false)
+  }
+  const deleteProperty = async () => {
+    if (!window.confirm(`Delete "${p.name}"?`)) return
+    setSaving(true)
+    try { await axios.delete(`${API}/properties/${p.id}`); await onRefresh() }
+    catch(e) { alert('Delete failed: '+e.message) }
+    setSaving(false)
+  }
+
   return (
     <div>
+      {showForm && <PropertyForm initial={p} onSave={saveProperty} onDelete={deleteProperty} onClose={()=>setShowForm(false)} saving={saving}/>}
       <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:20}}>
         <div style={{width:48,height:48,borderRadius:'var(--radius-md)',background:'var(--blue-light)',display:'flex',alignItems:'center',justifyContent:'center'}}>
           <Icon name="ti-building-estate" size={24} color={p.color}/>
         </div>
-        <div>
+        <div style={{flex:1}}>
           <h2 style={{margin:0,fontSize:20,fontWeight:500}}>{p.name}</h2>
-          <p style={{margin:0,fontSize:13,color:'var(--text-secondary)'}}>{p.addr} · {p.sqft?.toLocaleString()} sqft · Built {p.yr}</p>
+          <p style={{margin:0,fontSize:13,color:'var(--text-secondary)'}}>{p.addr}{p.sqft?` · ${p.sqft.toLocaleString()} sqft`:''}{p.yr?` · Built ${p.yr}`:''}</p>
         </div>
+        <button onClick={()=>setShowForm(true)} style={{fontSize:12}}>
+          <Icon name="ti-pencil" size={13}/> Edit
+        </button>
       </div>
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:16}}>
         {[['Market Value',fd(p.value)],['Equity',fd(p.value-p.mortgage)],['Mortgage',fd(p.mortgage)],['Rate',p.rate+'%']].map(([l,v])=>(
@@ -318,7 +582,12 @@ function PropertyDetail({propId, properties}) {
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
         <div className="card">
           <p style={{fontSize:14,fontWeight:500,margin:'0 0 12px'}}>Monthly cash flow</p>
-          {[['Rental income',p.rent,true],['Mortgage payment',-Math.round(monthly),false],['Other expenses',-(p.exp-Math.round(monthly)),false],['Net cash flow',noi-Math.round(monthly),noi>Math.round(monthly)]].map(([l,v,pos])=>(
+          {[
+            ['Rental income',    p.rent,                   true],
+            ['Mortgage payment', -Math.round(monthly),      false],
+            ['Other expenses',   -(p.exp-Math.round(monthly)), false],
+            ['Net cash flow',    noi-Math.round(monthly),   noi>Math.round(monthly)],
+          ].map(([l,v,pos])=>(
             <div className="row" key={l}>
               <span style={{color:'var(--text-secondary)'}}>{l}</span>
               <span style={{fontWeight:l==='Net cash flow'?500:400,color:pos?'var(--teal)':'var(--coral)'}}>{v>0?'+':''}{fd(v)}</span>
@@ -327,9 +596,216 @@ function PropertyDetail({propId, properties}) {
         </div>
         <div className="card">
           <p style={{fontSize:14,fontWeight:500,margin:'0 0 12px'}}>Mortgage details</p>
-          {[['Balance',fd(p.mortgage)],['Rate',p.rate+'%'],['Monthly payment',fd(Math.round(monthly))],['LTV',((p.mortgage/p.value)*100).toFixed(1)+'%'],['Annual interest',fd(Math.round(p.mortgage*p.rate/100))]].map(([l,v])=>(
+          {[
+            ['Balance',          fd(p.mortgage)],
+            ['Rate',             p.rate+'%'],
+            ['Monthly payment',  fd(Math.round(monthly))],
+            ['LTV',              ((p.mortgage/p.value)*100).toFixed(1)+'%'],
+            ['Annual interest',  fd(Math.round(p.mortgage*(p.rate/100)))],
+          ].map(([l,v])=>(
             <div className="row" key={l}><span style={{color:'var(--text-secondary)'}}>{l}</span><span style={{fontWeight:500}}>{v}</span></div>
           ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Bank Statement Auto-Importer Modal ────────────────────────────────
+const BANK_COLORS = {
+  chase:      { bg:'var(--blue-light)',   fg:'var(--blue)',   border:'var(--blue)'   },
+  bofa:       { bg:'var(--coral-light)',  fg:'var(--coral)',  border:'var(--coral)'  },
+  wellsfargo: { bg:'var(--amber-light)',  fg:'var(--amber)',  border:'var(--amber)'  },
+}
+
+function ScraperModal({ onClose, onDone }) {
+  const [banks, setBanks]           = useState([])
+  const [selectedBank, setSelectedBank] = useState(null)
+  const [sessionId, setSessionId]   = useState(null)
+  const [logs, setLogs]             = useState([])
+  const [status, setStatus]         = useState('idle')   // idle | starting | waiting_login | scraping | done | error | cancelled
+  const [downloadCount, setDownloadCount] = useState(0)
+  const [errorMsg, setErrorMsg]     = useState(null)
+  const logsEndRef                  = useRef(null)
+  const evtSourceRef                = useRef(null)
+
+  useEffect(() => {
+    axios.get(`${API}/scraper/banks`).then(r => setBanks(r.data || [])).catch(() => {})
+    return () => evtSourceRef.current?.close()
+  }, [])
+
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior:'smooth' })
+  }, [logs])
+
+  const startScraper = async () => {
+    if (!selectedBank) return
+    setLogs([])
+    setStatus('starting')
+    setDownloadCount(0)
+    setErrorMsg(null)
+    try {
+      const res = await axios.post(`${API}/scraper/start`, { bank: selectedBank })
+      const sid = res.data.sessionId
+      setSessionId(sid)
+
+      // Connect to SSE progress stream
+      const es = new EventSource(`${API}/scraper/progress/${sid}`)
+      evtSourceRef.current = es
+
+      es.onmessage = (e) => {
+        const evt = JSON.parse(e.data)
+        if (evt.type === 'end') {
+          setStatus(evt.status)
+          setDownloadCount(evt.count || 0)
+          if (evt.error) setErrorMsg(evt.error)
+          es.close()
+          if (evt.status === 'done') onDone?.()
+        } else if (evt.type === 'info' || evt.type === 'prompt' || evt.type === 'done' || evt.type === 'warn' || evt.type === 'error') {
+          setStatus(prev => evt.type === 'prompt' ? 'waiting_login' : prev === 'waiting_login' ? 'waiting_login' : 'scraping')
+          setLogs(prev => [...prev, evt])
+        }
+      }
+      es.onerror = () => {
+        setStatus(s => s === 'done' || s === 'error' || s === 'cancelled' ? s : 'error')
+        es.close()
+      }
+    } catch(e) {
+      setStatus('error')
+      setErrorMsg(e.response?.data?.error || e.message)
+    }
+  }
+
+  const cancelScraper = async () => {
+    if (sessionId) {
+      await axios.post(`${API}/scraper/cancel/${sessionId}`).catch(() => {})
+    }
+    evtSourceRef.current?.close()
+    setStatus('cancelled')
+  }
+
+  const logColor = (type) => {
+    if (type === 'error') return 'var(--coral)'
+    if (type === 'prompt') return 'var(--amber)'
+    if (type === 'done')  return 'var(--teal)'
+    if (type === 'warn')  return 'var(--amber)'
+    return 'var(--text-secondary)'
+  }
+
+  const isRunning = status === 'starting' || status === 'waiting_login' || status === 'scraping'
+  const isDone    = status === 'done'
+  const isFailed  = status === 'error' || status === 'cancelled'
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', zIndex:1200, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+      <div className="card" style={{ width:'100%', maxWidth:560, maxHeight:'90vh', display:'flex', flexDirection:'column', padding:0, overflow:'hidden' }}>
+
+        {/* Header */}
+        <div style={{ display:'flex', alignItems:'center', gap:10, padding:'18px 20px 16px', borderBottom:'0.5px solid var(--border)' }}>
+          <div style={{ width:36, height:36, borderRadius:'var(--radius-md)', background:'var(--purple-light)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <i className="ti ti-file-download" style={{ fontSize:18, color:'var(--purple)' }} aria-hidden="true"/>
+          </div>
+          <div style={{ flex:1 }}>
+            <p style={{ fontSize:15, fontWeight:600, margin:0 }}>Auto-Import Bank Statements</p>
+            <p style={{ fontSize:12, color:'var(--text-secondary)', margin:0 }}>Opens a browser — log in, handle MFA, then it downloads everything automatically</p>
+          </div>
+          {!isRunning && (
+            <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--text-muted)', fontSize:18, padding:0, lineHeight:1 }}>✕</button>
+          )}
+        </div>
+
+        {/* Body */}
+        <div style={{ flex:1, overflowY:'auto', padding:'16px 20px' }}>
+
+          {/* Bank selector (only shown before starting) */}
+          {status === 'idle' && (
+            <>
+              <p style={{ fontSize:13, fontWeight:500, margin:'0 0 10px' }}>Select your bank</p>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, marginBottom:16 }}>
+                {banks.map(b => {
+                  const c = BANK_COLORS[b.id] || { bg:'var(--bg-secondary)', fg:'var(--text-primary)', border:'var(--border)' }
+                  const sel = selectedBank === b.id
+                  return (
+                    <button key={b.id} onClick={() => setSelectedBank(b.id)}
+                      style={{ padding:'10px 8px', borderRadius:'var(--radius-md)', background: sel ? c.bg : 'var(--bg-secondary)', color: sel ? c.fg : 'var(--text-secondary)', border:`1.5px solid ${sel ? c.border : 'var(--border)'}`, fontWeight: sel ? 600 : 400, fontSize:13, cursor:'pointer', transition:'all .15s' }}>
+                      <i className="ti ti-building-bank" style={{ fontSize:16, display:'block', marginBottom:4 }} aria-hidden="true"/>
+                      {b.label}
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div style={{ padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'var(--radius-sm)', borderLeft:'3px solid var(--purple)', fontSize:12, color:'var(--text-secondary)', lineHeight:1.7, marginBottom:16 }}>
+                <strong style={{ color:'var(--text-primary)' }}>How it works:</strong><br/>
+                1. A real Chrome window opens — log in normally and complete any MFA.<br/>
+                2. Once logged in, the scraper navigates to Statements &amp; Documents and downloads every available PDF.<br/>
+                3. All PDFs land in your Data Vault under <em>Bank Statements / {'{Bank}'} /</em>
+              </div>
+            </>
+          )}
+
+          {/* Status badge */}
+          {status !== 'idle' && (
+            <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', borderRadius:'var(--radius-sm)', marginBottom:12,
+              background: isDone ? 'var(--teal-light)' : isFailed ? 'var(--coral-light)' : status === 'waiting_login' ? 'var(--amber-light)' : 'var(--blue-light)',
+              color: isDone ? 'var(--teal)' : isFailed ? 'var(--coral)' : status === 'waiting_login' ? 'var(--amber)' : 'var(--blue)',
+              border: `0.5px solid ${isDone ? 'var(--teal)' : isFailed ? 'var(--coral)' : status === 'waiting_login' ? 'var(--amber)' : 'var(--blue)'}`,
+              fontSize:13, fontWeight:500 }}>
+              <i className={`ti ${isDone ? 'ti-circle-check' : isFailed ? 'ti-circle-x' : isRunning ? 'ti-loader-2 spin' : 'ti-circle'}`} style={{ fontSize:15 }} aria-hidden="true"/>
+              {status === 'starting' && 'Starting browser…'}
+              {status === 'waiting_login' && 'Waiting for you to log in (including MFA)…'}
+              {status === 'scraping' && 'Downloading statements…'}
+              {status === 'done' && `Done — ${downloadCount} PDF${downloadCount !== 1 ? 's' : ''} saved to Data Vault`}
+              {status === 'error' && `Error: ${errorMsg || 'Something went wrong'}`}
+              {status === 'cancelled' && 'Cancelled'}
+            </div>
+          )}
+
+          {/* Log window */}
+          {logs.length > 0 && (
+            <div style={{ background:'var(--bg-secondary)', borderRadius:'var(--radius-sm)', border:'0.5px solid var(--border)', padding:'10px 12px', maxHeight:240, overflowY:'auto', fontFamily:'monospace', fontSize:12, lineHeight:1.7 }}>
+              {logs.map((l, i) => (
+                <div key={i} style={{ color: logColor(l.type) }}>
+                  {l.type === 'prompt' && <i className="ti ti-hand-pointer" style={{ marginRight:6 }} aria-hidden="true"/>}
+                  {l.msg}
+                </div>
+              ))}
+              <div ref={logsEndRef}/>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding:'12px 20px', borderTop:'0.5px solid var(--border)', display:'flex', gap:8, justifyContent:'flex-end' }}>
+          {status === 'idle' && (
+            <>
+              <button onClick={onClose} style={{ background:'var(--bg-secondary)', color:'var(--text-secondary)', borderColor:'var(--border)', fontSize:13 }}>
+                Cancel
+              </button>
+              <button onClick={startScraper} disabled={!selectedBank}
+                style={{ background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)', fontSize:13, opacity: selectedBank ? 1 : 0.5 }}>
+                <i className="ti ti-player-play" aria-hidden="true"/> Start auto-import
+              </button>
+            </>
+          )}
+          {isRunning && (
+            <button onClick={cancelScraper}
+              style={{ background:'var(--coral-light)', color:'var(--coral)', borderColor:'var(--coral)', fontSize:13 }}>
+              <i className="ti ti-player-stop" aria-hidden="true"/> Stop
+            </button>
+          )}
+          {(isDone || isFailed) && (
+            <button onClick={onClose}
+              style={{ background:'var(--bg-secondary)', color:'var(--text-secondary)', borderColor:'var(--border)', fontSize:13 }}>
+              Close
+            </button>
+          )}
+          {isDone && (
+            <button onClick={() => { setStatus('idle'); setSelectedBank(null); setLogs([]); setSessionId(null) }}
+              style={{ background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)', fontSize:13 }}>
+              <i className="ti ti-plus" aria-hidden="true"/> Import another bank
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -346,6 +822,7 @@ function ConnectionsScreen({status, accounts, onSync}) {
   const [connecting, setConnecting]         = useState(false)
   const [stmtResult, setStmtResult]         = useState(null)
   const [showHistoryWarning, setShowHistoryWarning] = useState(false)
+  const [showScraper, setShowScraper]       = useState(false)
 
   const plaidAccounts = (accounts || []).filter(a => a.source === 'plaid')
 
@@ -370,20 +847,6 @@ function ConnectionsScreen({status, accounts, onSync}) {
       setLinkError(e.response?.data?.error || e.message)
       setConnecting(false)
     }
-  }
-
-  // Generate monthly statement PDFs from existing transaction data
-  const generateStatements = async () => {
-    setSyncing(true)
-    setStmtResult(null)
-    try {
-      const r = await axios.post(`${API}/statements/generate`)
-      setStmtResult(r.data)
-      onSync?.()
-    } catch (e) {
-      setStmtResult({ error: e.response?.data?.error || e.message })
-    }
-    setSyncing(false)
   }
 
   // Pull full 2-year transaction history from Plaid then generate all statements
@@ -485,6 +948,10 @@ function ConnectionsScreen({status, accounts, onSync}) {
 
   return (
     <div>
+      {showScraper && (
+        <ScraperModal onClose={() => setShowScraper(false)} onDone={() => onSync?.()} />
+      )}
+
       {linkError && (
         <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'var(--coral-light)', borderRadius:'var(--radius-md)', marginBottom:16, fontSize:13, color:'var(--coral)', border:'0.5px solid var(--coral)' }}>
           <i className="ti ti-alert-circle" style={{ fontSize:15 }} aria-hidden="true"/> {linkError}
@@ -554,12 +1021,6 @@ function ConnectionsScreen({status, accounts, onSync}) {
               </button>
             )}
             {plaidConns.length > 0 && (
-              <button onClick={generateStatements} disabled={syncing || historyRunning}
-                style={{ fontSize:12, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)' }}>
-                <i className="ti ti-file-text" aria-hidden="true"/> {syncing ? 'Generating...' : 'Generate Statements'}
-              </button>
-            )}
-            {plaidConns.length > 0 && (
               <button onClick={() => setShowHistoryWarning(true)} disabled={syncing || historyRunning}
                 title="Pull up to 2 years of transaction history from Plaid, then generate statements for every month found"
                 style={{ fontSize:12, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
@@ -614,6 +1075,25 @@ function ConnectionsScreen({status, accounts, onSync}) {
           <div style={{ padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'var(--radius-sm)', borderLeft:'3px solid var(--coral)', fontSize:12, color:'var(--text-secondary)', lineHeight:1.6 }}>
               QuickBooks integration is not configured yet. Real API keys will be added in a future update.
             </div>
+        </div>
+      </div>
+
+      {/* Auto-Import Bank Statements */}
+      <div className="card" style={{ marginBottom:12 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+          <div style={{ width:38, height:38, borderRadius:'var(--radius-md)', background:'var(--purple-light)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+            <i className="ti ti-file-download" style={{ fontSize:19, color:'var(--purple)' }} aria-hidden="true"/>
+          </div>
+          <div style={{ flex:1 }}>
+            <p style={{ fontSize:14, fontWeight:500, margin:0 }}>Auto-Import Bank Statements</p>
+            <p style={{ fontSize:12, color:'var(--text-secondary)', margin:0 }}>
+              Opens a real browser — you log in, handle MFA, then it automatically downloads every available PDF statement into your Data Vault
+            </p>
+          </div>
+          <button onClick={() => setShowScraper(true)}
+            style={{ fontSize:12, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)', flexShrink:0, whiteSpace:'nowrap' }}>
+            <i className="ti ti-player-play" aria-hidden="true"/> Auto-import PDFs
+          </button>
         </div>
       </div>
 
@@ -894,6 +1374,30 @@ function MainApp({ auth, onLogout }) {
   const [status, setStatus] = useState(null)
   const [accounts, setAccounts] = useState([])
   const [transactions, setTransactions] = useState([])
+  const [enabledClasses, setEnabledClasses] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('enabledClasses') || '[]') } catch { return [] }
+  })
+  const [showAddClass, setShowAddClass] = useState(false)
+  const [addClassPos, setAddClassPos] = useState({top:0, left:0})
+  const addClassRef = useRef(null)
+  const addDropdownRef = useRef(null)
+
+  const toggleClass = (id) => {
+    setEnabledClasses(prev => {
+      const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+      localStorage.setItem('enabledClasses', JSON.stringify(next))
+      return next
+    })
+  }
+  const addClass = (id) => {
+    if (!enabledClasses.includes(id)) {
+      const next = [...enabledClasses, id]
+      setEnabledClasses(next)
+      localStorage.setItem('enabledClasses', JSON.stringify(next))
+    }
+    setShowAddClass(false)
+    go(id, ASSET_CLASSES.find(a => a.id === id)?.label || id)
+  }
   const [properties, setProperties] = useState([])
   const isAdmin = auth?.user?.role === 'admin'
 
@@ -922,26 +1426,38 @@ function MainApp({ auth, onLogout }) {
     return () => { es?.close(); clearTimeout(retryTimer) }
   },[])
 
+  useEffect(() => {
+    if (!showAddClass) return
+    const handler = (e) => {
+      const inBtn = addClassRef.current?.contains(e.target)
+      const inDrop = addDropdownRef.current?.contains(e.target)
+      if (!inBtn && !inDrop) setShowAddClass(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showAddClass])
+
   const drill = (id, label) => { setNav(id); setTrail(prev=>[...prev,{id,label}]) }
   const navBC = idx => { const t=trail.slice(0,idx+1); setTrail(t); setNav(t[t.length-1].id) }
   const go = (id, label) => { setNav(id); setTrail([{id:label||id,label:label||id}]) }
 
   const renderContent = () => {
-    if(nav==='dashboard') return <MainDashboard onDrill={drill} accounts={accounts} properties={properties}/>
-    if(nav==='re') return <RealEstateDash onProp={(id,name)=>drill('prop_'+id,name)} properties={properties}/>
-    if(nav.startsWith('prop_')) return <PropertyDetail propId={nav.replace('prop_','')} properties={properties}/>
+    if(nav==='dashboard') return <MainDashboard onDrill={drill} accounts={accounts} transactions={transactions} properties={properties} onConnect={()=>go('connections','Connections')} enabledClasses={enabledClasses} hasTransactions={transactions.length>0}/>
+    const refreshProps = () => axios.get(`${API}/properties`).then(r=>setProperties(r.data||[])).catch(()=>{})
+    if(nav==='re') return <RealEstateDash onProp={(id,name)=>drill('prop_'+id,name)} properties={properties} onRefresh={refreshProps}/>
+    if(nav.startsWith('prop_')) return <PropertyDetail propId={nav.replace('prop_','')} properties={properties} onRefresh={refreshProps}/>
     if(nav==='personal') return <PersonalSpending transactions={transactions} onUpdate={setTransactions}/>
     if(nav==='transactions') return <TransactionTransfer transactions={transactions} onUpdate={setTransactions}/>
     if(nav==='connections') return <ConnectionsScreen status={status} accounts={accounts} onSync={()=>{ axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])); axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])) }}/>
     if(nav==='equity') return <PlaceholderScreen label="Equities"/>
     if(nav==='retirement') return <PlaceholderScreen label="Retirement"/>
     if(nav==='crypto') return <Crypto/>
-    if(nav==='cash') return <PlaceholderScreen label="Cash Accounts"/>
+    if(nav==='cash') return <Banking accounts={accounts} transactions={transactions}/>
     if(nav==='taxes') return <PlaceholderScreen label="Tax Center"/>
     if(nav==='projections') return <Projections/>
     if(nav==='advisor')    return <Advisor/>
     if(nav==='accounting') return <Accounting/>
-    if(nav==='data')       return <DataVault accounts={accounts} onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])}/>
+    if(nav==='data')       return <DataVault accounts={accounts} transactions={transactions} onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])} onTransactionsChanged={()=>axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])).catch(()=>{})}/>
     if(nav==='settings')   return <SettingsScreen auth={auth}/>
     return null
   }
@@ -963,11 +1479,46 @@ function MainApp({ auth, onLogout }) {
           <nav style={{flex:1,padding:'8px 0',overflowY:'auto'}}>
             {!collapsed && <p style={{fontSize:10,fontWeight:500,color:'var(--text-muted)',margin:'8px 14px 4px',textTransform:'uppercase',letterSpacing:'0.8px'}}>Overview</p>}
             <NavBtn id="dashboard" label="Dashboard" icon="ti-layout-dashboard" active={nav==='dashboard'} collapsed={collapsed} color="var(--blue)" onClick={()=>{ setNav('dashboard'); setTrail([{id:'dashboard',label:'Dashboard'}]) }}/>
-            {!collapsed && <p style={{fontSize:10,fontWeight:500,color:'var(--text-muted)',margin:'12px 14px 4px',textTransform:'uppercase',letterSpacing:'0.8px'}}>Asset Classes</p>}
-            {ASSET_CLASSES.map(a=>(
-              <NavBtn key={a.id} id={a.id} label={a.label} icon={a.icon} active={nav===a.id||nav.startsWith('prop_')&&a.id==='re'} collapsed={collapsed} color={a.color}
-                onClick={()=>{ setNav(a.id); setTrail([{id:'dashboard',label:'Dashboard'},{id:a.id,label:a.label}]) }}/>
-            ))}
+            <NavBtn id="cash" label="Banking" icon="ti-building-bank" active={nav==='cash'} collapsed={collapsed} color="var(--green)" onClick={()=>go('cash','Banking')}/>
+
+            {/* Asset Classes — opt-in */}
+            {!collapsed && (
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',margin:'12px 14px 4px'}}>
+                <p style={{fontSize:10,fontWeight:500,color:'var(--text-muted)',margin:0,textTransform:'uppercase',letterSpacing:'0.8px'}}>Asset Classes</p>
+                <button ref={addClassRef} title="Add asset class"
+                  onClick={e => {
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    setAddClassPos({ top: rect.bottom + 6, left: rect.left })
+                    setShowAddClass(v => !v)
+                  }}
+                  style={{background:'none',border:'none',padding:'2px 4px',color: showAddClass ? 'var(--text-primary)' : 'var(--text-muted)',cursor:'pointer',display:'flex',alignItems:'center',borderRadius:4}}>
+                  <Icon name={showAddClass ? 'ti-x' : 'ti-plus'} size={13}/>
+                </button>
+              </div>
+            )}
+            {collapsed && (
+              <button ref={addClassRef} title="Add asset class"
+                onClick={e => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  setAddClassPos({ top: rect.top, left: rect.right + 6 })
+                  setShowAddClass(v => !v)
+                }}
+                style={{display:'flex',alignItems:'center',justifyContent:'center',width:'100%',padding:'7px 0',background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer'}}>
+                <Icon name="ti-plus" size={15}/>
+              </button>
+            )}
+            {enabledClasses.map(id=>{
+              const a = ASSET_CLASSES.find(x=>x.id===id)
+              if(!a) return null
+              return (
+                <NavBtn key={a.id} id={a.id} label={a.label} icon={a.icon} active={nav===a.id||(nav.startsWith('prop_')&&a.id==='re')} collapsed={collapsed} color={a.color}
+                  onClick={()=>{ setNav(a.id); setTrail([{id:'dashboard',label:'Dashboard'},{id:a.id,label:a.label}]) }}/>
+              )
+            })}
+            {transactions.length > 0 && (
+              <NavBtn id="personal" label="Personal Spending" icon="ti-receipt" active={nav==='personal'} collapsed={collapsed} color="var(--pink)" onClick={()=>go('personal','Personal Spending')}/>
+            )}
+
             {!collapsed && <p style={{fontSize:10,fontWeight:500,color:'var(--text-muted)',margin:'12px 14px 4px',textTransform:'uppercase',letterSpacing:'0.8px'}}>Tools</p>}
             {NAV_TOOLS.filter(t => !t.adminOnly || isAdmin).map(t=>(
               <NavBtn key={t.id} id={t.id} label={t.label} icon={t.icon} active={nav===t.id} collapsed={collapsed} color="var(--blue)"
@@ -998,8 +1549,8 @@ function MainApp({ auth, onLogout }) {
               </p>
             </div>
             <div style={{display:'flex',gap:8}}>
-              <button onClick={()=>go('connections','Connections')} style={{fontSize:12}}>
-                <Icon name="ti-plug" size={14}/> {!collapsed&&'Connections'}
+              <button onClick={()=>go('connections','Connections')} style={{fontSize:12,background:'var(--teal-light)',color:'var(--teal)',borderColor:'var(--teal)'}}>
+                <Icon name="ti-plus" size={14}/> Add Account
               </button>
               <button onClick={()=>go('advisor','AI Advisor')} style={{background:'var(--purple-light)',color:'var(--purple)',borderColor:'var(--purple)',fontSize:12}}>
                 <Icon name="ti-brain" size={14}/> AI Advisor
@@ -1009,6 +1560,29 @@ function MainApp({ auth, onLogout }) {
           {renderContent()}
         </main>
       </div>
+
+      {/* Asset class picker — fixed so it escapes sidebar overflow:hidden */}
+      {showAddClass && (
+        <div ref={addDropdownRef} style={{position:'fixed',top:addClassPos.top,left:addClassPos.left,zIndex:500,background:'var(--bg-primary)',border:'0.5px solid var(--border)',borderRadius:'var(--radius-md)',padding:'6px',minWidth:230,boxShadow:'0 10px 30px rgba(0,0,0,0.4)'}}>
+          <p style={{fontSize:11,color:'var(--text-muted)',margin:'4px 10px 8px',textTransform:'uppercase',letterSpacing:'0.6px'}}>Asset Modules</p>
+          {ASSET_CLASSES.map(a=>{
+            const enabled = enabledClasses.includes(a.id)
+            return (
+              <button key={a.id}
+                onClick={()=> enabled ? toggleClass(a.id) : addClass(a.id)}
+                style={{display:'flex',alignItems:'center',gap:12,width:'100%',padding:'10px 12px',background:'none',border:'none',borderRadius:'var(--radius-sm)',color: enabled ? 'var(--text-primary)' : 'var(--text-secondary)',cursor:'pointer',fontSize:14,textAlign:'left'}}
+                onMouseEnter={e=>e.currentTarget.style.background='var(--bg-secondary)'}
+                onMouseLeave={e=>e.currentTarget.style.background='none'}>
+                <div style={{width:30,height:30,borderRadius:'var(--radius-sm)',background: enabled ? a.color.replace('var(--','var(--').replace(')','-light)') : 'var(--bg-secondary)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                  <Icon name={a.icon} size={16} color={enabled ? a.color : 'var(--text-muted)'}/>
+                </div>
+                <span style={{flex:1}}>{a.label}</span>
+                <Icon name={enabled ? 'ti-x' : 'ti-plus'} size={13} color={enabled ? 'var(--coral)' : 'var(--text-muted)'}/>
+              </button>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

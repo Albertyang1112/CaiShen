@@ -174,10 +174,28 @@ async function generateForUser(userId, makeIO, BASE_VAULT_DIR) {
         .map(k => k.split('::')[1])
     )].sort();
 
+    // Sanitize account name for use as a folder (strip Windows-unsafe chars)
+    const acctFolder = (acct.name || acct.subtype || 'Account')
+      .replace(/[<>:"/\\|?*]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim() || 'Account';
+
     for (const monthStr of months) {
       const [year, month] = monthStr.split('-');
-      const folderPath = `Bank Statements/${acct.institution || 'Unknown'}/${year}`;
-      const fileName   = `${year}-${month} ${acct.name} Statement.pdf`;
+      const folderPath    = `Bank Statements/${acct.institution || 'Unknown'}/${acctFolder}/${year}`;
+      const fileName      = `${year}-${month} ${acct.name} Statement.pdf`;
+
+      // Remove old-format duplicate (Bank Statements/{inst}/{year}/{fileName}) if it exists
+      const oldFolderPath = `Bank Statements/${acct.institution || 'Unknown'}/${year}`;
+      const oldFolder     = meta.folders.find(f => f.path === oldFolderPath);
+      if (oldFolder) {
+        const oldFile = meta.files.find(f => f.folderId === oldFolder.id && f.name === fileName);
+        if (oldFile) {
+          const oldPhys = path.join(vaultDir, oldFolderPath, fileName);
+          if (fs.existsSync(oldPhys)) fs.unlinkSync(oldPhys);
+          meta.files = meta.files.filter(f => f.id !== oldFile.id);
+        }
+      }
 
       const existingFolder = meta.folders.find(f => f.path === folderPath);
       if (existingFolder && meta.files.find(f => f.folderId === existingFolder.id && f.name === fileName)) {
@@ -206,6 +224,24 @@ async function generateForUser(userId, makeIO, BASE_VAULT_DIR) {
       }
     }
   }
+
+  // Clean up any leftover old-format year folders (Bank Statements/{inst}/{year})
+  // that are now empty after file migration
+  meta.folders = meta.folders.filter(f => {
+    const parts = f.path.split('/');
+    // Old format: exactly 3 parts where last part is a 4-digit year
+    if (parts.length === 3 && parts[0] === 'Bank Statements' && /^\d{4}$/.test(parts[2])) {
+      const hasFiles = meta.files.some(file => file.folderId === f.id);
+      if (!hasFiles) {
+        const physPath = path.join(vaultDir, f.path);
+        if (fs.existsSync(physPath)) {
+          try { fs.rmdirSync(physPath); } catch (_) {}
+        }
+        return false; // remove from meta
+      }
+    }
+    return true;
+  });
 
   io.write('vault.json', meta);
   return { generated, skipped };

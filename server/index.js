@@ -9,7 +9,7 @@ const upload  = multer({ storage: multer.memoryStorage() });
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // ── Static client files ───────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, '../client-dist')));
@@ -173,6 +173,41 @@ app.get('/api/settings', (req, res) => res.json(readData('settings.json')));
 
 // ── Routes: User-scoped data ──────────────────────────────────────────
 app.get('/api/accounts',    (req, res) => res.json(readData('accounts.json', req.user?.id)));
+app.post('/api/accounts', (req, res) => {
+  const uid = req.user.id;
+  const accounts = readData('accounts.json', uid) || [];
+  const account = {
+    id:          `manual_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+    name:        req.body.name        || 'Account',
+    institution: req.body.institution || req.body.name || 'Unknown',
+    type:        req.body.type        || 'depository',
+    subtype:     req.body.subtype     || 'checking',
+    balance:     Number(req.body.balance) || 0,
+    last4:       req.body.last4       || null,
+    source:      'manual',
+    lastUpdated: new Date().toISOString(),
+    createdAt:   new Date().toISOString(),
+  };
+  accounts.push(account);
+  writeData('accounts.json', accounts, uid);
+  res.json(account);
+});
+app.patch('/api/accounts/:id', (req, res) => {
+  const uid = req.user.id;
+  const accounts = readData('accounts.json', uid) || [];
+  const idx = accounts.findIndex(a => a.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Not found' });
+  accounts[idx] = { ...accounts[idx], ...req.body, lastUpdated: new Date().toISOString() };
+  writeData('accounts.json', accounts, uid);
+  res.json(accounts[idx]);
+});
+app.delete('/api/accounts/:id', (req, res) => {
+  const uid = req.user.id;
+  const accounts = readData('accounts.json', uid) || [];
+  if (!accounts.find(a => a.id === req.params.id)) return res.status(404).json({ error: 'Not found' });
+  writeData('accounts.json', accounts.filter(a => a.id !== req.params.id), uid);
+  res.json({ success: true });
+});
 app.get('/api/transactions', (req, res) => res.json(readData('transactions.json', req.user?.id)));
 app.get('/api/properties',  (req, res) => res.json(readData('properties.json', req.user?.id)));
 app.get('/api/tax-years',   (req, res) => res.json(readData('tax_years.json', req.user?.id)));
@@ -250,6 +285,10 @@ app.use('/api/plaid', plaidRouter);
 // ── Routes: Statements ───────────────────────────────────────────────
 const { router: stmtRouter, generateForUser } = require('./statements')(makeIO, VAULT_DIR);
 app.use('/api/statements', stmtRouter);
+
+// ── Routes: Bank scraper (Playwright-based PDF downloader) ────────────
+const scraperRouter = require('./bank-scraper')(makeIO, VAULT_DIR);
+app.use('/api/scraper', scraperRouter);
 
 // ── Routes: QuickBooks ────────────────────────────────────────────────
 const { authRouter: qbAuth, apiRouter: qbApi } = require('./quickbooks')(makeIO);

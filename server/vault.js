@@ -160,6 +160,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
   router.delete('/file/:id', (req, res) => {
     try {
       const userId = req.user.id;
+      const io     = makeIO(userId);
       const meta   = readMeta(userId);
       const file   = meta.files.find(f => f.id === req.params.id);
       if (!file) return res.status(404).json({ error: 'Not found' });
@@ -167,6 +168,20 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       meta.files = meta.files.filter(f => f.id !== req.params.id);
       writeMeta(meta, userId);
+
+      // Remove ALL transactions matching this statement's account+month (both plaid and csv_import)
+      const { year, month, account: acctName } = file.tags || {};
+      if (year && month && acctName) {
+        const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+        const accounts = io.read('accounts.json') || [];
+        const acct     = accounts.find(a => a.name === acctName);
+        const txs      = io.read('transactions.json') || [];
+        const filtered = txs.filter(t =>
+          !(t.month === monthStr && (acct ? t.account === acct.id : true))
+        );
+        if (filtered.length !== txs.length) io.write('transactions.json', filtered);
+      }
+
       res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -175,6 +190,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
   router.delete('/folder/:id', (req, res) => {
     try {
       const userId   = req.user.id;
+      const io       = makeIO(userId);
       const vaultDir = getUserVaultDir(userId);
       const meta     = readMeta(userId);
       const folder   = meta.folders.find(f => f.id === req.params.id);
@@ -183,7 +199,9 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
         const children = meta.folders.filter(f => f.parentId === id);
         return [id, ...children.flatMap(c => getAllChildren(c.id))];
       };
-      const allIds     = getAllChildren(folder.id);
+      const allIds       = getAllChildren(folder.id);
+      const deletedFiles = meta.files.filter(f => allIds.includes(f.folderId));
+
       const physicalPath = path.join(vaultDir, folder.path);
       const archivePath  = path.join(vaultDir, '_deleted', `${folder.name}_${Date.now()}`);
       if (fs.existsSync(physicalPath)) {
@@ -193,8 +211,97 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
       meta.folders = meta.folders.filter(f => !allIds.includes(f.id));
       meta.files   = meta.files.filter(f => !allIds.includes(f.folderId));
       writeMeta(meta, userId);
+
+      // Remove ALL transactions (both plaid and csv_import) for every tagged statement file in deleted folders
+      const accounts = io.read('accounts.json') || [];
+      const txs      = io.read('transactions.json') || [];
+      const keysToRemove = new Set();
+      for (const file of deletedFiles) {
+        const { year, month, account: acctName } = file.tags || {};
+        if (!year || !month || !acctName) continue;
+        const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+        const acct     = accounts.find(a => a.name === acctName);
+        const acctId   = acct ? acct.id : null;
+        txs.forEach((t, i) => {
+          if (t.month === monthStr && (!acctId || t.account === acctId))
+            keysToRemove.add(i);
+        });
+      }
+      if (keysToRemove.size > 0) {
+        io.write('transactions.json', txs.filter((_, i) => !keysToRemove.has(i)));
+      }
+
       res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── POST /api/vault/parse-statement/:id — extract transactions via Claude ──
+  router.post('/parse-statement/:id', async (req, res) => {
+    try {
+      const userId  = req.user.id;
+      const io      = makeIO(userId);
+      const meta    = readMeta(userId);
+      const file    = meta.files.find(f => f.id === req.params.id);
+      if (!file)                return res.status(404).json({ error: 'File not found' });
+      if (file.type !== 'pdf') return res.status(400).json({ error: 'Only PDF files can be parsed' });
+
+      const filePath = path.join(getUserVaultDir(userId), file.folderPath, file.name);
+      if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File missing from disk' });
+
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (!apiKey || apiKey === 'your_anthropic_api_key_here') {
+        return res.status(503).json({ error: 'AI Advisor not configured — add ANTHROPIC_API_KEY to .env to enable statement parsing' });
+      }
+
+      const base64 = fs.readFileSync(filePath).toString('base64');
+      const { year, month, account: acctName, institution } = file.tags || {};
+      const periodHint = year ? ` The statement is for ${institution || 'a bank'} — use ${year} as the year for all transaction dates.` : '';
+
+      const axios = require('axios');
+      const response = await axios.post('https://api.anthropic.com/v1/messages', {
+        model: 'claude-opus-4-5',
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+          { type: 'text', text: `Extract every transaction from this bank statement.${periodHint} Return ONLY a raw JSON array — no markdown fences, no explanation. Each element: { "date": "YYYY-MM-DD", "desc": "merchant or description", "amount": -45.23 }. Negative amounts for debits/withdrawals/purchases. Positive for credits/deposits. Include ALL transactions. If the statement period spans two calendar years, use the correct year per transaction date.` }
+        ]}]
+      }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' } });
+
+      const raw = response.data.content[0].text.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(raw);
+
+      // Look up account by name from tags
+      const accounts = io.read('accounts.json') || [];
+      const acct     = accounts.find(a => a.name === acctName) || null;
+
+      const transactions = parsed
+        .filter(t => t.date && t.amount != null && !isNaN(parseFloat(t.amount)))
+        .map((t, i) => {
+          const d = new Date(t.date);
+          return {
+            id:          `pdf_${Date.now()}_${i}`,
+            date:        t.date,
+            desc:        (t.desc || t.description || '').slice(0, 100),
+            amount:      parseFloat(t.amount),
+            category:    'Other',
+            source:      'csv_import',   // treated same as imported data for cleanup purposes
+            month:       isNaN(d) ? (year && month ? `${year}-${String(month).padStart(2,'0')}` : '') : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`,
+            institution: institution || acct?.institution || '',
+          };
+        })
+        .filter(t => t.month);
+
+      res.json({
+        transactions,
+        count:       transactions.length,
+        accountId:   acct?.id   || null,
+        accountName: acctName   || null,
+        institution: institution || null,
+      });
+    } catch (e) {
+      console.error('[vault/parse-statement]', e.response?.data || e.message);
+      res.status(500).json({ error: e.response?.data?.error?.message || e.message });
+    }
   });
 
   // ── PATCH /api/vault/file/:id ─────────────────────────────────────────
@@ -241,6 +348,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
   router.delete('/', (req, res) => {
     try {
       const userId   = req.user.id;
+      const io       = makeIO(userId);
       const vaultDir = getUserVaultDir(userId);
 
       if (fs.existsSync(vaultDir)) {
@@ -248,6 +356,10 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
       }
 
       writeMeta({ folders: [], files: [] }, userId);
+
+      // Remove ALL transactions when vault is wiped (user can re-sync Plaid to restore)
+      io.write('transactions.json', []);
+
       res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
