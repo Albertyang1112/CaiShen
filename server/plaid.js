@@ -80,8 +80,9 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     }));
 
     const existingAccounts = read('accounts.json') || [];
+    // Replace ALL plaid accounts for this institution (handles reconnection with new account IDs)
     write('accounts.json', [
-      ...existingAccounts.filter(a => a.source !== 'plaid' || !plaidAccounts.find(p => p.id === a.id)),
+      ...existingAccounts.filter(a => a.source !== 'plaid' || a.institution !== institution_name),
       ...plaidAccounts
     ]);
 
@@ -209,8 +210,16 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     if (conn && plaidClient) {
       try { await plaidClient.itemRemove({ access_token: conn.access_token }); } catch(e) {}
     }
+    const institutionName = conn?.institution_name;
     connections.plaid = connections.plaid.filter(c => c.item_id !== req.params.itemId);
     io.write('connections.json', connections);
+    // Clean up accounts and transactions for this institution
+    if (institutionName) {
+      const accounts = io.read('accounts.json') || [];
+      io.write('accounts.json', accounts.filter(a => a.source !== 'plaid' || a.institution !== institutionName));
+      const txs = io.read('transactions.json') || [];
+      io.write('transactions.json', txs.filter(t => t.source !== 'plaid' || t.institution !== institutionName));
+    }
     res.json({ success: true });
   });
 

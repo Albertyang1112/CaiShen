@@ -126,22 +126,7 @@ function Breadcrumb({trail, onNav}) {
   )
 }
 
-function StatusBar({status}) {
-  if(!status) return null
-  return (
-    <div style={{display:'flex',alignItems:'center',gap:16,padding:'6px 16px',background:'var(--bg-secondary)',borderBottom:'0.5px solid var(--border)',fontSize:11,color:'var(--text-muted)'}}>
-      <span style={{display:'flex',alignItems:'center',gap:5}}>
-        <span style={{width:6,height:6,borderRadius:'50%',background:status.plaidConfigured?'var(--teal)':'var(--text-muted)',display:'inline-block'}}/>
-        Plaid {status.plaidConfigured?'connected':'not configured'}
-      </span>
-      <span style={{display:'flex',alignItems:'center',gap:5}}>
-        <span style={{width:6,height:6,borderRadius:'50%',background:status.qbConfigured?'var(--teal)':'var(--text-muted)',display:'inline-block'}}/>
-        QuickBooks {status.qbConfigured?'connected':'not configured'}
-      </span>
-      <span style={{marginLeft:'auto'}}>CaiShen v1.0 · Local</span>
-    </div>
-  )
-}
+function StatusBar() { return null }
 
 // ── Donut chart ───────────────────────────────────────────────────────
 function DonutChart({data, size=180, nw=0}) {
@@ -971,7 +956,7 @@ function ConnectionsScreen({status, accounts, onSync}) {
         </div>
       )}
 
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:20 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:12, marginBottom:20 }}>
 
         {/* Plaid */}
         <div className="card">
@@ -1058,24 +1043,6 @@ function ConnectionsScreen({status, accounts, onSync}) {
           </div>
         )}
 
-        {/* QuickBooks */}
-        <div className="card">
-          <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
-            <div style={{ width:38, height:38, borderRadius:'var(--radius-md)', background:'var(--coral-light)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-              <i className="ti ti-file-spreadsheet" style={{ fontSize:19, color:'var(--coral)' }} aria-hidden="true"/>
-            </div>
-            <div>
-              <p style={{ fontSize:14, fontWeight:500, margin:0 }}>QuickBooks</p>
-              <p style={{ fontSize:12, color:'var(--coral)', margin:0, display:'flex', alignItems:'center', gap:4 }}>
-                  <i className="ti ti-circle-x" style={{ fontSize:13 }} aria-hidden="true"/> Keys not configured
-                </p>
-            </div>
-          </div>
-
-          <div style={{ padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'var(--radius-sm)', borderLeft:'3px solid var(--coral)', fontSize:12, color:'var(--text-secondary)', lineHeight:1.6 }}>
-              QuickBooks integration is not configured yet. Real API keys will be added in a future update.
-            </div>
-        </div>
       </div>
 
       {/* Auto-Import Bank Statements */}
@@ -1097,26 +1064,6 @@ function ConnectionsScreen({status, accounts, onSync}) {
         </div>
       </div>
 
-      {/* Setup checklist */}
-      <div className="card">
-        <p style={{ fontSize:14, fontWeight:500, margin:'0 0 4px' }}>Setup checklist</p>
-        <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'0 0 14px' }}>Complete these steps to activate live data</p>
-        {[
-          { label:'Node.js installed',                                          done:true },
-          { label:'CaiShen server running',                                     done:true },
-          { label:'Plaid account created at plaid.com',                         done:status?.plaidConfigured },
-          { label:'Plaid keys added to .env',                                   done:status?.plaidConfigured },
-          { label:'Bank account connected via Plaid',                           done:plaidConns.length>0 },
-          { label:'QuickBooks developer account at developer.intuit.com',       done:false },
-          { label:'QuickBooks keys added to .env',                              done:false },
-          { label:'QuickBooks account connected',                               done:false },
-        ].map((item,i)=>(
-          <div key={i} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 0', borderBottom:'0.5px solid var(--border)' }}>
-            <i className={`ti ${item.done?'ti-circle-check':'ti-circle'}`} style={{ fontSize:16, color:item.done?'var(--teal)':'var(--text-muted)', flexShrink:0 }} aria-hidden="true"/>
-            <span style={{ fontSize:13, color:item.done?'var(--text-primary)':'var(--text-secondary)' }}>{item.label}</span>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }
