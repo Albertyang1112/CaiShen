@@ -16,7 +16,8 @@ jobs:
           key: ${{ secrets.DO_SSH_KEY }}
           script: |
             cd /var/www/caishen
-            git pull origin main
+            git fetch origin
+            git reset --hard origin/main
             npm install --production
             pm2 restart caishen
             pm2 save
