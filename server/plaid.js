@@ -2,6 +2,7 @@ const { PlaidApi, PlaidEnvironments, Configuration } = require('plaid');
 const express = require('express');
 const path    = require('path');
 const fs      = require('fs');
+const { verifyUser } = require('./verify');
 
 const PLAID_CAT_MAP = {
   FOOD_AND_DRINK:           'Dining',
@@ -126,6 +127,8 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     updated.plaid = updated.plaid.map(c => ({ ...c, lastSync: new Date().toISOString() }));
     io.write('connections.json', updated);
     notifyClients();
+    // Run verification checks and print report to server terminal
+    try { verifyUser(userId, io); } catch (e) { console.error('[Verify] Error:', e.message); }
     return { synced: results.length, results };
   }
 
@@ -245,6 +248,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
           const idx = updated.plaid.findIndex(c => c.item_id === item_id);
           if (idx >= 0) { updated.plaid[idx].lastSync = new Date().toISOString(); io.write('connections.json', updated); }
           notifyClients();
+          try { verifyUser(uid, io); } catch (e) { console.error('[Verify] Error:', e.message); }
         })
         .catch(e => console.error(`[Webhook] Sync error:`, e.message));
       break;

@@ -259,15 +259,12 @@ function MainDashboard({onDrill, accounts, transactions=[], properties, onConnec
 
   return (
     <div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:12}}>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:24}}>
         <MetricCard label="Net Worth" value={fd(nw)} icon="ti-crown" iconColor="var(--amber)"/>
         <MetricCard label="Total Assets" value={fd(totalAssets)} icon="ti-chart-pie" iconColor="var(--blue)"/>
         <MetricCard label="RE Equity" value={fd(reEquity)} sub={reVal>0?((reEquity/reVal)*100).toFixed(0)+'% of RE value':undefined} subColor="var(--teal)" icon="ti-building-estate" iconColor="var(--teal)"/>
         <MetricCard label="Monthly NOI" value={fd(noi)} sub={noi>0?fd(noi*12)+'/year':undefined} subColor="var(--teal)" icon="ti-cash" iconColor="var(--teal)"/>
       </div>
-
-      {/* Net worth verification — account breakdown + duplicate detection */}
-      {accounts.length > 0 && <NetWorthVerification accounts={accounts} />}
 
       {/* Legend includes all enabled classes even at $0; donut slices only non-zero */}
       {(() => {

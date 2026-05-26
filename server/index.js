@@ -647,6 +647,17 @@ app.get('/{*path}', (req, res) => {
     console.log(`✓ Auto-sync every ${intervalMinutes} minutes`);
     console.log(`\nOpen http://localhost:${PORT} in your browser\n`);
     try { require('open')(`http://localhost:${PORT}`); } catch(e) {}
+
+    // Run startup verification for all existing users
+    const { verifyUser } = require('./verify');
+    try {
+      const users = fs.existsSync(USERS_DIR) ? fs.readdirSync(USERS_DIR) : [];
+      for (const uid of users) {
+        const io = makeIO(uid);
+        const accts = io.read('accounts.json') || [];
+        if (accts.length > 0) verifyUser(uid, io);
+      }
+    } catch (e) { console.error('[Verify] Startup check error:', e.message); }
   });
 
 })().catch(e => {
