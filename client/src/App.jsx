@@ -259,12 +259,15 @@ function MainDashboard({onDrill, accounts, transactions=[], properties, onConnec
 
   return (
     <div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:24}}>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:12}}>
         <MetricCard label="Net Worth" value={fd(nw)} icon="ti-crown" iconColor="var(--amber)"/>
         <MetricCard label="Total Assets" value={fd(totalAssets)} icon="ti-chart-pie" iconColor="var(--blue)"/>
         <MetricCard label="RE Equity" value={fd(reEquity)} sub={reVal>0?((reEquity/reVal)*100).toFixed(0)+'% of RE value':undefined} subColor="var(--teal)" icon="ti-building-estate" iconColor="var(--teal)"/>
         <MetricCard label="Monthly NOI" value={fd(noi)} sub={noi>0?fd(noi*12)+'/year':undefined} subColor="var(--teal)" icon="ti-cash" iconColor="var(--teal)"/>
       </div>
+
+      {/* Net worth verification — account breakdown + duplicate detection */}
+      {accounts.length > 0 && <NetWorthVerification accounts={accounts} />}
 
       {/* Legend includes all enabled classes even at $0; donut slices only non-zero */}
       {(() => {
@@ -797,6 +800,248 @@ function ScraperModal({ onClose, onDone }) {
   )
 }
 
+// ── Statements Panel ──────────────────────────────────────────────────
+const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+function StatementsPanel() {
+  const [activeTab, setActiveTab]   = useState('monthly')
+  const [months, setMonths]         = useState([])
+  const [loading, setLoading]       = useState(true)
+  const [generating, setGenerating] = useState({})
+  const [genAllBusy, setGenAllBusy] = useState(false)
+  const [expandedAcct, setExpandedAcct] = useState(null)
+  const [result, setResult]         = useState(null)
+
+  const fetchMonths = async () => {
+    setLoading(true)
+    try {
+      const r = await axios.get(`${API}/statements/months`)
+      const data = Array.isArray(r.data) ? r.data : []
+      setMonths(data)
+      if (data.length > 0 && !expandedAcct) setExpandedAcct(data[0].id)
+    } catch {}
+    setLoading(false)
+  }
+
+  useEffect(() => { fetchMonths() }, [])
+
+  const generateOne = async (accountId, month) => {
+    const key = `${accountId}:${month}`
+    setGenerating(g => ({ ...g, [key]: true }))
+    try {
+      await axios.post(`${API}/statements/generate-single`, { accountId, month })
+      await fetchMonths()
+    } catch (e) {
+      setResult({ error: e.response?.data?.error || e.message })
+    }
+    setGenerating(g => ({ ...g, [key]: false }))
+  }
+
+  const generateAll = async () => {
+    setGenAllBusy(true); setResult(null)
+    try {
+      const r = await axios.post(`${API}/statements/generate`)
+      setResult(r.data)
+      await fetchMonths()
+    } catch (e) {
+      setResult({ error: e.response?.data?.error || e.message })
+    }
+    setGenAllBusy(false)
+  }
+
+  const totalMissing = months.reduce((s, a) => s + (a.missingCount || 0), 0)
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
+        <div style={{ width:38, height:38, borderRadius:'var(--radius-md)', background:'var(--teal-light)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+          <i className="ti ti-file-description" style={{ fontSize:19, color:'var(--teal)' }} aria-hidden="true"/>
+        </div>
+        <div style={{ flex:1 }}>
+          <p style={{ fontSize:14, fontWeight:500, margin:0 }}>Statements</p>
+          <p style={{ fontSize:12, color:'var(--text-secondary)', margin:0 }}>
+            {loading ? 'Checking…' : totalMissing > 0 ? `${totalMissing} statement${totalMissing !== 1 ? 's' : ''} not yet generated` : 'All statements up to date'}
+          </p>
+        </div>
+        {!loading && totalMissing > 0 && (
+          <button onClick={generateAll} disabled={genAllBusy}
+            style={{ fontSize:12, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)', whiteSpace:'nowrap' }}>
+            <i className={`ti ${genAllBusy ? 'ti-loader-2 spin' : 'ti-wand'}`} aria-hidden="true"/>
+            {' '}{genAllBusy ? 'Generating…' : `Generate ${totalMissing} Missing`}
+          </button>
+        )}
+      </div>
+
+      {/* Result banner */}
+      {result && (
+        <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', borderRadius:'var(--radius-sm)', background: result.error ? 'var(--coral-light)' : 'var(--teal-light)', border:`0.5px solid ${result.error ? 'var(--coral)' : 'var(--teal)'}`, color: result.error ? 'var(--coral)' : 'var(--teal)', fontSize:12, marginBottom:12 }}>
+          <i className={`ti ${result.error ? 'ti-alert-circle' : 'ti-circle-check'}`} aria-hidden="true"/>
+          {result.error || (result.generated === 0
+            ? `All statements already exist (${result.skipped} total)`
+            : `Generated ${result.generated} PDF${result.generated !== 1 ? 's' : ''} → Data Vault`)}
+          <button onClick={() => setResult(null)} style={{ marginLeft:'auto', background:'none', border:'none', color:'inherit', padding:0, cursor:'pointer' }}>✕</button>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div style={{ display:'flex', borderBottom:'0.5px solid var(--border)', marginBottom:12 }}>
+        {[['monthly','Monthly Statements','ti-calendar-month'],['tax','Tax Forms','ti-receipt-tax'],['escrow','Escrow','ti-home-dollar']].map(([tab, label, icon]) => (
+          <button key={tab} onClick={() => setActiveTab(tab)}
+            style={{ fontSize:12, padding:'7px 14px', border:'none', borderRadius:0, borderBottom: activeTab === tab ? '2px solid var(--teal)' : '2px solid transparent', background:'none', color: activeTab === tab ? 'var(--teal)' : 'var(--text-secondary)', fontWeight: activeTab === tab ? 500 : 400, cursor:'pointer', display:'flex', alignItems:'center', gap:5 }}>
+            <i className={`ti ${icon}`} aria-hidden="true"/>{label}
+          </button>
+        ))}
+      </div>
+
+      {/* Monthly tab */}
+      {activeTab === 'monthly' && (
+        loading ? (
+          <div style={{ padding:'16px', textAlign:'center', color:'var(--text-secondary)', fontSize:12 }}>
+            <i className="ti ti-loader-2 spin" aria-hidden="true"/> Loading statement availability…
+          </div>
+        ) : months.length === 0 ? (
+          <p style={{ fontSize:12, color:'var(--text-secondary)', textAlign:'center', padding:'16px 0 4px' }}>
+            No Plaid accounts connected. Connect a bank to start generating statements.
+          </p>
+        ) : (
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            {months.map(acct => (
+              <div key={acct.id} style={{ border:`0.5px solid ${acct.missingCount > 0 ? 'var(--border)' : 'var(--teal)'}`, borderRadius:'var(--radius-sm)', overflow:'hidden' }}>
+                {/* Account header row */}
+                <button onClick={() => setExpandedAcct(expandedAcct === acct.id ? null : acct.id)}
+                  style={{ width:'100%', display:'flex', alignItems:'center', gap:10, padding:'9px 12px', background:'var(--bg-secondary)', border:'none', cursor:'pointer', borderBottom: expandedAcct === acct.id ? '0.5px solid var(--border)' : 'none' }}>
+                  <i className="ti ti-building-bank" style={{ fontSize:14, color:'var(--blue)', flexShrink:0 }} aria-hidden="true"/>
+                  <span style={{ fontSize:13, fontWeight:500, flex:1, textAlign:'left', color:'var(--text-primary)' }}>
+                    {acct.name}{acct.last4 ? ` ••••${acct.last4}` : ''}
+                    <span style={{ color:'var(--text-muted)', fontWeight:400, fontSize:11 }}>{' '}({acct.institution})</span>
+                  </span>
+                  <span style={{ fontSize:11, color: acct.missingCount > 0 ? 'var(--amber)' : 'var(--teal)', flexShrink:0 }}>
+                    {acct.missingCount > 0 ? `${acct.missingCount} missing` : '✓ all generated'}
+                  </span>
+                  <i className={`ti ${expandedAcct === acct.id ? 'ti-chevron-up' : 'ti-chevron-down'}`} style={{ fontSize:12, color:'var(--text-muted)', flexShrink:0 }} aria-hidden="true"/>
+                </button>
+
+                {/* Month grid */}
+                {expandedAcct === acct.id && (
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(120px, 1fr))', gap:6, padding:12 }}>
+                    {acct.months.map(m => {
+                      const key = `${acct.id}:${m.month}`
+                      const busy = !!generating[key]
+                      const [y, mo] = m.month.split('-')
+                      const label  = `${MONTH_NAMES[parseInt(mo,10)-1]} ${y}`
+                      return (
+                        <div key={m.month} style={{ display:'flex', flexDirection:'column', gap:4, padding:'8px 10px', background:'var(--bg-card)', borderRadius:'var(--radius-sm)', border:`0.5px solid ${m.hasStatement ? 'var(--teal)' : 'var(--border)'}` }}>
+                          <span style={{ fontSize:12, fontWeight:500, color: m.hasStatement ? 'var(--teal)' : 'var(--text-primary)' }}>{label}</span>
+                          <span style={{ fontSize:10, color:'var(--text-muted)' }}>{m.txCount} transaction{m.txCount !== 1 ? 's' : ''}</span>
+                          {m.hasStatement ? (
+                            <span style={{ fontSize:11, color:'var(--teal)', display:'flex', alignItems:'center', gap:4 }}>
+                              <i className="ti ti-circle-check" aria-hidden="true"/> PDF ready
+                            </span>
+                          ) : (
+                            <button onClick={() => generateOne(acct.id, m.month)} disabled={busy}
+                              style={{ fontSize:10, padding:'3px 8px', background:'var(--blue-light)', color:'var(--blue)', border:'0.5px solid var(--blue)', borderRadius:'var(--radius-sm)', cursor: busy ? 'wait' : 'pointer', display:'flex', alignItems:'center', gap:4 }}>
+                              {busy ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Generating…</> : <><i className="ti ti-sparkles" aria-hidden="true"/> Generate</>}
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )
+      )}
+
+      {/* Tax Forms tab (placeholder) */}
+      {activeTab === 'tax' && (
+        <div style={{ padding:'24px', textAlign:'center', color:'var(--text-secondary)' }}>
+          <i className="ti ti-receipt-tax" style={{ fontSize:36, display:'block', marginBottom:10, color:'var(--text-muted)' }} aria-hidden="true"/>
+          <p style={{ fontSize:13, margin:'0 0 6px', color:'var(--text-primary)', fontWeight:500 }}>Tax form generation coming soon</p>
+          <p style={{ fontSize:12, color:'var(--text-muted)', margin:0 }}>Will include Schedule A, 1098, and 1099 summaries from your transaction data.</p>
+        </div>
+      )}
+
+      {/* Escrow tab (placeholder) */}
+      {activeTab === 'escrow' && (
+        <div style={{ padding:'24px', textAlign:'center', color:'var(--text-secondary)' }}>
+          <i className="ti ti-home-dollar" style={{ fontSize:36, display:'block', marginBottom:10, color:'var(--text-muted)' }} aria-hidden="true"/>
+          <p style={{ fontSize:13, margin:'0 0 6px', color:'var(--text-primary)', fontWeight:500 }}>Escrow statement generation coming soon</p>
+          <p style={{ fontSize:12, color:'var(--text-muted)', margin:0 }}>Auto-generate monthly escrow reports per property once linked.</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Net Worth Verification ────────────────────────────────────────────
+function NetWorthVerification({ accounts }) {
+  const [expanded, setExpanded] = useState(false)
+
+  // Group by institution
+  const byInst = {}
+  for (const a of accounts) {
+    const k = a.institution || 'Unknown'
+    if (!byInst[k]) byInst[k] = []
+    byInst[k].push(a)
+  }
+
+  // Flag institutions where same name appears >1 time (likely duplicate)
+  const dupWarnings = Object.entries(byInst)
+    .filter(([, accts]) => {
+      const names = accts.map(a => a.name?.toLowerCase().trim())
+      return names.length !== new Set(names).size
+    })
+    .map(([inst]) => inst)
+
+  const fd2 = n => (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits:0, maximumFractionDigits:0 })
+  const hasDups = dupWarnings.length > 0
+
+  return (
+    <div style={{ marginBottom:16 }}>
+      <button onClick={() => setExpanded(e => !e)}
+        style={{ width:'100%', display:'flex', alignItems:'center', gap:8, padding:'8px 12px', background: hasDups ? 'var(--amber-light,rgba(180,120,20,0.08))' : 'rgba(4,126,87,0.06)', border:`0.5px solid ${hasDups ? 'var(--amber)' : 'var(--teal)'}`, borderRadius:'var(--radius-sm)', cursor:'pointer', color: hasDups ? 'var(--amber)' : 'var(--teal)', fontSize:12 }}>
+        <i className={`ti ${hasDups ? 'ti-alert-triangle' : 'ti-shield-check'}`} style={{ fontSize:14 }} aria-hidden="true"/>
+        {hasDups
+          ? `⚠ Possible duplicate accounts in: ${dupWarnings.join(', ')} — expand to review`
+          : `Account data verified · ${accounts.length} account${accounts.length !== 1 ? 's' : ''} across ${Object.keys(byInst).length} institution${Object.keys(byInst).length !== 1 ? 's' : ''}`}
+        <i className={`ti ${expanded ? 'ti-chevron-up' : 'ti-chevron-down'}`} style={{ fontSize:12, marginLeft:'auto', color:'inherit', opacity:0.7 }} aria-hidden="true"/>
+      </button>
+
+      {expanded && (
+        <div style={{ marginTop:8, border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)', overflow:'hidden' }}>
+          {Object.entries(byInst).map(([inst, accts], idx) => {
+            const isDup = dupWarnings.includes(inst)
+            const total = accts.reduce((s, a) => s + (a.availableBalance ?? a.balance ?? 0), 0)
+            return (
+              <div key={inst} style={{ borderBottom: idx < Object.keys(byInst).length - 1 ? '0.5px solid var(--border)' : 'none' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', background:'var(--bg-secondary)' }}>
+                  <i className="ti ti-building-bank" style={{ fontSize:13, color: isDup ? 'var(--amber)' : 'var(--blue)', flexShrink:0 }} aria-hidden="true"/>
+                  <span style={{ fontSize:12, fontWeight:500, flex:1 }}>{inst}</span>
+                  {isDup && <span style={{ fontSize:10, color:'var(--amber)', background:'rgba(180,120,20,0.12)', padding:'2px 6px', borderRadius:'var(--radius-sm)' }}>possible duplicate</span>}
+                  <span style={{ fontSize:12, fontWeight:500, color: total >= 0 ? 'var(--teal)' : 'var(--coral)' }}>{fd2(total)}</span>
+                </div>
+                {accts.map((a, i) => (
+                  <div key={a.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'5px 12px 5px 34px', borderTop:'0.5px solid var(--border)' }}>
+                    <span style={{ fontSize:11, flex:1, color:'var(--text-secondary)' }}>
+                      {a.name}{a.last4 ? ` ••••${a.last4}` : ''}
+                      <span style={{ color:'var(--text-muted)', marginLeft:5, fontSize:10 }}>{a.subtype || a.type || ''}</span>
+                    </span>
+                    <span style={{ fontSize:11, color: (a.availableBalance ?? a.balance ?? 0) >= 0 ? 'var(--text-primary)' : 'var(--coral)', fontVariantNumeric:'tabular-nums' }}>
+                      {fd2(a.availableBalance ?? a.balance ?? 0)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ConnectionsScreen({status, accounts, onSync}) {
   const [syncing, setSyncing]               = useState(false)
   const [historyRunning, setHistoryRunning] = useState(false)
@@ -1063,6 +1308,9 @@ function ConnectionsScreen({status, accounts, onSync}) {
           </button>
         </div>
       </div>
+
+      {/* Statement Generation Panel */}
+      <StatementsPanel />
 
     </div>
   )

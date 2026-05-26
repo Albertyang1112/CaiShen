@@ -261,5 +261,93 @@ module.exports = function(makeIO, BASE_VAULT_DIR) {
     }
   });
 
+  // ── GET /months — available months per account with statement existence ─
+  router.get('/months', (req, res) => {
+    const io       = makeIO(req.user.id);
+    const accounts = io.read('accounts.json')    || [];
+    const allTxs   = io.read('transactions.json') || [];
+    const meta     = io.read('vault.json')        || { folders: [], files: [] };
+
+    const plaidAccts = accounts.filter(a => a.source === 'plaid');
+    const result = plaidAccts.map(acct => {
+      // Count transactions per month
+      const monthMap = {};
+      for (const tx of allTxs) {
+        if (tx.account !== acct.id || tx.pending || !tx.month) continue;
+        monthMap[tx.month] = (monthMap[tx.month] || 0) + 1;
+      }
+      const acctFolder = (acct.name || acct.subtype || 'Account')
+        .replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, ' ').trim() || 'Account';
+
+      const months = Object.entries(monthMap).map(([monthStr, txCount]) => {
+        const [year, month] = monthStr.split('-');
+        const folderPath    = `Bank Statements/${acct.institution || 'Unknown'}/${acctFolder}/${year}`;
+        const fileName      = `${year}-${month} ${acct.name} Statement.pdf`;
+        const folder        = meta.folders.find(f => f.path === folderPath);
+        const hasStatement  = !!(folder && meta.files.find(f => f.folderId === folder.id && f.name === fileName));
+        return { month: monthStr, txCount, hasStatement };
+      }).sort((a, b) => b.month.localeCompare(a.month));
+
+      return {
+        id: acct.id, name: acct.name,
+        institution: acct.institution, last4: acct.last4,
+        months,
+        missingCount: months.filter(m => !m.hasStatement).length,
+      };
+    }).filter(a => a.months.length > 0);
+
+    res.json(result);
+  });
+
+  // ── POST /generate-single — generate one month's statement ─────────────
+  router.post('/generate-single', async (req, res) => {
+    const { accountId, month } = req.body;
+    if (!accountId || !month) return res.status(400).json({ error: 'accountId and month required' });
+
+    const io       = makeIO(req.user.id);
+    const vaultDir = path.join(BASE_VAULT_DIR, 'users', req.user.id);
+    const accounts = io.read('accounts.json')    || [];
+    const allTxs   = io.read('transactions.json') || [];
+    const meta     = io.read('vault.json')        || { folders: [], files: [] };
+
+    const acct = accounts.find(a => a.id === accountId);
+    if (!acct) return res.status(404).json({ error: 'Account not found' });
+
+    const [year, monthNum] = month.split('-');
+    const txs = allTxs.filter(t => t.account === accountId && t.month === month && !t.pending);
+    if (!txs.length) return res.status(400).json({ error: 'No transactions for this month' });
+
+    const acctFolder = (acct.name || acct.subtype || 'Account')
+      .replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, ' ').trim() || 'Account';
+    const folderPath = `Bank Statements/${acct.institution || 'Unknown'}/${acctFolder}/${year}`;
+    const fileName   = `${year}-${monthNum} ${acct.name} Statement.pdf`;
+
+    try {
+      const pdfBuf   = await buildStatementPDF(acct, txs, year, monthNum);
+      const folderId = ensureVaultFolder(meta, folderPath, vaultDir);
+      const physPath = path.join(vaultDir, folderPath);
+      fs.mkdirSync(physPath, { recursive: true });
+      fs.writeFileSync(path.join(physPath, fileName), pdfBuf);
+      // Remove stale entry if any, then insert fresh
+      const existingFolder = meta.folders.find(f => f.path === folderPath);
+      if (existingFolder) {
+        const old = meta.files.find(f => f.folderId === existingFolder.id && f.name === fileName);
+        if (old) meta.files = meta.files.filter(f => f.id !== old.id);
+      }
+      meta.files.push({
+        id: mkFileId(), name: fileName, folderId, folderPath,
+        size: pdfBuf.length, type: 'pdf', mimeType: 'application/pdf',
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        version: 1, tags: { institution: acct.institution, year, month: monthNum, account: acct.name },
+      });
+      io.write('vault.json', meta);
+      console.log(`[Statements] Generated ${folderPath}/${fileName} (user ${req.user.id})`);
+      res.json({ generated: 1, fileName });
+    } catch (e) {
+      console.error('[Statements] generate-single error:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   return { router, generateForUser: (userId) => generateForUser(userId, makeIO, BASE_VAULT_DIR) };
 };

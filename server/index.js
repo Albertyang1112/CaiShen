@@ -38,6 +38,7 @@ const defaultUserFiles = {
   'vault.json':             { folders: [], files: [] },
   'crypto_txns.json':       [],
   'wallets.json':           [],
+  'memory.json':            {},
 };
 
 // Global files (not per-user)
@@ -302,6 +303,51 @@ app.use('/api/advisor', advisorRouter);
 // ── Routes: Accounting ────────────────────────────────────────────────
 const { router: accountingRouter } = require('./accounting')(makeIO);
 app.use('/api/accounting', accountingRouter);
+
+// ── Routes: Memory ────────────────────────────────────────────────────
+const { router: memoryRouter } = require('./memory')(makeIO);
+app.use('/api/memory', memoryRouter);
+
+// ── Import preview — dry-run before actual import ─────────────────────
+app.post('/api/import-history/preview', (req, res) => {
+  const { transactions } = req.body;
+  const uid = req.user.id;
+  if (!Array.isArray(transactions) || !transactions.length)
+    return res.status(400).json({ error: 'No transactions provided' });
+
+  const existing = readData('transactions.json', uid) || [];
+
+  // Build lookup maps
+  const exactKeys  = new Set(
+    existing.map(t => `${t.date}|${Number(t.amount).toFixed(2)}|${String(t.desc||'').toLowerCase().slice(0,20)}`)
+  );
+  const descKeyMap = new Map(); // date|desc20 -> existing tx
+  for (const t of existing) {
+    const k = `${t.date}|${String(t.desc||'').toLowerCase().slice(0,20)}`;
+    if (!descKeyMap.has(k)) descKeyMap.set(k, t);
+  }
+
+  const exactDuplicates = [], conflicts = [], newTxs = [];
+  for (const t of transactions) {
+    const eKey = `${t.date}|${Number(t.amount).toFixed(2)}|${String(t.desc||'').toLowerCase().slice(0,20)}`;
+    const dKey = `${t.date}|${String(t.desc||'').toLowerCase().slice(0,20)}`;
+    if (exactKeys.has(eKey)) {
+      exactDuplicates.push(t);
+    } else if (descKeyMap.has(dKey)) {
+      conflicts.push({ incoming: t, existing: descKeyMap.get(dKey) });
+    } else {
+      newTxs.push(t);
+    }
+  }
+
+  res.json({
+    new:              newTxs.length,
+    duplicates:       exactDuplicates.length,
+    conflicts:        conflicts.length,
+    conflictDetails:  conflicts.slice(0, 15),
+    duplicateDetails: exactDuplicates.slice(0, 10),
+  });
+});
 
 // ── Import historical CSV transactions ───────────────────────────────
 app.post('/api/import-history', (req, res) => {

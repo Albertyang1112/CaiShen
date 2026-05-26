@@ -441,11 +441,13 @@ function parseTransactionsFromText(text) {
 
 // ── File preview modal ────────────────────────────────────────────────
 function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged }) {
-  const [parseState, setParseState] = useState('idle') // idle | loading | done | error
-  const [parseResult, setParseResult] = useState(null)  // { transactions, count, accountId, accountName }
-  const [parseError, setParseError]   = useState(null)
-  const [selAccountId, setSelAccountId] = useState(null)  // user-selected account when tags have none
-  const [importing, setImporting]     = useState(false)
+  const [parseState, setParseState]     = useState('idle') // idle | loading | done | error
+  const [parseResult, setParseResult]   = useState(null)
+  const [parseError, setParseError]     = useState(null)
+  const [selAccountId, setSelAccountId] = useState(null)
+  // Import flow: ready → previewing → reviewing (if conflicts) → importing → done
+  const [importStep, setImportStep]     = useState('ready')
+  const [preview, setPreview]           = useState(null)   // { new, duplicates, conflicts, conflictDetails }
   const [importResult, setImportResult] = useState(null)
   const fileUrl = `${API}/file/${file.id}`
   const isPdf   = file.type === 'pdf'
@@ -456,6 +458,8 @@ function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged 
     setParseError(null)
     setParseResult(null)
     setImportResult(null)
+    setPreview(null)
+    setImportStep('ready')
     try {
       const res = await axios.post(`${API}/parse-statement/${file.id}`)
       setParseResult(res.data)
@@ -467,23 +471,60 @@ function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged 
     }
   }
 
-  // Import extracted transactions via the same deduplicating endpoint as CSV import
-  const doImport = async () => {
+  // Step 1: preview (dry-run) to detect duplicates / conflicts
+  const startImport = async () => {
     if (!parseResult?.transactions?.length) return
     const accountId = selAccountId || parseResult.accountId
     if (!accountId) { setParseError('Select an account to import into.'); return }
-    setImporting(true)
+    setImportStep('previewing')
+    setParseError(null)
     try {
-      const res = await axios.post('/api/import-history', {
+      const res = await axios.post('/api/import-history/preview', {
         transactions: parseResult.transactions.map(t => ({ ...t, account: accountId })),
-        accountId,
+      })
+      const p = res.data
+      setPreview(p)
+      // If no conflicts, skip review and import immediately
+      if (p.conflicts === 0) {
+        await doImport(accountId, parseResult.transactions, false)
+      } else {
+        setImportStep('reviewing')
+      }
+    } catch (e) {
+      setParseError(e.response?.data?.error || e.message)
+      setImportStep('ready')
+    }
+  }
+
+  // Step 2: actual import — skipConflicts drops conflicting rows, keepAll keeps them
+  const doImport = async (accountId, transactions, skipConflicts) => {
+    const acctId = accountId || selAccountId || parseResult.accountId
+    if (!acctId) return
+    setImportStep('importing')
+    try {
+      let txsToImport = transactions || parseResult.transactions
+      if (skipConflicts && preview?.conflictDetails?.length) {
+        // Remove conflicting transactions from the batch
+        const conflictKeys = new Set(
+          preview.conflictDetails.map(c =>
+            `${c.incoming.date}|${String(c.incoming.desc||'').toLowerCase().slice(0,20)}`
+          )
+        )
+        txsToImport = txsToImport.filter(t =>
+          !conflictKeys.has(`${t.date}|${String(t.desc||'').toLowerCase().slice(0,20)}`)
+        )
+      }
+      const res = await axios.post('/api/import-history', {
+        transactions: txsToImport.map(t => ({ ...t, account: acctId })),
+        accountId: acctId,
       })
       setImportResult(res.data)
+      setImportStep('done')
       onTransactionsChanged?.()
     } catch (e) {
       setParseError(e.response?.data?.error || e.message)
+      setImportStep('ready')
     }
-    setImporting(false)
   }
 
   const renderContent = () => {
@@ -531,14 +572,19 @@ function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged 
                 AI reading statement…
               </span>
             )}
-            {isPdf && parseState === 'done' && !importResult && (
+            {isPdf && parseState === 'done' && importStep === 'ready' && (
               <span style={{ fontSize:12, color:'var(--teal)' }}>
                 <i className="ti ti-circle-check" aria-hidden="true"/> {parseResult.count} transactions found
               </span>
             )}
-            {isPdf && importResult && (
+            {isPdf && parseState === 'done' && importStep === 'reviewing' && preview && (
+              <span style={{ fontSize:12, color:'var(--coral)', display:'flex', alignItems:'center', gap:5 }}>
+                <i className="ti ti-alert-triangle" aria-hidden="true"/> {preview.conflicts} conflict{preview.conflicts !== 1 ? 's' : ''} · review below
+              </span>
+            )}
+            {isPdf && importStep === 'done' && importResult && (
               <span style={{ fontSize:12, color:'var(--teal)', display:'flex', alignItems:'center', gap:5 }}>
-                <i className="ti ti-circle-check" aria-hidden="true"/> {importResult.imported} imported · {importResult.skipped} duplicates skipped
+                <i className="ti ti-circle-check" aria-hidden="true"/> {importResult.imported} imported · {importResult.skipped} skipped
               </span>
             )}
             <a href={fileUrl} download={file.name}
@@ -563,10 +609,17 @@ function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged 
               </p>
             )}
 
-            {parseState === 'done' && !importResult && (
+            {parseState === 'done' && importStep === 'done' && importResult && (
+              <p style={{ fontSize:12, color:'var(--teal)', margin:0, display:'flex', alignItems:'center', gap:6 }}>
+                <i className="ti ti-circle-check" aria-hidden="true"/>
+                <strong>{importResult.imported}</strong> imported · <strong>{importResult.skipped}</strong> exact duplicates skipped
+              </p>
+            )}
+
+            {parseState === 'done' && importStep !== 'done' && (
               <>
                 {/* Transaction preview rows */}
-                <div style={{ maxHeight:160, overflowY:'auto', marginBottom:10 }}>
+                <div style={{ maxHeight:140, overflowY:'auto', marginBottom:10 }}>
                   {parseResult.transactions.slice(0, 8).map((t, i) => (
                     <div key={i} style={{ display:'flex', alignItems:'center', gap:10, padding:'4px 0', borderBottom:'0.5px solid var(--border)', fontSize:12 }}>
                       <span style={{ color:'var(--text-secondary)', minWidth:78, flexShrink:0 }}>{t.date}</span>
@@ -575,30 +628,81 @@ function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged 
                     </div>
                   ))}
                   {parseResult.count > 8 && (
-                    <p style={{ fontSize:11, color:'var(--text-secondary)', margin:'5px 0 0', textAlign:'center' }}>
-                      + {parseResult.count - 8} more
-                    </p>
+                    <p style={{ fontSize:11, color:'var(--text-secondary)', margin:'5px 0 0', textAlign:'center' }}>+ {parseResult.count - 8} more</p>
                   )}
                 </div>
 
-                {/* Account selector + import button */}
-                <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                  <select
-                    value={selAccountId || ''}
-                    onChange={e => setSelAccountId(e.target.value)}
-                    style={{ flex:1, padding:'6px 8px', background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)', color:'var(--text-primary)', fontSize:12 }}>
-                    {!selAccountId && <option value="">— Select account —</option>}
-                    {accounts.map(a => (
-                      <option key={a.id} value={a.id}>{a.name}{a.institution ? ` (${a.institution})` : ''}</option>
+                {/* Conflict review panel */}
+                {importStep === 'reviewing' && preview && preview.conflicts > 0 && (
+                  <div style={{ border:'0.5px solid var(--coral)', borderRadius:'var(--radius-sm)', padding:'10px 12px', marginBottom:10, background:'rgba(185,28,28,0.06)' }}>
+                    <p style={{ fontSize:12, color:'var(--coral)', margin:'0 0 8px', fontWeight:500, display:'flex', alignItems:'center', gap:6 }}>
+                      <i className="ti ti-alert-triangle" aria-hidden="true"/>
+                      {preview.conflicts} conflicting transaction{preview.conflicts !== 1 ? 's' : ''} — same date & description, different amounts
+                    </p>
+                    {preview.conflictDetails.slice(0, 5).map((c, i) => (
+                      <div key={i} style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:4, marginBottom:6, padding:'6px 8px', background:'var(--bg-card)', borderRadius:'var(--radius-sm)', border:'0.5px solid var(--border)' }}>
+                        <div>
+                          <p style={{ fontSize:10, color:'var(--text-muted)', margin:'0 0 2px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Incoming</p>
+                          <p style={{ fontSize:11, margin:0, color:'var(--text-primary)' }}>{c.incoming.date} · {c.incoming.desc?.slice(0,30)}</p>
+                          <p style={{ fontSize:12, fontWeight:500, color:'var(--coral)', margin:0 }}>{fd(c.incoming.amount)}</p>
+                        </div>
+                        <div>
+                          <p style={{ fontSize:10, color:'var(--text-muted)', margin:'0 0 2px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Existing</p>
+                          <p style={{ fontSize:11, margin:0, color:'var(--text-secondary)' }}>{c.existing.date} · {c.existing.desc?.slice(0,30)}</p>
+                          <p style={{ fontSize:12, fontWeight:500, color:'var(--text-secondary)', margin:0 }}>{fd(c.existing.amount)}</p>
+                        </div>
+                      </div>
                     ))}
-                  </select>
-                  <button onClick={doImport} disabled={importing || !selAccountId}
-                    style={{ fontSize:12, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)', whiteSpace:'nowrap' }}>
-                    {importing
-                      ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Importing…</>
-                      : <><i className="ti ti-database-import" aria-hidden="true"/> Import {parseResult.count} transactions</>}
-                  </button>
-                </div>
+                    {preview.conflicts > 5 && (
+                      <p style={{ fontSize:11, color:'var(--text-muted)', margin:'4px 0 0', textAlign:'center' }}>+ {preview.conflicts - 5} more conflicts</p>
+                    )}
+                    {preview.duplicates > 0 && (
+                      <p style={{ fontSize:11, color:'var(--amber)', margin:'8px 0 0', display:'flex', alignItems:'center', gap:5 }}>
+                        <i className="ti ti-info-circle" aria-hidden="true"/>
+                        {preview.duplicates} exact duplicate{preview.duplicates !== 1 ? 's' : ''} will be skipped automatically
+                      </p>
+                    )}
+                    <div style={{ display:'flex', gap:8, marginTop:10 }}>
+                      <button
+                        onClick={() => doImport(null, null, true)}
+                        style={{ fontSize:12, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)', flex:1 }}>
+                        <i className="ti ti-shield-check" aria-hidden="true"/> Skip conflicts · import {preview.new} new
+                      </button>
+                      <button
+                        onClick={() => doImport(null, null, false)}
+                        style={{ fontSize:12, background:'var(--coral-light)', color:'var(--coral)', borderColor:'var(--coral)', flex:1 }}>
+                        <i className="ti ti-database-import" aria-hidden="true"/> Import everything anyway
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Normal ready / previewing state */}
+                {(importStep === 'ready' || importStep === 'previewing') && (
+                  <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                    <select
+                      value={selAccountId || ''}
+                      onChange={e => setSelAccountId(e.target.value)}
+                      style={{ flex:1, padding:'6px 8px', background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)', color:'var(--text-primary)', fontSize:12 }}>
+                      {!selAccountId && <option value="">— Select account —</option>}
+                      {accounts.map(a => (
+                        <option key={a.id} value={a.id}>{a.name}{a.institution ? ` (${a.institution})` : ''}</option>
+                      ))}
+                    </select>
+                    <button onClick={startImport} disabled={importStep === 'previewing' || !selAccountId}
+                      style={{ fontSize:12, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)', whiteSpace:'nowrap' }}>
+                      {importStep === 'previewing'
+                        ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Checking…</>
+                        : <><i className="ti ti-database-import" aria-hidden="true"/> Import {parseResult.count} transactions</>}
+                    </button>
+                  </div>
+                )}
+
+                {importStep === 'importing' && (
+                  <p style={{ fontSize:12, color:'var(--teal)', display:'flex', alignItems:'center', gap:6, margin:0 }}>
+                    <i className="ti ti-loader-2 spin" aria-hidden="true"/> Importing…
+                  </p>
+                )}
               </>
             )}
           </div>
