@@ -741,7 +741,7 @@ function ScraperModal({ onClose, onDone }) {
               {status === 'waiting_login' && 'Waiting for you to log in (including MFA)…'}
               {status === 'scraping' && 'Downloading statements…'}
               {status === 'done' && `Done — ${downloadCount} PDF${downloadCount !== 1 ? 's' : ''} saved to Data Vault`}
-              {status === 'error' && `Error: ${errorMsg || 'Something went wrong'}`}
+              {status === 'error' && (errorMsg || 'Something went wrong')}
               {status === 'cancelled' && 'Cancelled'}
             </div>
           )}

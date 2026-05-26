@@ -106,6 +106,15 @@ async function runScraper(sessionId, bankKey, userId, makeIO, BASE_VAULT_DIR) {
   const stmtDir   = path.join(vaultDir, 'Bank Statements', bank.label);
   fs.mkdirSync(stmtDir, { recursive: true });
 
+  // Detect headless server environment (Linux without a display)
+  const isHeadlessServer = process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+  if (isHeadlessServer) {
+    session.status = 'error';
+    session.error  = 'This feature requires running CaiShen locally on your own computer — it cannot open a browser window on a remote server. Download the CaiShen server, run it locally with `npm start`, and access it at http://localhost:3001.';
+    log(session.error, 'error');
+    return;
+  }
+
   let browser, context;
   try {
     browser = await chromium.launch({

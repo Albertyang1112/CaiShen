@@ -160,7 +160,7 @@ migrateAdminData();
 
   // 3. Protect all /api routes (except the open ones)
   app.use('/api', (req, res, next) => {
-    const open = ['/auth/login', '/auth/signup', '/auth/verify-2fa', '/auth/me', '/status', '/plaid/webhook', '/events'];
+    const open = ['/auth/login', '/auth/signup', '/auth/verify-2fa', '/auth/me', '/status', '/plaid/webhook', '/events', '/scraper/progress'];
     if (open.some(p => req.path === p || req.path.startsWith(p))) return next();
     verifyToken(req, res, (err) => {
       if (err) return;
