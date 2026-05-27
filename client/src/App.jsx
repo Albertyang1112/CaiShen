@@ -596,206 +596,6 @@ function PropertyDetail({propId, properties, onRefresh}) {
   )
 }
 
-// ── Bank Statement Auto-Importer Modal ────────────────────────────────
-const BANK_COLORS = {
-  chase:      { bg:'var(--blue-light)',   fg:'var(--blue)',   border:'var(--blue)'   },
-  bofa:       { bg:'var(--coral-light)',  fg:'var(--coral)',  border:'var(--coral)'  },
-  wellsfargo: { bg:'var(--amber-light)',  fg:'var(--amber)',  border:'var(--amber)'  },
-}
-
-function ScraperModal({ onClose, onDone }) {
-  const [banks, setBanks]           = useState([])
-  const [selectedBank, setSelectedBank] = useState(null)
-  const [sessionId, setSessionId]   = useState(null)
-  const [logs, setLogs]             = useState([])
-  const [status, setStatus]         = useState('idle')   // idle | starting | waiting_login | scraping | done | error | cancelled
-  const [downloadCount, setDownloadCount] = useState(0)
-  const [errorMsg, setErrorMsg]     = useState(null)
-  const logsEndRef                  = useRef(null)
-  const evtSourceRef                = useRef(null)
-
-  useEffect(() => {
-    axios.get(`${API}/scraper/banks`).then(r => setBanks(r.data || [])).catch(() => {})
-    return () => evtSourceRef.current?.close()
-  }, [])
-
-  useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior:'smooth' })
-  }, [logs])
-
-  const startScraper = async () => {
-    if (!selectedBank) return
-    setLogs([])
-    setStatus('starting')
-    setDownloadCount(0)
-    setErrorMsg(null)
-    try {
-      const res = await axios.post(`${API}/scraper/start`, { bank: selectedBank })
-      const sid = res.data.sessionId
-      setSessionId(sid)
-
-      // Connect to SSE progress stream
-      const es = new EventSource(`${API}/scraper/progress/${sid}`)
-      evtSourceRef.current = es
-
-      es.onmessage = (e) => {
-        const evt = JSON.parse(e.data)
-        if (evt.type === 'end') {
-          setStatus(evt.status)
-          setDownloadCount(evt.count || 0)
-          if (evt.error) setErrorMsg(evt.error)
-          es.close()
-          if (evt.status === 'done') onDone?.()
-        } else if (evt.type === 'info' || evt.type === 'prompt' || evt.type === 'done' || evt.type === 'warn' || evt.type === 'error') {
-          setStatus(prev => evt.type === 'prompt' ? 'waiting_login' : prev === 'waiting_login' ? 'waiting_login' : 'scraping')
-          setLogs(prev => [...prev, evt])
-        }
-      }
-      es.onerror = () => {
-        setStatus(s => s === 'done' || s === 'error' || s === 'cancelled' ? s : 'error')
-        es.close()
-      }
-    } catch(e) {
-      setStatus('error')
-      setErrorMsg(e.response?.data?.error || e.message)
-    }
-  }
-
-  const cancelScraper = async () => {
-    if (sessionId) {
-      await axios.post(`${API}/scraper/cancel/${sessionId}`).catch(() => {})
-    }
-    evtSourceRef.current?.close()
-    setStatus('cancelled')
-  }
-
-  const logColor = (type) => {
-    if (type === 'error') return 'var(--coral)'
-    if (type === 'prompt') return 'var(--amber)'
-    if (type === 'done')  return 'var(--teal)'
-    if (type === 'warn')  return 'var(--amber)'
-    return 'var(--text-secondary)'
-  }
-
-  const isRunning = status === 'starting' || status === 'waiting_login' || status === 'scraping'
-  const isDone    = status === 'done'
-  const isFailed  = status === 'error' || status === 'cancelled'
-
-  return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', zIndex:1200, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
-      <div className="card" style={{ width:'100%', maxWidth:560, maxHeight:'90vh', display:'flex', flexDirection:'column', padding:0, overflow:'hidden' }}>
-
-        {/* Header */}
-        <div style={{ display:'flex', alignItems:'center', gap:10, padding:'18px 20px 16px', borderBottom:'0.5px solid var(--border)' }}>
-          <div style={{ width:36, height:36, borderRadius:'var(--radius-md)', background:'var(--purple-light)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-            <i className="ti ti-file-download" style={{ fontSize:18, color:'var(--purple)' }} aria-hidden="true"/>
-          </div>
-          <div style={{ flex:1 }}>
-            <p style={{ fontSize:15, fontWeight:600, margin:0 }}>Auto-Import Bank Statements</p>
-            <p style={{ fontSize:12, color:'var(--text-secondary)', margin:0 }}>Opens a browser — log in, handle MFA, then it downloads everything automatically</p>
-          </div>
-          {!isRunning && (
-            <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--text-muted)', fontSize:18, padding:0, lineHeight:1 }}>✕</button>
-          )}
-        </div>
-
-        {/* Body */}
-        <div style={{ flex:1, overflowY:'auto', padding:'16px 20px' }}>
-
-          {/* Bank selector (only shown before starting) */}
-          {status === 'idle' && (
-            <>
-              <p style={{ fontSize:13, fontWeight:500, margin:'0 0 10px' }}>Select your bank</p>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, marginBottom:16 }}>
-                {banks.map(b => {
-                  const c = BANK_COLORS[b.id] || { bg:'var(--bg-secondary)', fg:'var(--text-primary)', border:'var(--border)' }
-                  const sel = selectedBank === b.id
-                  return (
-                    <button key={b.id} onClick={() => setSelectedBank(b.id)}
-                      style={{ padding:'10px 8px', borderRadius:'var(--radius-md)', background: sel ? c.bg : 'var(--bg-secondary)', color: sel ? c.fg : 'var(--text-secondary)', border:`1.5px solid ${sel ? c.border : 'var(--border)'}`, fontWeight: sel ? 600 : 400, fontSize:13, cursor:'pointer', transition:'all .15s' }}>
-                      <i className="ti ti-building-bank" style={{ fontSize:16, display:'block', marginBottom:4 }} aria-hidden="true"/>
-                      {b.label}
-                    </button>
-                  )
-                })}
-              </div>
-
-              <div style={{ padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'var(--radius-sm)', borderLeft:'3px solid var(--purple)', fontSize:12, color:'var(--text-secondary)', lineHeight:1.7, marginBottom:16 }}>
-                <strong style={{ color:'var(--text-primary)' }}>How it works:</strong><br/>
-                1. A real Chrome window opens — log in normally and complete any MFA.<br/>
-                2. Once logged in, the scraper navigates to Statements &amp; Documents and downloads every available PDF.<br/>
-                3. All PDFs land in your Data Vault under <em>Bank Statements / {'{Bank}'} /</em>
-              </div>
-            </>
-          )}
-
-          {/* Status badge */}
-          {status !== 'idle' && (
-            <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', borderRadius:'var(--radius-sm)', marginBottom:12,
-              background: isDone ? 'var(--teal-light)' : isFailed ? 'var(--coral-light)' : status === 'waiting_login' ? 'var(--amber-light)' : 'var(--blue-light)',
-              color: isDone ? 'var(--teal)' : isFailed ? 'var(--coral)' : status === 'waiting_login' ? 'var(--amber)' : 'var(--blue)',
-              border: `0.5px solid ${isDone ? 'var(--teal)' : isFailed ? 'var(--coral)' : status === 'waiting_login' ? 'var(--amber)' : 'var(--blue)'}`,
-              fontSize:13, fontWeight:500 }}>
-              <i className={`ti ${isDone ? 'ti-circle-check' : isFailed ? 'ti-circle-x' : isRunning ? 'ti-loader-2 spin' : 'ti-circle'}`} style={{ fontSize:15 }} aria-hidden="true"/>
-              {status === 'starting' && 'Starting browser…'}
-              {status === 'waiting_login' && 'Waiting for you to log in (including MFA)…'}
-              {status === 'scraping' && 'Downloading statements…'}
-              {status === 'done' && `Done — ${downloadCount} PDF${downloadCount !== 1 ? 's' : ''} saved to Data Vault`}
-              {status === 'error' && (errorMsg || 'Something went wrong')}
-              {status === 'cancelled' && 'Cancelled'}
-            </div>
-          )}
-
-          {/* Log window */}
-          {logs.length > 0 && (
-            <div style={{ background:'var(--bg-secondary)', borderRadius:'var(--radius-sm)', border:'0.5px solid var(--border)', padding:'10px 12px', maxHeight:240, overflowY:'auto', fontFamily:'monospace', fontSize:12, lineHeight:1.7 }}>
-              {logs.map((l, i) => (
-                <div key={i} style={{ color: logColor(l.type) }}>
-                  {l.type === 'prompt' && <i className="ti ti-hand-pointer" style={{ marginRight:6 }} aria-hidden="true"/>}
-                  {l.msg}
-                </div>
-              ))}
-              <div ref={logsEndRef}/>
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div style={{ padding:'12px 20px', borderTop:'0.5px solid var(--border)', display:'flex', gap:8, justifyContent:'flex-end' }}>
-          {status === 'idle' && (
-            <>
-              <button onClick={onClose} style={{ background:'var(--bg-secondary)', color:'var(--text-secondary)', borderColor:'var(--border)', fontSize:13 }}>
-                Cancel
-              </button>
-              <button onClick={startScraper} disabled={!selectedBank}
-                style={{ background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)', fontSize:13, opacity: selectedBank ? 1 : 0.5 }}>
-                <i className="ti ti-player-play" aria-hidden="true"/> Start auto-import
-              </button>
-            </>
-          )}
-          {isRunning && (
-            <button onClick={cancelScraper}
-              style={{ background:'var(--coral-light)', color:'var(--coral)', borderColor:'var(--coral)', fontSize:13 }}>
-              <i className="ti ti-player-stop" aria-hidden="true"/> Stop
-            </button>
-          )}
-          {(isDone || isFailed) && (
-            <button onClick={onClose}
-              style={{ background:'var(--bg-secondary)', color:'var(--text-secondary)', borderColor:'var(--border)', fontSize:13 }}>
-              Close
-            </button>
-          )}
-          {isDone && (
-            <button onClick={() => { setStatus('idle'); setSelectedBank(null); setLogs([]); setSessionId(null) }}
-              style={{ background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)', fontSize:13 }}>
-              <i className="ti ti-plus" aria-hidden="true"/> Import another bank
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
 
 // ── Statements Panel ──────────────────────────────────────────────────
 const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -1049,7 +849,6 @@ function ConnectionsScreen({status, accounts, onSync}) {
   const [connecting, setConnecting]         = useState(false)
   const [stmtResult, setStmtResult]         = useState(null)
   const [showHistoryWarning, setShowHistoryWarning] = useState(false)
-  const [showScraper, setShowScraper]       = useState(false)
 
   const plaidAccounts = (accounts || []).filter(a => a.source === 'plaid')
 
@@ -1175,10 +974,6 @@ function ConnectionsScreen({status, accounts, onSync}) {
 
   return (
     <div>
-      {showScraper && (
-        <ScraperModal onClose={() => setShowScraper(false)} onDone={() => onSync?.()} />
-      )}
-
       {linkError && (
         <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'var(--coral-light)', borderRadius:'var(--radius-md)', marginBottom:16, fontSize:13, color:'var(--coral)', border:'0.5px solid var(--coral)' }}>
           <i className="ti ti-alert-circle" style={{ fontSize:15 }} aria-hidden="true"/> {linkError}
@@ -1285,25 +1080,6 @@ function ConnectionsScreen({status, accounts, onSync}) {
           </div>
         )}
 
-      </div>
-
-      {/* Auto-Import Bank Statements */}
-      <div className="card" style={{ marginBottom:12 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-          <div style={{ width:38, height:38, borderRadius:'var(--radius-md)', background:'var(--purple-light)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-            <i className="ti ti-file-download" style={{ fontSize:19, color:'var(--purple)' }} aria-hidden="true"/>
-          </div>
-          <div style={{ flex:1 }}>
-            <p style={{ fontSize:14, fontWeight:500, margin:0 }}>Auto-Import Bank Statements</p>
-            <p style={{ fontSize:12, color:'var(--text-secondary)', margin:0 }}>
-              Opens a real browser — you log in, handle MFA, then it automatically downloads every available PDF statement into your Data Vault
-            </p>
-          </div>
-          <button onClick={() => setShowScraper(true)}
-            style={{ fontSize:12, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)', flexShrink:0, whiteSpace:'nowrap' }}>
-            <i className="ti ti-player-play" aria-hidden="true"/> Auto-import PDFs
-          </button>
-        </div>
       </div>
 
       {/* Statement Generation Panel */}

@@ -160,7 +160,7 @@ migrateAdminData();
 
   // 3. Protect all /api routes (except the open ones)
   app.use('/api', (req, res, next) => {
-    const open = ['/auth/login', '/auth/signup', '/auth/verify-2fa', '/auth/me', '/status', '/plaid/webhook', '/events', '/scraper/progress'];
+    const open = ['/auth/login', '/auth/signup', '/auth/verify-2fa', '/auth/me', '/status', '/plaid/webhook', '/events'];
     if (open.some(p => req.path === p || req.path.startsWith(p))) return next();
     verifyToken(req, res, (err) => {
       if (err) return;
@@ -287,9 +287,7 @@ app.use('/api/plaid', plaidRouter);
 const { router: stmtRouter, generateForUser } = require('./statements')(makeIO, VAULT_DIR);
 app.use('/api/statements', stmtRouter);
 
-// ── Routes: Bank scraper (Playwright-based PDF downloader) ────────────
-const scraperRouter = require('./bank-scraper')(makeIO, VAULT_DIR);
-app.use('/api/scraper', scraperRouter);
+
 
 // ── Routes: QuickBooks ────────────────────────────────────────────────
 const { authRouter: qbAuth, apiRouter: qbApi } = require('./quickbooks')(makeIO);
