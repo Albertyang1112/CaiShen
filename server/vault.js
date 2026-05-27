@@ -241,6 +241,200 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── POST /api/vault/auto-organize — scan PDFs, detect metadata, sort into folders ──
+  // Processes every PDF in folderId (or all PDFs if omitted). Extracts institution /
+  // account / year from each file, matches against accounts, moves files to
+  // Bank Statements/{institution}/{account}/{year}/ and creates folders as needed.
+  // Deletes the source folder when it becomes empty.
+  router.post('/auto-organize', async (req, res) => {
+    try {
+      const { extractStatementMeta, guessAccountTypeSubtype } = require('./pdf-parser');
+      const userId   = req.user.id;
+      const io       = makeIO(userId);
+      const vaultDir = getUserVaultDir(userId);
+      let   meta     = readMeta(userId);
+      let   accounts = io.read('accounts.json') || [];
+
+      const { folderId } = req.body;
+      const pdfFiles = folderId
+        ? meta.files.filter(f => f.folderId === folderId && f.type === 'pdf')
+        : meta.files.filter(f => f.type === 'pdf');
+
+      if (!pdfFiles.length) return res.json({ processed:0, organized:0, failed:0, skipped:0 });
+
+      // ── Ensure folder path exists in meta + on disk ──────────────────────────
+      const ensureFolderPath = (targetPath) => {
+        const parts = targetPath.split('/').filter(Boolean);
+        let parentId = null;
+        for (let i = 0; i < parts.length; i++) {
+          const fullPath = parts.slice(0, i + 1).join('/');
+          let f = meta.folders.find(x => x.path === fullPath);
+          if (!f) {
+            f = {
+              id: `folder_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              name: parts[i], path: fullPath, parentId,
+              createdAt: new Date().toISOString(), tags: {},
+            };
+            meta.folders.push(f);
+            fs.mkdirSync(path.join(vaultDir, fullPath), { recursive: true });
+          }
+          parentId = f.id;
+        }
+        return parentId;
+      };
+
+      // ── Extract metadata in parallel (5 at a time) ──────────────────────────
+      const CONCURRENCY = 5;
+      const extracted = [];
+      for (let i = 0; i < pdfFiles.length; i += CONCURRENCY) {
+        const batch = pdfFiles.slice(i, i + CONCURRENCY);
+        const batchOut = await Promise.allSettled(batch.map(async (file) => {
+          const filePath = path.join(vaultDir, file.folderPath, file.name);
+          if (!fs.existsSync(filePath)) throw new Error('File missing from disk');
+          const buffer   = fs.readFileSync(filePath);
+          const detected = await extractStatementMeta(buffer);
+          return { file, detected };
+        }));
+        extracted.push(...batchOut);
+      }
+
+      const results = { processed:0, organized:0, failed:0, skipped:0, details:[] };
+
+      for (const outcome of extracted) {
+        if (outcome.status === 'rejected') {
+          results.failed++;
+          continue;
+        }
+        const { file, detected } = outcome.value;
+        results.processed++;
+
+        const inst  = detected.institution;
+        const l4    = detected.last4;
+        const aName = detected.accountName;
+
+        // ── Account matching ─────────────────────────────────────────────────
+        let matchedAcct = null;
+        let autoCreated = false;
+
+        if (l4 && inst) {
+          const instKey = inst.toLowerCase().split(' ')[0];
+          matchedAcct = accounts.find(a =>
+            a.last4 === l4 && (a.institution || '').toLowerCase().includes(instKey)
+          );
+        }
+        if (!matchedAcct && l4)       matchedAcct = accounts.find(a => a.last4 === l4);
+        if (!matchedAcct && inst && aName) {
+          const instKey = inst.toLowerCase().split(' ')[0];
+          const nameKey = aName.toLowerCase().split(' ')[0];
+          matchedAcct = accounts.find(a =>
+            (a.institution || '').toLowerCase().includes(instKey) &&
+            (a.name        || '').toLowerCase().includes(nameKey)
+          );
+        }
+        // Auto-create account when institution is known but no account matches
+        if (!matchedAcct && inst) {
+          const { type, subtype } = guessAccountTypeSubtype(inst, aName);
+          const newAcct = {
+            id:               `pdf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            name:             aName ? titleCase(aName) : `${inst} Account`,
+            institution:      inst, type, subtype,
+            balance:          detected.closingBalance ?? 0,
+            availableBalance: detected.closingBalance ?? 0,
+            last4:            l4 || null,
+            source:           'pdf_import',
+            createdAt:        new Date().toISOString(),
+            lastUpdated:      new Date().toISOString(),
+          };
+          accounts.push(newAcct);
+          io.write('accounts.json', accounts);
+          matchedAcct = newAcct;
+          autoCreated = true;
+        }
+
+        if (!matchedAcct || !inst || !detected.year) {
+          results.skipped++;
+          results.details.push({
+            file: file.name, status: 'skipped',
+            reason: !inst ? 'Institution not detected' : !detected.year ? 'Year not detected' : 'No matching account',
+          });
+          continue;
+        }
+
+        // ── Compute target folder ────────────────────────────────────────────
+        const cleanName  = (matchedAcct.name || inst).replace(/[<>:"/\\|?*]/g,'').replace(/\s+/g,' ').trim();
+        const targetPath = `Bank Statements/${inst}/${cleanName}/${detected.year}`;
+
+        if (file.folderPath === targetPath) {
+          results.skipped++;
+          continue; // already in the right place
+        }
+
+        // ── Move physical file ───────────────────────────────────────────────
+        const targetFolderId = ensureFolderPath(targetPath);
+        let   dstName = file.name;
+        // Avoid collisions in destination
+        if (fs.existsSync(path.join(vaultDir, targetPath, dstName))) {
+          const base = path.basename(dstName, path.extname(dstName));
+          dstName    = `${base}_${Date.now()}${path.extname(dstName)}`;
+        }
+        fs.renameSync(
+          path.join(vaultDir, file.folderPath, file.name),
+          path.join(vaultDir, targetPath, dstName)
+        );
+
+        // ── Update vault meta ────────────────────────────────────────────────
+        const fileIdx = meta.files.findIndex(f2 => f2.id === file.id);
+        if (fileIdx >= 0) {
+          meta.files[fileIdx].name       = dstName;
+          meta.files[fileIdx].folderPath = targetPath;
+          meta.files[fileIdx].folderId   = targetFolderId;
+          meta.files[fileIdx].tags = {
+            ...meta.files[fileIdx].tags,
+            institution: inst,
+            account:     matchedAcct.name,
+            ...(l4             && { last4: l4 }),
+            ...(detected.year  && { year:  String(detected.year) }),
+            ...(detected.month && { month: String(detected.month).padStart(2, '0') }),
+          };
+        }
+
+        results.organized++;
+        results.details.push({
+          file: dstName, status: 'organized', targetPath,
+          institution: inst, account: matchedAcct.name,
+          year: detected.year, month: detected.month, autoCreated,
+        });
+      }
+
+      writeMeta(meta, userId);
+
+      // ── Clean up source folder if now empty ──────────────────────────────────
+      if (folderId) {
+        const stillHasFiles    = meta.files.some(f => f.folderId === folderId);
+        const stillHasChildren = meta.folders.some(f => f.parentId === folderId);
+        if (!stillHasFiles && !stillHasChildren) {
+          const srcFolder = meta.folders.find(f => f.id === folderId);
+          if (srcFolder) {
+            try {
+              const physPath = path.join(vaultDir, srcFolder.path);
+              if (fs.existsSync(physPath)) fs.rmdirSync(physPath);
+            } catch {}
+            meta.folders = meta.folders.filter(f => f.id !== folderId);
+            writeMeta(meta, userId);
+            results.sourceFolderDeleted = true;
+            results.sourceFolderName    = srcFolder.name;
+          }
+        }
+      }
+
+      console.log(`[vault/auto-organize] ${results.organized}/${results.processed} sorted, ${results.skipped} skipped, ${results.failed} failed`);
+      res.json(results);
+    } catch (e) {
+      console.error('[vault/auto-organize]', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ── POST /api/vault/parse-statement-local/:id — extract transactions (no AI) ──
   // Full pipeline: parse PDF → detect metadata → match/create account →
   // auto-organize vault file → tag file → return everything

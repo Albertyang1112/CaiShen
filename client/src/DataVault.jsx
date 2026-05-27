@@ -1087,6 +1087,7 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
   const [sidebarWidth, setSidebarWidth] = useState(210)
   const [exporting, setExporting]   = useState(false)
   const [wiping, setWiping]         = useState(false)
+  const [organizing, setOrganizing] = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
   const [showWipeConfirm, setShowWipeConfirm] = useState(false)
   const folderRef  = useRef()
@@ -1154,6 +1155,26 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
 
   useEffect(() => { load() }, [])
 
+  const organizeFolder = async (folderId) => {
+    setOrganizing(true); setUploadError(null)
+    try {
+      const res = await axios.post(`${API}/auto-organize`, { folderId }, { timeout: 300000 })
+      await load()
+      onTransactionsChanged?.()   // refresh accounts if any were auto-created
+      const parts = [
+        res.data.organized > 0 ? `${res.data.organized} PDF${res.data.organized !== 1 ? 's' : ''} sorted` : null,
+        res.data.skipped   > 0 ? `${res.data.skipped} couldn't be matched` : null,
+        res.data.failed    > 0 ? `${res.data.failed} failed` : null,
+        res.data.sourceFolderDeleted ? `"${res.data.sourceFolderName}" folder cleaned up` : null,
+      ].filter(Boolean)
+      setUploadSuccess('✓ ' + (parts.length ? parts.join(' · ') : 'Nothing to sort'))
+      if (res.data.sourceFolderDeleted) setSelectedFolderId(null)
+    } catch (e) {
+      setUploadError('Sort failed: ' + (e.response?.data?.error || e.message))
+    }
+    setOrganizing(false)
+  }
+
   const doUpload = useCallback(async (fileList, mergeMode='merge') => {
     setUploading(true); setUploadError(null); setUploadSuccess(null)
     try {
@@ -1166,6 +1187,7 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
         byFolder[folderPath].push(file)
       }
       let total = 0
+      const pdfFolderIds = new Set()
       for (const [folderPath, files] of Object.entries(byFolder)) {
         const fd = new FormData()
         fd.append('folderPath', folderPath)
@@ -1173,9 +1195,41 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
         files.forEach(f => fd.append('files', f))
         const res = await axios.post(`${API}/upload`, fd, { headers:{ 'Content-Type':'multipart/form-data' } })
         total += res.data.uploaded || 0
+        // Collect folder IDs that received PDF uploads for auto-sorting
+        const pdfsIn = (res.data.files || []).filter(f => f.type === 'pdf')
+        pdfsIn.forEach(f => { if (f.folderId) pdfFolderIds.add(f.folderId) })
       }
-      setUploadSuccess(`✓ ${total} files uploaded successfully`)
       await load()
+
+      // Auto-sort any PDFs that were just uploaded
+      if (pdfFolderIds.size > 0) {
+        setOrganizing(true)
+        setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded — sorting PDFs into account folders…`)
+        let orgOrg = 0, orgSkip = 0, orgFail = 0
+        const deletedFolders = []
+        for (const fid of pdfFolderIds) {
+          try {
+            const r = await axios.post(`${API}/auto-organize`, { folderId: fid }, { timeout: 300000 })
+            orgOrg  += r.data.organized || 0
+            orgSkip += r.data.skipped   || 0
+            orgFail += r.data.failed    || 0
+            if (r.data.sourceFolderDeleted) deletedFolders.push(r.data.sourceFolderName)
+          } catch {}
+        }
+        await load()
+        onTransactionsChanged?.()
+        setOrganizing(false)
+        if (deletedFolders.length) setSelectedFolderId(null)
+        const parts = [
+          orgOrg  > 0 ? `${orgOrg} PDF${orgOrg !== 1 ? 's' : ''} sorted into account folders` : null,
+          orgSkip > 0 ? `${orgSkip} couldn't be matched` : null,
+          orgFail > 0 ? `${orgFail} failed` : null,
+          deletedFolders.length ? `"${deletedFolders.join('", "')}" cleaned up` : null,
+        ].filter(Boolean)
+        setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded · ${parts.join(' · ')}`)
+      } else {
+        setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded successfully`)
+      }
     } catch (e) {
       setUploadError('Upload failed: ' + (e.response?.data?.error || e.message))
     }
@@ -1353,10 +1407,17 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
         <input ref={fileRef}   type="file" multiple          style={{ display:'none' }} onChange={e=>handleFiles(e.target.files)}/>
       </div>
 
+      {organizing && !uploadSuccess?.includes('sorting') && (
+        <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 14px', background:'var(--teal-light)', borderRadius:'var(--radius-md)', marginBottom:10, fontSize:13, color:'var(--teal)', border:'0.5px solid var(--teal)' }}>
+          <i className="ti ti-loader-2" style={{ animation:'spin 1s linear infinite' }} aria-hidden="true"/>
+          Scanning PDFs and sorting into account folders — this may take a minute for large batches…
+        </div>
+      )}
       {uploadSuccess && (
         <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 14px', background:'var(--teal-light)', borderRadius:'var(--radius-md)', marginBottom:10, fontSize:13, color:'var(--teal)', border:'0.5px solid var(--teal)' }}>
-          <i className="ti ti-circle-check" aria-hidden="true"/> {uploadSuccess}
-          <button onClick={()=>setUploadSuccess(null)} style={{ marginLeft:'auto', background:'none', border:'none', color:'var(--teal)', padding:0 }}>✕</button>
+          <i className={`ti ${organizing ? 'ti-loader-2' : 'ti-circle-check'}`} style={{ animation: organizing ? 'spin 1s linear infinite' : 'none' }} aria-hidden="true"/>
+          {uploadSuccess}
+          {!organizing && <button onClick={()=>setUploadSuccess(null)} style={{ marginLeft:'auto', background:'none', border:'none', color:'var(--teal)', padding:0 }}>✕</button>}
         </div>
       )}
       {uploadError && (
@@ -1421,8 +1482,20 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
               {childFolders.length > 0 && visibleFiles.length > 0 && ', '}
               {visibleFiles.length > 0 && `${visibleFiles.length} file${visibleFiles.length!==1?'s':''}`}
             </span>
+            {selectedFolder && (() => {
+              const folderPdfCount = meta.files.filter(f => f.folderId === selectedFolder.id && f.type === 'pdf').length
+              return folderPdfCount > 0 ? (
+                <button onClick={() => organizeFolder(selectedFolder.id)} disabled={organizing}
+                  title={`Scan ${folderPdfCount} PDF${folderPdfCount !== 1 ? 's' : ''} and sort into account folders automatically`}
+                  style={{ marginLeft:'auto', fontSize:11, color:'var(--teal)', borderColor:'var(--teal)', background:'var(--teal-light)', padding:'3px 8px', display:'flex', alignItems:'center', gap:5 }}>
+                  <i className={`ti ${organizing ? 'ti-loader-2' : 'ti-folders'}`} style={{ fontSize:12, animation: organizing ? 'spin 1s linear infinite' : 'none' }} aria-hidden="true"/>
+                  {organizing ? 'Sorting…' : `Sort ${folderPdfCount} PDF${folderPdfCount !== 1 ? 's' : ''}`}
+                </button>
+              ) : null
+            })()}
             {selectedFolder && (
-              <button onClick={()=>deleteFolder(selectedFolder.id)} style={{ marginLeft:'auto', fontSize:11, color:'var(--coral)', borderColor:'var(--coral)', background:'var(--coral-light)', padding:'3px 8px' }}>
+              <button onClick={()=>deleteFolder(selectedFolder.id)}
+                style={{ marginLeft: meta.files.filter(f => f.folderId === selectedFolder.id && f.type === 'pdf').length > 0 ? '6px' : 'auto', fontSize:11, color:'var(--coral)', borderColor:'var(--coral)', background:'var(--coral-light)', padding:'3px 8px' }}>
                 <i className="ti ti-trash" aria-hidden="true"/> Delete folder
               </button>
             )}
