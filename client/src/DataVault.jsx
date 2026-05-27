@@ -1207,7 +1207,9 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
   for (const a of accounts) acctByName[a.name] = a.id
 
   const stmtSummary = (file) => {
-    const { year, month, account: acctName } = file.tags || {}
+    const { year, month, account: acctName,
+            income: cachedIncome, spending: cachedSpending,
+            net: cachedNet, txCount: cachedTxCount } = file.tags || {}
     if (!year || !month) return null
     const monthStr = `${year}-${String(month).padStart(2,'0')}`
     const acctId   = acctByName[acctName]
@@ -1216,10 +1218,16 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
       t.month === monthStr &&
       (acctId ? t.account === acctId : t.institution === file.tags?.institution)
     )
-    if (!txs.length) return null
-    const income   = txs.filter(t => t.amount > 0).reduce((s,t) => s + t.amount, 0)
-    const spending = txs.filter(t => t.amount < 0).reduce((s,t) => s + t.amount, 0)
-    return { income, spending, net: income + spending, count: txs.length }
+    if (txs.length) {
+      const income   = txs.filter(t => t.amount > 0).reduce((s,t) => s + t.amount, 0)
+      const spending = txs.filter(t => t.amount < 0).reduce((s,t) => s + t.amount, 0)
+      return { income, spending, net: income + spending, count: txs.length }
+    }
+    // Fall back to financial summary baked into file tags at generation time
+    if (cachedIncome !== undefined || cachedSpending !== undefined) {
+      return { income: cachedIncome || 0, spending: cachedSpending || 0, net: cachedNet || 0, count: cachedTxCount || 0 }
+    }
+    return null
   }
 
   const fmtMoney = (n) => {

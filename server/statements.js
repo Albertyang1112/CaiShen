@@ -211,11 +211,17 @@ async function generateForUser(userId, makeIO, BASE_VAULT_DIR) {
         const physPath = path.join(vaultDir, folderPath);
         fs.mkdirSync(physPath, { recursive: true });
         fs.writeFileSync(path.join(physPath, fileName), pdfBuf);
+        const deposits    = txs.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+        const withdrawals = txs.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0);
         meta.files.push({
           id: mkFileId(), name: fileName, folderId, folderPath,
           size: pdfBuf.length, type: 'pdf', mimeType: 'application/pdf',
           createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-          version: 1, tags: { institution: acct.institution, year, month, account: acct.name }
+          version: 1, tags: {
+            institution: acct.institution, year, month, account: acct.name,
+            income: +deposits.toFixed(2), spending: +withdrawals.toFixed(2),
+            net: +(deposits + withdrawals).toFixed(2), txCount: txs.length,
+          },
         });
         generated++;
         console.log(`[Statements] Created ${folderPath}/${fileName} (user ${userId})`);
@@ -323,9 +329,9 @@ module.exports = function(makeIO, BASE_VAULT_DIR) {
     const fileName   = `${year}-${monthNum} ${acct.name} Statement.pdf`;
 
     try {
-      const pdfBuf   = await buildStatementPDF(acct, txs, year, monthNum);
-      const folderId = ensureVaultFolder(meta, folderPath, vaultDir);
-      const physPath = path.join(vaultDir, folderPath);
+      const pdfBuf      = await buildStatementPDF(acct, txs, year, monthNum);
+      const folderId    = ensureVaultFolder(meta, folderPath, vaultDir);
+      const physPath    = path.join(vaultDir, folderPath);
       fs.mkdirSync(physPath, { recursive: true });
       fs.writeFileSync(path.join(physPath, fileName), pdfBuf);
       // Remove stale entry if any, then insert fresh
@@ -334,11 +340,17 @@ module.exports = function(makeIO, BASE_VAULT_DIR) {
         const old = meta.files.find(f => f.folderId === existingFolder.id && f.name === fileName);
         if (old) meta.files = meta.files.filter(f => f.id !== old.id);
       }
+      const deps = txs.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+      const wds  = txs.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0);
       meta.files.push({
         id: mkFileId(), name: fileName, folderId, folderPath,
         size: pdfBuf.length, type: 'pdf', mimeType: 'application/pdf',
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-        version: 1, tags: { institution: acct.institution, year, month: monthNum, account: acct.name },
+        version: 1, tags: {
+          institution: acct.institution, year, month: monthNum, account: acct.name,
+          income: +deps.toFixed(2), spending: +wds.toFixed(2),
+          net: +(deps + wds).toFixed(2), txCount: txs.length,
+        },
       });
       io.write('vault.json', meta);
       console.log(`[Statements] Generated ${folderPath}/${fileName} (user ${req.user.id})`);
