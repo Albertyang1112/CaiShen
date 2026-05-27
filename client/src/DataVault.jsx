@@ -1115,10 +1115,13 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
     try {
       const res = await axios.get(API)
       setMeta(res.data)
+      setLoading(false)
+      return res.data
     } catch {
       setUploadError('Cannot connect to backend. Run npm start in the CaiShen root folder.')
+      setLoading(false)
+      return null
     }
-    setLoading(false)
   }
 
   const exportVault = async () => {
@@ -1153,7 +1156,40 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
     setWiping(false)
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load().then(vaultData => {
+      // After initial load, auto-organize any folder that contains PDFs without an institution tag
+      // (handles files uploaded before the auto-sort fix, or a previously interrupted sort)
+      if (!vaultData) return
+      const unsortedFolderIds = [
+        ...new Set(
+          (vaultData.files || [])
+            .filter(f => f.type === 'pdf' && !f.tags?.institution)
+            .map(f => f.folderId)
+            .filter(Boolean)
+        )
+      ]
+      if (unsortedFolderIds.length > 0) {
+        // Fire-and-forget: sort silently in background
+        ;(async () => {
+          setOrganizing(true)
+          let orgOrg = 0; const deletedFolders = []
+          for (const fid of unsortedFolderIds) {
+            try {
+              const r = await axios.post(`${API}/auto-organize`, { folderId: fid }, { timeout: 300000 })
+              orgOrg += r.data.organized || 0
+              if (r.data.sourceFolderDeleted) deletedFolders.push(r.data.sourceFolderName)
+            } catch {}
+          }
+          await load()
+          onTransactionsChanged?.()
+          setOrganizing(false)
+          if (deletedFolders.length) setSelectedFolderId(null)
+          if (orgOrg > 0) setUploadSuccess(`✓ ${orgOrg} PDF${orgOrg !== 1 ? 's' : ''} sorted into account folders automatically`)
+        })()
+      }
+    })
+  }, [])
 
   const organizeFolder = async (folderId) => {
     setOrganizing(true); setUploadError(null)
@@ -1487,17 +1523,6 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
               {childFolders.length > 0 && visibleFiles.length > 0 && ', '}
               {visibleFiles.length > 0 && `${visibleFiles.length} file${visibleFiles.length!==1?'s':''}`}
             </span>
-            {selectedFolder && (() => {
-              const folderPdfCount = meta.files.filter(f => f.folderId === selectedFolder.id && f.type === 'pdf').length
-              return folderPdfCount > 0 ? (
-                <button onClick={() => organizeFolder(selectedFolder.id)} disabled={organizing}
-                  title={`Scan ${folderPdfCount} PDF${folderPdfCount !== 1 ? 's' : ''} and sort into account folders automatically`}
-                  style={{ marginLeft:'auto', fontSize:11, color:'var(--teal)', borderColor:'var(--teal)', background:'var(--teal-light)', padding:'3px 8px', display:'flex', alignItems:'center', gap:5 }}>
-                  <i className={`ti ${organizing ? 'ti-loader-2' : 'ti-folders'}`} style={{ fontSize:12, animation: organizing ? 'spin 1s linear infinite' : 'none' }} aria-hidden="true"/>
-                  {organizing ? 'Sorting…' : `Sort ${folderPdfCount} PDF${folderPdfCount !== 1 ? 's' : ''}`}
-                </button>
-              ) : null
-            })()}
             {selectedFolder && (
               <button onClick={()=>deleteFolder(selectedFolder.id)}
                 style={{ marginLeft: meta.files.filter(f => f.folderId === selectedFolder.id && f.type === 'pdf').length > 0 ? '6px' : 'auto', fontSize:11, color:'var(--coral)', borderColor:'var(--coral)', background:'var(--coral-light)', padding:'3px 8px' }}>
