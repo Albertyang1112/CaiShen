@@ -452,7 +452,16 @@ function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged 
   const fileUrl = `${API}/file/${file.id}`
   const isPdf   = file.type === 'pdf'
 
-  // Kick off AI extraction
+  // Called when the PDF viewer's background extraction finds transactions
+  const handleBackgroundTxs = (txs) => {
+    if (parseState !== 'idle') return // don't overwrite a manual extraction in progress
+    if (!txs.length) return
+    setParseResult({ transactions: txs, count: txs.length, accountId: accounts[0]?.id ?? null })
+    setSelAccountId(accounts[0]?.id ?? null)
+    setParseState('done')
+  }
+
+  // Kick off local (no-AI) extraction
   const extract = async () => {
     setParseState('loading')
     setParseError(null)
@@ -461,7 +470,12 @@ function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged 
     setPreview(null)
     setImportStep('ready')
     try {
-      const res = await axios.post(`${API}/parse-statement/${file.id}`)
+      const res = await axios.post(`${API}/parse-statement-local/${file.id}`)
+      if (!res.data.transactions?.length) {
+        setParseError('No transactions found. The PDF may use an unsupported layout — try importing via CSV export from your bank instead.')
+        setParseState('error')
+        return
+      }
       setParseResult(res.data)
       setSelAccountId(res.data.accountId || (accounts[0]?.id ?? null))
       setParseState('done')
@@ -529,7 +543,7 @@ function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged 
 
   const renderContent = () => {
     switch (file.type) {
-      case 'pdf':   return <PDFPreview url={fileUrl}/>
+      case 'pdf':   return <PDFPreview url={fileUrl} onTransactions={handleBackgroundTxs}/>
       case 'csv':   return <CSVPreview url={fileUrl}/>
       case 'excel': return <ExcelPreview url={fileUrl}/>
       case 'image': return <ImagePreview url={fileUrl}/>
@@ -559,17 +573,18 @@ function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged 
             <p style={{ fontSize:11, color:'var(--text-secondary)', margin:'1px 0 0' }}>{file.folderPath} · {formatSize(file.size)} · {new Date(file.createdAt).toLocaleDateString()}</p>
           </div>
           <div style={{ display:'flex', gap:6, alignItems:'center', flexShrink:0 }}>
-            {/* AI extract button — only for PDFs */}
-            {isPdf && parseState === 'idle' && (
+            {/* Extract button — local parser, no AI required */}
+            {isPdf && (parseState === 'idle' || parseState === 'error') && (
               <button onClick={extract}
-                style={{ fontSize:12, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
-                <i className="ti ti-sparkles" aria-hidden="true"/> Extract Transactions
+                style={{ fontSize:12, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)' }}>
+                <i className="ti ti-table-import" aria-hidden="true"/>
+                {parseState === 'error' ? ' Retry Extract' : ' Extract Transactions'}
               </button>
             )}
             {isPdf && parseState === 'loading' && (
-              <span style={{ fontSize:12, color:'var(--purple)', display:'flex', alignItems:'center', gap:5 }}>
+              <span style={{ fontSize:12, color:'var(--teal)', display:'flex', alignItems:'center', gap:5 }}>
                 <i className="ti ti-loader-2" style={{ animation:'spin 1s linear infinite' }} aria-hidden="true"/>
-                AI reading statement…
+                Reading statement…
               </span>
             )}
             {isPdf && parseState === 'done' && importStep === 'ready' && (

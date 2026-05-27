@@ -235,6 +235,41 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── POST /api/vault/parse-statement-local/:id — extract transactions (no AI) ──
+  router.post('/parse-statement-local/:id', async (req, res) => {
+    try {
+      const { parsePDFTransactions } = require('./pdf-parser');
+      const userId   = req.user.id;
+      const io       = makeIO(userId);
+      const meta     = readMeta(userId);
+      const file     = meta.files.find(f => f.id === req.params.id);
+      if (!file)                return res.status(404).json({ error: 'File not found' });
+      if (file.type !== 'pdf') return res.status(400).json({ error: 'Only PDF files can be parsed' });
+
+      const filePath = path.join(getUserVaultDir(userId), file.folderPath, file.name);
+      if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File missing from disk' });
+
+      const buffer       = fs.readFileSync(filePath);
+      const transactions = await parsePDFTransactions(buffer, file.tags || {});
+
+      // Attempt to match account from file tags
+      const accounts = io.read('accounts.json') || [];
+      const { account: acctName, institution } = file.tags || {};
+      const acct = accounts.find(a => a.name === acctName) || null;
+
+      res.json({
+        transactions,
+        count:       transactions.length,
+        accountId:   acct?.id   || null,
+        accountName: acctName   || null,
+        institution: institution || null,
+      });
+    } catch (e) {
+      console.error('[vault/parse-statement-local]', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ── POST /api/vault/parse-statement/:id — extract transactions via Claude ──
   router.post('/parse-statement/:id', async (req, res) => {
     try {
