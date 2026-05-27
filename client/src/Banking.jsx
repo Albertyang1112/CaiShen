@@ -7,20 +7,217 @@ const fd  = (n, d=0) => (n<0?'-$':'$')+fmt(Math.abs(n),d)
 const fmtFull = n => (n<0?'-$':'$')+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
 
 // ── Account classification ────────────────────────────────────────────────────
-const RETIREMENT_SUBS = new Set(['401k','401a','ira','roth','roth ira','403b','457b','pension','profit sharing','simple ira','sep ira','keogh'])
+// Covers all documented Plaid subtypes + institution-name heuristics
+
+// All Plaid retirement subtypes
+const RETIREMENT_SUBS = new Set([
+  '401a','401k','403b','457b','457plan',
+  'ira','roth','roth ira','roth 401k','roth 403b','roth 457b','roth pension',
+  'roth profit sharing plan','roth thrift savings plan',
+  'pension','profit sharing plan','profit sharing',
+  'simple ira','sep ira','sarsep','keogh',
+  'thrift savings plan','retirement',
+  'annuity','fixed annuity','variable annuity','other annuity',
+  // education savings
+  '529','education savings account',
+  // Canadian / international
+  'rrsp','rrif','rdsp','resp','tfsa','fhsa','lira','lif','lrif','rlif','prif','lrsp','sipp',
+])
+
+// All non-retirement Plaid investment subtypes
+const EQUITY_SUBS = new Set([
+  'brokerage','mutual fund','etf','non-taxable brokerage account',
+  'trust','ugma','utma','stock plan',
+  'gic','cash isa','isa (non-cash)',
+  'life insurance','other insurance',
+  'health reimbursement arrangement','hsa (non-cash)',
+  'qshr',
+])
+
+// Crypto subtypes (Plaid 2022+)
+const CRYPTO_SUBS = new Set(['crypto exchange','non-custodial wallet'])
+
+// Depository subtypes
+const BANK_SUBS = new Set([
+  'checking','savings','cd','money market','prepaid',
+  'cash management','paypal','hsa','ebt','limited purpose checking','cash',
+])
+
+// Loan subtypes
+const LOAN_SUBS = new Set([
+  'auto','student','consumer','installment','personal',
+  'line of credit','business','commercial','construction','loan','overdraft',
+])
+
+// Real-estate-backed loan subtypes
+const MORTGAGE_SUBS = new Set(['mortgage','home equity','heloc'])
+
 const INVESTMENT_TYPES = new Set(['investment','brokerage'])
-const INVESTMENT_SUBS  = new Set(['brokerage','mutual fund','etf'])
 const BANK_TYPES       = new Set(['depository','bank'])
-const BANK_SUBS        = new Set(['checking','savings','cd','money market','prepaid','cash management','paypal','hsa'])
+
+// ── Institution name → asset class ───────────────────────────────────────────
+// Case-insensitive substring match; first match wins.
+// Put more-specific names before more-general ones.
+const INST_CLASS_MAP = [
+  // Crypto exchanges
+  ['coinbase',              'crypto'],
+  ['gemini',                'crypto'],
+  ['kraken',                'crypto'],
+  ['binance',               'crypto'],
+  ['crypto.com',            'crypto'],
+  ['ftx',                   'crypto'],
+  ['okx',                   'crypto'],
+  ['bybit',                 'crypto'],
+  ['bitfinex',              'crypto'],
+  ['bitstamp',              'crypto'],
+  ['gate.io',               'crypto'],
+  ['kucoin',                'crypto'],
+  ['huobi',                 'crypto'],
+  ['uphold',                'crypto'],
+  ['river financial',       'crypto'],
+  ['swan bitcoin',          'crypto'],
+  ['strike',                'crypto'],
+  ['robinhood crypto',      'crypto'],  // before plain 'robinhood'
+  ['voyager digital',       'crypto'],
+  ['celsius network',       'crypto'],
+  ['blockfi',               'crypto'],
+  ['nexo',                  'crypto'],
+  ['bitpanda',              'crypto'],
+  ['deribit',               'crypto'],
+  ['bitmex',                'crypto'],
+  ['phemex',                'crypto'],
+  ['bitget',                'crypto'],
+  ['luno',                  'crypto'],
+  ['coinsquare',            'crypto'],
+  ['ndax',                  'crypto'],
+  ['swyftx',                'crypto'],
+
+  // Brokerages & investment platforms → equity
+  ['m1 finance',            'equity'],
+  ['m1finance',             'equity'],
+  ['robinhood',             'equity'],
+  ['acorns',                'equity'],
+  ['public.com',            'equity'],
+  ['webull',                'equity'],
+  ['tastytrade',            'equity'],
+  ['tastyworks',            'equity'],
+  ['interactive brokers',   'equity'],
+  ['ibkr',                  'equity'],
+  ['charles schwab',        'equity'],
+  ['schwab',                'equity'],
+  ['fidelity',              'equity'],
+  ['vanguard',              'equity'],
+  ['td ameritrade',         'equity'],
+  ['e*trade',               'equity'],
+  ['etrade',                'equity'],
+  ['merrill edge',          'equity'],
+  ['merrill lynch',         'equity'],
+  ['morgan stanley',        'equity'],
+  ['ubs financial',         'equity'],
+  ['raymond james',         'equity'],
+  ['edward jones',          'equity'],
+  ['ally invest',           'equity'],
+  ['ally financial',        'equity'],
+  ['firstrade',             'equity'],
+  ['tradestation',          'equity'],
+  ['thinkorswim',           'equity'],
+  ['moomoo',                'equity'],
+  ['stash',                 'equity'],
+  ['sofi invest',           'equity'],
+  ['sofi',                  'equity'],
+  ['wealthfront',           'equity'],
+  ['betterment',            'equity'],
+  ['ellevest',              'equity'],
+  ['titan',                 'equity'],
+  ['composer',              'equity'],
+  ['j.p. morgan',           'equity'],
+  ['jpmorgan',              'equity'],
+  ['lightspeed financial',  'equity'],
+  ['apex clearing',         'equity'],
+  ['drivewealth',           'equity'],
+  ['tradier',               'equity'],
+  ['folio investing',       'equity'],
+  ['stockpile',             'equity'],
+  ['magnifi',               'equity'],
+  ['wealthsimple',          'equity'],
+  ['nutmeg',                'equity'],
+  ['moneyfarm',             'equity'],
+  ['freetrade',             'equity'],
+  ['trading 212',           'equity'],
+  ['degiro',                'equity'],
+  ['saxo bank',             'equity'],
+  ['etoro',                 'equity'],
+  ['plus500',               'equity'],
+  ['ig group',              'equity'],
+  ['avatrade',              'equity'],
+  ['oanda',                 'equity'],
+  ['forex.com',             'equity'],
+
+  // Retirement-focused providers (subtype catches most; these are edge-case safety nets)
+  ['guideline',             'retirement'],
+  ['human interest',        'retirement'],
+  ['voya financial',        'retirement'],
+  ['principal financial',   'retirement'],
+  ['tiaa',                  'retirement'],
+  ['empower retirement',    'retirement'],
+  ['empower',               'retirement'],
+  ['transamerica',          'retirement'],
+  ['john hancock',          'retirement'],
+  ['massmutual',            'retirement'],
+  ['nationwide retirement', 'retirement'],
+  ['lincoln financial',     'retirement'],
+  ['securian',              'retirement'],
+  ['newport group',         'retirement'],
+  ['ascensus',              'retirement'],
+  ['paychex retirement',    'retirement'],
+  ['adp retirement',        'retirement'],
+  ['prudential retirement', 'retirement'],
+  ['northwestern mutual',   'retirement'],
+  ['guardian life',         'retirement'],
+  ['new york life',         'retirement'],
+  ['unum',                  'retirement'],
+  ['standard insurance',    'retirement'],
+]
+
+// ── Account name pattern → asset class (last-resort fallback) ────────────────
+const NAME_PATTERNS = [
+  [/\b(401[ak]?|403[bB]|457[bB]|roth|[\s(]ira\b|sep\s+ira|simple\s+ira|pension|profit[- ]shar|thrift[- ]sav|\btsp\b|retirement)\b/i, 'retirement'],
+  [/\b(bitcoin|btc|ethereum|eth|crypto|defi|nft|token|blockchain)\b/i,                                                               'crypto'],
+  [/\b(brokerage|investm|portfolio|trading|equity|stock[^h]|mutual[- ]fund|securities)\b/i,                                          'equity'],
+  [/\b(mortgage|heloc|home[- ]equity|home[- ]loan)\b/i,                                                                              'loan'],
+]
 
 export function classifyAccount(acc) {
-  const t = (acc.type    || '').toLowerCase()
-  const s = (acc.subtype || '').toLowerCase()
-  if (RETIREMENT_SUBS.has(s))                           return 'retirement'
-  if (INVESTMENT_TYPES.has(t) || INVESTMENT_SUBS.has(s)) return 'equity'
-  if (BANK_TYPES.has(t) || BANK_SUBS.has(s))            return 'bank'
-  if (t === 'credit' || s === 'credit card')             return 'credit'
-  if (t === 'crypto')                                    return 'crypto'
+  const t    = (acc.type        || '').toLowerCase().trim()
+  const s    = (acc.subtype     || '').toLowerCase().trim()
+  const inst = (acc.institution || '').toLowerCase()
+  const name = (acc.name        || '').toLowerCase()
+
+  // 1. Subtype-based — highest fidelity, directly from Plaid ─────────────────
+  if (RETIREMENT_SUBS.has(s)) return 'retirement'
+  if (CRYPTO_SUBS.has(s))     return 'crypto'
+  if (MORTGAGE_SUBS.has(s))   return 'loan'
+  if (LOAN_SUBS.has(s))       return 'loan'
+  if (EQUITY_SUBS.has(s))     return 'equity'
+  if (BANK_SUBS.has(s))       return 'bank'
+  if (s === 'credit card' || s === 'bank issued credit card' || s === 'paypal credit card') return 'credit'
+
+  // 2. Type-based ─────────────────────────────────────────────────────────────
+  if (INVESTMENT_TYPES.has(t)) return 'equity'
+  if (BANK_TYPES.has(t))       return 'bank'
+  if (t === 'credit')          return 'credit'
+  if (t === 'loan')            return 'loan'
+
+  // 3. Institution name lookup ─────────────────────────────────────────────────
+  for (const [key, cls] of INST_CLASS_MAP) {
+    if (inst.includes(key)) return cls
+  }
+
+  // 4. Account name / institution name pattern matching ───────────────────────
+  for (const [rx, cls] of NAME_PATTERNS) {
+    if (rx.test(name) || rx.test(inst)) return cls
+  }
+
   return 'other'
 }
 

@@ -177,15 +177,18 @@ function MainDashboard({onDrill, accounts, transactions=[], properties, onConnec
   const reEquity = reVal-reMort
   const noi      = properties.reduce((s,p)=>s+(p.rent-p.exp),0)
 
-  // Vault-driven balances: an account only gets a value if it has settled transactions.
-  // Balance = availableBalance (excludes pending) when data exists, $0 when vault is empty.
+  // For bank/credit accounts: only show balance when we have settled transaction data
+  // (guards against stale or unsynced manual accounts showing phantom balances).
+  // For investment/retirement/crypto accounts: use the Plaid balance directly —
+  // these accounts get their balance from Plaid's Balance API and may not generate
+  // regular Transactions API entries (e.g. a brokerage holding ETFs).
   const settledAcctIds = new Set(
     transactions.filter(t => !t.pending && t.account).map(t => t.account)
   )
+  const BALANCE_DIRECT_CLASSES = new Set(['equity', 'retirement', 'crypto'])
   const acctBal = acct => {
-    if (!settledAcctIds.has(acct.id)) return 0
-    // availableBalance = what the bank shows you (may include early-released pending deposits)
-    // Fall back to balance if availableBalance not set
+    const cls = classifyAccount(acct)
+    if (!BALANCE_DIRECT_CLASSES.has(cls) && !settledAcctIds.has(acct.id)) return 0
     return acct.availableBalance ?? acct.balance ?? 0
   }
 
@@ -1376,6 +1379,23 @@ function MainApp({ auth, onLogout }) {
     axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])).catch(()=>{})
     axios.get(`${API}/properties`).then(r=>setProperties(r.data||[])).catch(()=>{})
   },[])
+
+  // Auto-enable sidebar asset-class modules when matching accounts are connected
+  useEffect(() => {
+    if (!accounts.length) return
+    const AUTO_CLASSES = ['equity', 'retirement', 'crypto']
+    const presentClasses = accounts.map(a => classifyAccount(a))
+    const toAdd = AUTO_CLASSES.filter(cls =>
+      presentClasses.includes(cls) && !enabledClasses.includes(cls)
+    )
+    if (toAdd.length) {
+      setEnabledClasses(prev => {
+        const next = [...new Set([...prev, ...toAdd])]
+        localStorage.setItem('enabledClasses', JSON.stringify(next))
+        return next
+      })
+    }
+  }, [accounts]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Live push: server notifies the browser whenever a Plaid sync writes new data
   useEffect(()=>{
