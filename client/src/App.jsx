@@ -954,6 +954,7 @@ function ConnectionsScreen({status, accounts, onSync}) {
     try {
       await axios.delete(`${API}/plaid/connections/${itemId}`)
       setPlaidConns(prev => prev.filter(c => c.item_id !== itemId))
+      onSync?.()
     } catch(e) { console.error(e) }
   }
 
