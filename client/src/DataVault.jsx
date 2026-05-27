@@ -1158,36 +1158,49 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
 
   useEffect(() => {
     load().then(vaultData => {
-      // After initial load, auto-organize any folder that contains PDFs without an institution tag
-      // (handles files uploaded before the auto-sort fix, or a previously interrupted sort)
       if (!vaultData) return
-      const unsortedFolderIds = [
-        ...new Set(
-          (vaultData.files || [])
-            .filter(f => f.type === 'pdf' && !f.tags?.institution)
-            .map(f => f.folderId)
-            .filter(Boolean)
-        )
-      ]
-      if (unsortedFolderIds.length > 0) {
-        // Fire-and-forget: sort silently in background
-        ;(async () => {
-          setOrganizing(true)
-          let orgOrg = 0; const deletedFolders = []
-          for (const fid of unsortedFolderIds) {
-            try {
-              const r = await axios.post(`${API}/auto-organize`, { folderId: fid }, { timeout: 300000 })
-              orgOrg += r.data.organized || 0
-              if (r.data.sourceFolderDeleted) deletedFolders.push(r.data.sourceFolderName)
-            } catch {}
-          }
+      ;(async () => {
+        setOrganizing(true)
+        let orgOrg = 0, consolidated = 0
+        const deletedFolders = []
+
+        // 1. Backfill last4 + consolidate duplicate account folders (e.g. "High School
+        //    Checking" and "TOTAL CHECKING" for the same Chase account).
+        //    This is always cheap if there's nothing to do.
+        try {
+          const cr = await axios.post(`${API}/auto-organize`, { consolidate: true }, { timeout: 300000 })
+          consolidated = cr.data.consolidated || 0
+        } catch {}
+
+        // 2. Organize any folders that have PDFs not yet tagged with an institution
+        const unsortedFolderIds = [
+          ...new Set(
+            (vaultData.files || [])
+              .filter(f => f.type === 'pdf' && !f.tags?.institution)
+              .map(f => f.folderId)
+              .filter(Boolean)
+          )
+        ]
+        for (const fid of unsortedFolderIds) {
+          try {
+            const r = await axios.post(`${API}/auto-organize`, { folderId: fid }, { timeout: 300000 })
+            orgOrg += r.data.organized || 0
+            if (r.data.sourceFolderDeleted) deletedFolders.push(r.data.sourceFolderName)
+          } catch {}
+        }
+
+        if (orgOrg > 0 || consolidated > 0) {
           await load()
           onTransactionsChanged?.()
-          setOrganizing(false)
           if (deletedFolders.length) setSelectedFolderId(null)
-          if (orgOrg > 0) setUploadSuccess(`✓ ${orgOrg} PDF${orgOrg !== 1 ? 's' : ''} sorted into account folders automatically`)
-        })()
-      }
+          const parts = [
+            orgOrg       > 0 ? `${orgOrg} PDF${orgOrg !== 1 ? 's' : ''} sorted` : null,
+            consolidated > 0 ? `${consolidated} file${consolidated !== 1 ? 's' : ''} merged into correct account` : null,
+          ].filter(Boolean)
+          setUploadSuccess(`✓ ${parts.join(' · ')} automatically`)
+        }
+        setOrganizing(false)
+      })()
     })
   }, [])
 
