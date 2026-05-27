@@ -1264,17 +1264,29 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
   for (const a of accounts) acctByName[a.name] = a.id
 
   const stmtSummary = (file) => {
-    const { year, month, account: acctName,
+    const { year: tagYear, month: tagMonth, account: acctName,
             income: cachedIncome, spending: cachedSpending,
             net: cachedNet, txCount: cachedTxCount } = file.tags || {}
+
+    // Derive year/month from tags; fall back to parsing filename
+    // e.g. "2026-02 TOTAL CHECKING Statement.pdf"  →  year=2026, month=02
+    let year = tagYear, month = tagMonth
+    if (!year || !month) {
+      const m = file.name.match(/^(\d{4})[-._\s](\d{2})\b/)
+      if (m) { year = m[1]; month = m[2] }
+    }
     if (!year || !month) return null
+
     const monthStr = `${year}-${String(month).padStart(2,'0')}`
     const acctId   = acctByName[acctName]
-    const txs = transactions.filter(t =>
-      !t.pending &&
-      t.month === monthStr &&
-      (acctId ? t.account === acctId : t.institution === file.tags?.institution)
-    )
+
+    const txs = transactions.filter(t => {
+      if (t.pending || t.month !== monthStr) return false
+      if (acctId)                  return t.account === acctId          // exact account match
+      if (file.tags?.institution)  return t.institution === file.tags.institution // institution match
+      return true  // no identifier yet — sum all transactions for this month
+    })
+
     if (txs.length) {
       const income   = txs.filter(t => t.amount > 0).reduce((s,t) => s + t.amount, 0)
       const spending = txs.filter(t => t.amount < 0).reduce((s,t) => s + t.amount, 0)

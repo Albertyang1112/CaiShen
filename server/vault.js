@@ -115,11 +115,15 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
           }
         }
         fs.writeFileSync(path.join(physicalPath, file.originalname), file.buffer);
+        // Auto-parse year/month from filenames like "2026-02 TOTAL CHECKING Statement.pdf"
+        const fnDate = file.originalname.match(/^(\d{4})[-._\s](\d{2})\b/);
+        const fnDateTags = fnDate ? { year: fnDate[1], month: fnDate[2] } : {};
         const newFile = {
           id: `file_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, name: file.originalname,
           folderId: currentFolderId, folderPath, size: file.size,
           type: getFileType(file.originalname), mimeType: file.mimetype,
-          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), version: 1, tags: autoTag(folderPath),
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), version: 1,
+          tags: { ...autoTag(folderPath), ...fnDateTags },
         };
         meta.files.push(newFile); uploaded.push(newFile);
       }
@@ -362,16 +366,24 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
         }
       }
 
-      // ── 4. Update file tags with detected metadata ───────────────────────────
+      // ── 4. Update file tags with detected metadata + bake in financial stats ────
+      const txIncome   = +transactions.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0).toFixed(2);
+      const txSpending = +transactions.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0).toFixed(2);
       const fileIdx = meta.files.findIndex(f => f.id === file.id);
       if (fileIdx >= 0) {
         meta.files[fileIdx].tags = {
           ...meta.files[fileIdx].tags,
-          ...(inst             && { institution: inst }),
-          ...(matchedAcct?.name&& { account: matchedAcct.name }),
-          ...(l4               && { last4: l4 }),
-          ...(detected.year    && { year: String(detected.year) }),
-          ...(detected.month   && { month: String(detected.month).padStart(2, '0') }),
+          ...(inst              && { institution: inst }),
+          ...(matchedAcct?.name && { account: matchedAcct.name }),
+          ...(l4                && { last4: l4 }),
+          ...(detected.year     && { year: String(detected.year) }),
+          ...(detected.month    && { month: String(detected.month).padStart(2, '0') }),
+          ...(transactions.length && {
+            income:   txIncome,
+            spending: txSpending,
+            net:      +(txIncome + txSpending).toFixed(2),
+            txCount:  transactions.length,
+          }),
         };
       }
       writeMeta(meta, userId);
