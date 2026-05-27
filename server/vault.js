@@ -32,6 +32,22 @@ const autoTag = (folderPath) => {
 
 const titleCase = s => s.toLowerCase().replace(/(?:^|\s)\S/g, c => c.toUpperCase());
 
+const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const stmtFilename = (l4, year, month) =>
+  `${l4} Statement ${MONTH_ABBR[Math.max(0, parseInt(month) - 1)]} ${year}.pdf`;
+
+// ── Duplicate detection helpers ───────────────────────────────────────────────
+const DUPE_SIMILARITY_THRESHOLD = 0.82; // word-Jaccard ≥ 82% → highly similar
+
+function wordJaccard(text1, text2) {
+  const tok = t => new Set((t.toLowerCase().match(/\b[\w.$,%-]+\b/g) || []).filter(w => w.length > 1));
+  const a = tok(text1), b = tok(text2);
+  if (!a.size && !b.size) return 1;
+  if (!a.size || !b.size) return 0;
+  let inter = 0; for (const w of a) if (b.has(w)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
 module.exports = function(BASE_VAULT_DIR, makeIO) {
   const router = express.Router();
 
@@ -412,9 +428,84 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
         console.log(`[vault/auto-organize] Consolidated ${consolidated} files across duplicate account folders`);
       }
 
-      // ── Consolidate-only mode: return after backfill + merge ─────────────────
+      // ── Rename pass (runs in both modes) — canonical filename for Bank Statement PDFs ─
+      // Renames files that have last4 + year + month tags but non-canonical names.
+      // Target format: "{last4} Statement {MonAbbr} {YYYY}.pdf"
+      // If the canonical name already exists in the same folder, the file being renamed
+      // is a period-exact duplicate — it is deleted automatically.
+      let renamed = 0;
+      const bankStmtFiles = meta.files.filter(f =>
+        f.type === 'pdf' &&
+        f.tags?.last4 && f.tags?.year && f.tags?.month &&
+        f.folderPath && f.folderPath.startsWith('Bank Statements/')
+      );
+      let dupeRemoved = 0;
+      for (const f of bankStmtFiles) {
+        const canonical = stmtFilename(f.tags.last4, f.tags.year, f.tags.month);
+        if (f.name === canonical) continue; // already correct
+        const dir     = path.join(vaultDir, f.folderPath);
+        const oldPath = path.join(dir, f.name);
+        if (!fs.existsSync(oldPath)) continue;
+
+        // If canonical name already exists (owned by a DIFFERENT meta entry) → duplicate
+        if (fs.existsSync(path.join(dir, canonical))) {
+          try { fs.unlinkSync(oldPath); } catch {}
+          const fi = meta.files.findIndex(x => x.id === f.id);
+          if (fi >= 0) meta.files.splice(fi, 1);
+          dupeRemoved++;
+          console.log(`[vault/auto-organize] Auto-removed duplicate: ${f.name} (kept: ${canonical})`);
+          continue;
+        }
+
+        // Rename to canonical
+        try {
+          fs.renameSync(oldPath, path.join(dir, canonical));
+          const fi = meta.files.findIndex(x => x.id === f.id);
+          if (fi >= 0) meta.files[fi].name = canonical;
+          renamed++;
+        } catch (e) {
+          console.warn(`[vault/auto-organize] rename failed: ${f.name} → ${canonical}:`, e.message);
+        }
+      }
+
+      // ── Period-exact cleanup: remove any remaining (2)/(3) duplicates ─────────
+      // Catches files that were already named with a suffix before this pass ran.
+      const periodGroups = {};
+      for (const f of meta.files.filter(x =>
+        x.type === 'pdf' && x.tags?.last4 && x.tags?.year && x.tags?.month
+      )) {
+        const key = `${f.tags.last4}::${f.tags.year}::${f.tags.month}`;
+        if (!periodGroups[key]) periodGroups[key] = [];
+        periodGroups[key].push(f);
+      }
+      for (const group of Object.values(periodGroups)) {
+        if (group.length < 2) continue;
+        // Prefer canonical name (no numeric suffix), then shortest name
+        group.sort((a, b) => {
+          const aIsClean = !/\s\(\d+\)\.pdf$/i.test(a.name);
+          const bIsClean = !/\s\(\d+\)\.pdf$/i.test(b.name);
+          if (aIsClean !== bIsClean) return aIsClean ? -1 : 1;
+          return a.name.length - b.name.length;
+        });
+        for (const dup of group.slice(1)) {
+          const fp = path.join(vaultDir, dup.folderPath, dup.name);
+          try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch {}
+          const fi = meta.files.findIndex(x => x.id === dup.id);
+          if (fi >= 0) meta.files.splice(fi, 1);
+          dupeRemoved++;
+          console.log(`[vault/auto-organize] Auto-removed duplicate: ${dup.name} (kept: ${group[0].name})`);
+        }
+      }
+
+      if (renamed > 0 || dupeRemoved > 0) {
+        writeMeta(meta, userId);
+        if (renamed    > 0) console.log(`[vault/auto-organize] Renamed ${renamed} files to canonical format`);
+        if (dupeRemoved > 0) console.log(`[vault/auto-organize] Auto-removed ${dupeRemoved} duplicate file(s)`);
+      }
+
+      // ── Consolidate-only mode: return after backfill + merge + cleanup ────────
       if (consolidate) {
-        return res.json({ processed:0, organized:0, failed:0, skipped:0, consolidated });
+        return res.json({ processed:0, organized:0, failed:0, skipped:0, fudgedCount:0, consolidated, renamed, duplicatesRemoved: dupeRemoved });
       }
 
       // ── Step 4: Gather PDF files to organize ──────────────────────────────────
@@ -449,7 +540,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
         extracted.push(...batchOut);
       }
 
-      const results = { processed:0, organized:0, failed:0, skipped:0, consolidated, details:[] };
+      const results = { processed:0, organized:0, failed:0, skipped:0, fudgedCount:0, consolidated, duplicatesRemoved:0, details:[] };
 
       for (const outcome of extracted) {
         if (outcome.status === 'rejected') { results.failed++; continue; }
@@ -554,12 +645,100 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
         const cleanName  = (matchedAcct.name || inst).replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, ' ').trim();
         const targetPath = `Bank Statements/${inst}/${cleanName}/${year}`;
 
-        if (file.folderPath === targetPath) { results.skipped++; continue; }
+        // ── Period duplicate / fudge detection (runs before the already-in-place check) ─
+        if (l4 && year && month) {
+          const mStr = String(month).padStart(2, '0');
+          const existingPeriodFile = meta.files.find(f2 =>
+            f2.id !== file.id && f2.type === 'pdf' &&
+            f2.folderPath === targetPath &&
+            f2.tags?.last4 === String(l4) &&
+            f2.tags?.year  === String(year) &&
+            f2.tags?.month === mStr
+          );
+          if (existingPeriodFile) {
+            // ── Compare transactions to distinguish fudge from true duplicate ──
+            // Run in a child process: pdf2json has shared global state that
+            // corrupts when a pdfkit "bufferPages" PDF is parsed after another PDF
+            // in the same process — resulting in hangs or wrong results.
+            let isFudge = false;
+            try {
+              const { execFileSync } = require('child_process');
+              const workerPath = path.join(__dirname, 'fudge-detect-worker.js');
+              const origPath   = path.join(vaultDir, existingPeriodFile.folderPath, existingPeriodFile.name);
+              const newPath    = path.join(vaultDir, file.folderPath, file.name);
+              const tags       = existingPeriodFile.tags || {};
+              const raw = execFileSync(
+                process.execPath, [workerPath, origPath, newPath, tags.year || '', tags.month || ''],
+                { cwd: __dirname, timeout: 30000, maxBuffer: 1024 * 1024 }
+              );
+              const { orig: origTxs, new: newTxs } = JSON.parse(raw.toString().trim());
+              if (newTxs.length > 0 && origTxs.length > 0) {
+                let fudgeCount = 0, matchCount = 0;
+                for (const t2 of newTxs) {
+                  const sameDateTxs = origTxs.filter(t1 => t1.date === t2.date);
+                  if (!sameDateTxs.length) continue;
+                  const minDiff = Math.min(...sameDateTxs.map(t1 =>
+                    Math.abs(Math.abs(t2.amount) - Math.abs(t1.amount))
+                  ));
+                  if (minDiff < 0.02) matchCount++;
+                  else fudgeCount++;
+                }
+                const total = fudgeCount + matchCount;
+                isFudge = total >= 2 && (fudgeCount / total) >= 0.2;
+                console.log(`[vault/fudge-detect] orig=${origTxs.length} new=${newTxs.length} fudge=${fudgeCount}/${total} isFudge=${isFudge}`);
+              }
+            } catch (e) {
+              console.error('[vault/auto-organize] fudge detection:', e.message);
+            }
 
-        // Move physical file
+            if (isFudge) {
+              // Rename to a clearly flagged filename and tag as suspicious
+              const flaggedName = stmtFilename(l4, year, month).replace('.pdf', '_FLAGGED.pdf');
+              const srcPhys     = path.join(vaultDir, file.folderPath, file.name);
+              const dstPhys     = path.join(vaultDir, file.folderPath, flaggedName);
+              if (file.name !== flaggedName && fs.existsSync(srcPhys)) {
+                try { fs.renameSync(srcPhys, dstPhys); } catch {}
+              }
+              const fi = meta.files.findIndex(f2 => f2.id === file.id);
+              if (fi >= 0) {
+                if (file.name !== flaggedName) meta.files[fi].name = flaggedName;
+                meta.files[fi].tags = {
+                  ...meta.files[fi].tags,
+                  institution: inst, account: matchedAcct.name,
+                  ...(l4    && { last4: String(l4) }),
+                  ...(year  && { year:  String(year) }),
+                  ...(month && { month: mStr }),
+                  fudge: true, fudgeOf: existingPeriodFile.id,
+                };
+              }
+              results.fudgedCount = (results.fudgedCount || 0) + 1;
+              console.log(`[vault/auto-organize] Fudge detected: ${file.name} vs ${existingPeriodFile.name}`);
+              continue;
+            } else if (file.folderPath !== targetPath) {
+              // True duplicate arriving from a different folder — auto-remove
+              const srcPath = path.join(vaultDir, file.folderPath, file.name);
+              try { if (fs.existsSync(srcPath)) fs.unlinkSync(srcPath); } catch {}
+              const fi = meta.files.findIndex(f2 => f2.id === file.id);
+              if (fi >= 0) meta.files.splice(fi, 1);
+              results.duplicatesRemoved++;
+              console.log(`[vault/auto-organize] Auto-removed duplicate: ${file.name} (kept: ${existingPeriodFile.name})`);
+              continue;
+            } else {
+              // True duplicate already in target folder — silently ignore
+              continue;
+            }
+          }
+        }
+
+        // Already in the correct place with no period conflict — skip silently (not an error)
+        if (file.folderPath === targetPath) { continue; }
+
+        // Move physical file — use canonical filename immediately if we have all tags
         const targetFolderId = ensureFolderPath(targetPath);
-        let   dstName = file.name;
+        let   dstName = (l4 && year && month) ? stmtFilename(l4, year, month) : file.name;
         if (fs.existsSync(path.join(vaultDir, targetPath, dstName))) {
+          // Shouldn't reach here (period-exact check above should have caught it),
+          // but guard just in case a file exists on disk but not in meta
           const base = path.basename(dstName, path.extname(dstName));
           dstName    = `${base}_${Date.now()}${path.extname(dstName)}`;
         }
@@ -588,29 +767,209 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
 
       writeMeta(meta, userId);
 
-      // ── Clean up source folder if now empty ──────────────────────────────────
+      // ── Clean up source folder and any now-empty ancestor folders ───────────
+      // Walk up the parentId chain, removing every folder that becomes empty
+      // after its children are organized out. This prevents ghost empty parent
+      // folders (e.g. "statements") from lingering and blocking future re-uploads.
       if (folderId) {
-        const stillHasFiles    = meta.files.some(f => f.folderId === folderId);
-        const stillHasChildren = meta.folders.some(f => f.parentId === folderId);
-        if (!stillHasFiles && !stillHasChildren) {
-          const srcFolder = meta.folders.find(f => f.id === folderId);
-          if (srcFolder) {
-            try {
-              const physPath = path.join(vaultDir, srcFolder.path);
-              if (fs.existsSync(physPath)) fs.rmdirSync(physPath);
-            } catch {}
-            meta.folders = meta.folders.filter(f => f.id !== folderId);
-            writeMeta(meta, userId);
-            results.sourceFolderDeleted = true;
-            results.sourceFolderName    = srcFolder.name;
+        let cleanId      = folderId;
+        let firstDeleted = null;
+        while (cleanId) {
+          const cleanHasFiles    = meta.files.some(f => f.folderId === cleanId);
+          const cleanHasChildren = meta.folders.some(f => f.parentId === cleanId);
+          if (cleanHasFiles || cleanHasChildren) break; // still has content — stop
+          const cleanFolder = meta.folders.find(f => f.id === cleanId);
+          if (!cleanFolder) break;
+          if (!firstDeleted) firstDeleted = cleanFolder; // remember the first (deepest) one
+          const nextParent = cleanFolder.parentId;
+          try {
+            const physPath = path.join(vaultDir, cleanFolder.path);
+            if (fs.existsSync(physPath)) fs.rmSync(physPath, { recursive: true, force: true });
+          } catch {}
+          meta.folders = meta.folders.filter(f => f.id !== cleanId);
+          cleanId = nextParent;
+        }
+        if (firstDeleted) {
+          writeMeta(meta, userId);
+          results.sourceFolderDeleted = true;
+          results.sourceFolderName    = firstDeleted.name;
+        }
+      }
+
+      results.renamed = renamed;
+      console.log(`[vault/auto-organize] ${results.organized}/${results.processed} sorted, ${results.duplicatesRemoved} dupes removed, ${results.fudgedCount} flagged, ${results.skipped} skipped, ${results.failed} failed, ${consolidated} consolidated, ${renamed} renamed`);
+      res.json(results);
+    } catch (e) {
+      console.error('[vault/auto-organize]', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── POST /api/vault/extract-stats ───────────────────────────────────────────
+  // Scans all organized PDFs that haven't had financial stats extracted yet,
+  // runs parsePDFTransactions on each (5 at a time), and caches income/spending/net
+  // in the file's tags so the vault list can show them without a manual click.
+  router.post('/extract-stats', async (req, res) => {
+    try {
+      const { parsePDFTransactions } = require('./pdf-parser');
+      const userId   = req.user.id;
+      const vaultDir = getUserVaultDir(userId);
+      let   meta     = readMeta(userId);
+
+      // Process organized PDFs that either haven't been scanned yet, or were scanned
+      // but returned 0 transactions (income still undefined) — retry up to 3 times
+      // in case the parser improves between runs.
+      const needsStats = meta.files.filter(f =>
+        f.type === 'pdf' &&
+        f.tags?.institution &&
+        f.tags?.year &&
+        f.tags?.month &&
+        f.tags?.income === undefined &&
+        (f.tags?.statsAttempts || 0) < 3
+      );
+
+      if (!needsStats.length) return res.json({ processed: 0 });
+
+      let processed = 0;
+      const CONC = 5;
+      for (let i = 0; i < needsStats.length; i += CONC) {
+        await Promise.allSettled(needsStats.slice(i, i + CONC).map(async (f) => {
+          const fp = path.join(vaultDir, f.folderPath, f.name);
+          if (!fs.existsSync(fp)) return;
+          try {
+            const buffer       = fs.readFileSync(fp);
+            const transactions = await parsePDFTransactions(buffer, f.tags || {});
+            const fi         = meta.files.findIndex(x => x.id === f.id);
+            if (fi < 0) return;
+            const txIncome   = +transactions.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0).toFixed(2);
+            const txSpending = +transactions.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0).toFixed(2);
+            // Always write income/spending/net — even 0 — so the UI shows $0 instead of "—"
+            // for months that genuinely have no parseable transactions.
+            meta.files[fi].tags = {
+              ...meta.files[fi].tags,
+              statsProcessed: true,
+              statsAttempts:  (meta.files[fi].tags.statsAttempts || 0) + 1,
+              income:   txIncome,
+              spending: txSpending,
+              net:      +(txIncome + txSpending).toFixed(2),
+              txCount:  transactions.length,
+            };
+            processed++;
+          } catch {}
+        }));
+      }
+
+      if (processed > 0) writeMeta(meta, userId);
+      console.log(`[vault/extract-stats] Cached stats for ${processed}/${needsStats.length} PDFs`);
+      res.json({ processed });
+    } catch (e) {
+      console.error('[vault/extract-stats]', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── POST /api/vault/find-duplicates ──────────────────────────────────────────
+  // body: { fileIds?: string[], includeTextSimilarity?: boolean }
+  //   fileIds               — IDs to check; omit = scan all Bank Statement PDFs (period-exact only)
+  //   includeTextSimilarity — also compare PDF text content (requires fileIds; expensive)
+  // returns: { pairs: [{ fileA, fileB, similarity, reason }] }
+  router.post('/find-duplicates', async (req, res) => {
+    try {
+      const userId   = req.user.id;
+      const vaultDir = getUserVaultDir(userId);
+      const meta     = readMeta(userId);
+      const { fileIds, includeTextSimilarity = false } = req.body;
+
+      // All Bank Statement PDFs with period tags
+      const allTagged = meta.files.filter(f =>
+        f.type === 'pdf' &&
+        f.tags?.last4 && f.tags?.year && f.tags?.month &&
+        f.folderPath?.startsWith('Bank Statements/')
+      );
+
+      const targetIds = fileIds?.length ? new Set(fileIds) : null;
+
+      // ── Period-exact check: group by last4::year::month ───────────────────
+      const periodGroups = {};
+      for (const f of allTagged) {
+        const key = `${f.tags.last4}::${f.tags.year}::${f.tags.month}`;
+        if (!periodGroups[key]) periodGroups[key] = [];
+        periodGroups[key].push(f);
+      }
+
+      const pairs     = [];
+      const seenPairs = new Set();
+
+      for (const group of Object.values(periodGroups)) {
+        if (group.length < 2) continue;
+        for (let i = 0; i < group.length; i++) {
+          for (let j = i + 1; j < group.length; j++) {
+            const fA = group[i], fB = group[j];
+            // If fileIds given, at least one must be in the set
+            if (targetIds && !targetIds.has(fA.id) && !targetIds.has(fB.id)) continue;
+            const pk = [fA.id, fB.id].sort().join('|');
+            if (seenPairs.has(pk)) continue;
+            seenPairs.add(pk);
+            pairs.push({
+              fileA:      { id: fA.id, name: fA.name, folderPath: fA.folderPath, tags: fA.tags },
+              fileB:      { id: fB.id, name: fB.name, folderPath: fB.folderPath, tags: fB.tags },
+              similarity: 1.0,
+              reason:     'Same statement period',
+            });
           }
         }
       }
 
-      console.log(`[vault/auto-organize] ${results.organized}/${results.processed} sorted, ${results.skipped} skipped, ${results.failed} failed, ${consolidated} consolidated`);
-      res.json(results);
+      // ── Text similarity check (opt-in, requires fileIds) ─────────────────
+      if (includeTextSimilarity && targetIds) {
+        const { extractRawText } = require('./pdf-parser');
+        const targets    = allTagged.filter(f => targetIds.has(f.id));
+        const textCache  = new Map();
+
+        const getText = async (f) => {
+          if (textCache.has(f.id)) return textCache.get(f.id);
+          const fp = path.join(vaultDir, f.folderPath, f.name);
+          if (!fs.existsSync(fp)) { textCache.set(f.id, ''); return ''; }
+          try {
+            const t = await extractRawText(fs.readFileSync(fp));
+            textCache.set(f.id, t); return t;
+          } catch { textCache.set(f.id, ''); return ''; }
+        };
+
+        for (const fileA of targets) {
+          if (!fileA.tags?.last4) continue;
+          // Compare against same-account files (same last4), skip already-found pairs
+          const neighbors = allTagged.filter(f =>
+            f.id !== fileA.id &&
+            f.tags.last4 === fileA.tags.last4 &&
+            !seenPairs.has([fileA.id, f.id].sort().join('|'))
+          ).slice(0, 20); // cap comparisons per file
+
+          for (const fileB of neighbors) {
+            const pk = [fileA.id, fileB.id].sort().join('|');
+            if (seenPairs.has(pk)) continue;
+            seenPairs.add(pk);
+
+            const [textA, textB] = await Promise.all([getText(fileA), getText(fileB)]);
+            if (!textA || !textB || textA.length < 100) continue;
+
+            const sim = wordJaccard(textA, textB);
+            if (sim >= DUPE_SIMILARITY_THRESHOLD) {
+              pairs.push({
+                fileA:      { id: fileA.id, name: fileA.name, folderPath: fileA.folderPath, tags: fileA.tags },
+                fileB:      { id: fileB.id, name: fileB.name, folderPath: fileB.folderPath, tags: fileB.tags },
+                similarity: Math.round(sim * 1000) / 1000,
+                reason:     'Highly similar content',
+              });
+            }
+          }
+        }
+      }
+
+      console.log(`[vault/find-duplicates] Found ${pairs.length} duplicate pair(s)`);
+      res.json({ pairs });
     } catch (e) {
-      console.error('[vault/auto-organize]', e.message);
+      console.error('[vault/find-duplicates]', e.message);
       res.status(500).json({ error: e.message });
     }
   });

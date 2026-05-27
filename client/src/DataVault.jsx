@@ -22,6 +22,16 @@ const TAG_COLORS = {
   tax:'var(--pink)', personal:'var(--green)', business:'var(--blue)'
 }
 
+// Sort folders: 4-digit year names → descending (newest first); others → alphabetical
+const sortFoldersByDate = (arr) => [...arr].sort((a, b) => {
+  const aNum = /^\d{4}$/.test(a.name) ? parseInt(a.name) : NaN
+  const bNum = /^\d{4}$/.test(b.name) ? parseInt(b.name) : NaN
+  if (!isNaN(aNum) && !isNaN(bNum)) return bNum - aNum
+  if (!isNaN(aNum)) return -1   // year folders before non-year
+  if (!isNaN(bNum)) return 1
+  return a.name.localeCompare(b.name)
+})
+
 const CATEGORIES = {
   'Dining':        { icon:'ti-tools-kitchen-2',    color:'var(--coral)',  keywords:['restaurant','cafe','starbucks','doordash','ubereats','grubhub','food','dining','sushi','pizza','burger'] },
   'Groceries':     { icon:'ti-apple',              color:'var(--green)',  keywords:['whole foods','trader joe','safeway','kroger','instacart','grocery','supermarket'] },
@@ -853,7 +863,7 @@ function FolderNode({ folder, folders, files, selectedId, onSelect, depth=0 }) {
         {tag && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:3, background:'var(--bg-card)', color:TAG_COLORS[tag]||'var(--text-muted)', flexShrink:0, textTransform:'capitalize' }}>{tag}</span>}
         {fileCount>0 && <span style={{ fontSize:10, color:'var(--text-muted)', flexShrink:0 }}>{fileCount}</span>}
       </div>
-      {open && children.map(child=>(
+      {open && sortFoldersByDate(children).map(child=>(
         <FolderNode key={child.id} folder={child} folders={folders} files={files} selectedId={selectedId} onSelect={onSelect} depth={depth+1}/>
       ))}
     </div>
@@ -1161,15 +1171,17 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
       if (!vaultData) return
       ;(async () => {
         setOrganizing(true)
-        let orgOrg = 0, consolidated = 0
+        let orgOrg = 0, consolidated = 0, renamed = 0, dupeRemoved = 0, orgFudge = 0
         const deletedFolders = []
 
-        // 1. Backfill last4 + consolidate duplicate account folders (e.g. "High School
-        //    Checking" and "TOTAL CHECKING" for the same Chase account).
+        // 1. Backfill last4 + consolidate duplicate account folders + auto-remove
+        //    period-exact duplicates + rename to canonical format.
         //    This is always cheap if there's nothing to do.
         try {
           const cr = await axios.post(`${API}/auto-organize`, { consolidate: true }, { timeout: 300000 })
-          consolidated = cr.data.consolidated || 0
+          consolidated = cr.data.consolidated        || 0
+          renamed      = cr.data.renamed             || 0
+          dupeRemoved  = cr.data.duplicatesRemoved   || 0
         } catch {}
 
         // 2. Organize any folders that have PDFs not yet tagged with an institution
@@ -1184,21 +1196,38 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
         for (const fid of unsortedFolderIds) {
           try {
             const r = await axios.post(`${API}/auto-organize`, { folderId: fid }, { timeout: 300000 })
-            orgOrg += r.data.organized || 0
+            orgOrg      += r.data.organized         || 0
+            renamed     += r.data.renamed           || 0
+            dupeRemoved += r.data.duplicatesRemoved || 0
+            orgFudge    += r.data.fudgedCount       || 0
             if (r.data.sourceFolderDeleted) deletedFolders.push(r.data.sourceFolderName)
           } catch {}
         }
 
-        if (orgOrg > 0 || consolidated > 0) {
+        if (orgOrg > 0 || consolidated > 0 || renamed > 0 || dupeRemoved > 0 || orgFudge > 0) {
           await load()
           onTransactionsChanged?.()
           if (deletedFolders.length) setSelectedFolderId(null)
           const parts = [
             orgOrg       > 0 ? `${orgOrg} PDF${orgOrg !== 1 ? 's' : ''} sorted` : null,
             consolidated > 0 ? `${consolidated} file${consolidated !== 1 ? 's' : ''} merged into correct account` : null,
+            renamed      > 0 ? `${renamed} file${renamed !== 1 ? 's' : ''} renamed` : null,
+            dupeRemoved  > 0 ? `${dupeRemoved} duplicate${dupeRemoved !== 1 ? 's' : ''} removed` : null,
+            orgFudge     > 0 ? `⚠ ${orgFudge} potentially tampered statement${orgFudge !== 1 ? 's' : ''} flagged` : null,
           ].filter(Boolean)
           setUploadSuccess(`✓ ${parts.join(' · ')} automatically`)
         }
+
+        // 3. Extract financial stats (income/spending/net) for any organized PDFs
+        //    that haven't been scanned yet. Runs server-side in batches of 5.
+        try {
+          const sr = await axios.post(`${API}/extract-stats`, {}, { timeout: 600000 })
+          if (sr.data.processed > 0) {
+            await load()
+            setUploadSuccess(`✓ Financial stats extracted for ${sr.data.processed} statement${sr.data.processed !== 1 ? 's' : ''}`)
+          }
+        } catch {}
+
         setOrganizing(false)
       })()
     })
@@ -1236,7 +1265,8 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
         byFolder[folderPath].push(file)
       }
       let total = 0
-      const pdfFolderIds = new Set()
+      const pdfFolderIds  = new Set()
+      const newPdfFileIds = []  // track newly uploaded PDF IDs for duplicate check
       for (const [folderPath, files] of Object.entries(byFolder)) {
         const fd = new FormData()
         fd.append('folderPath', folderPath)
@@ -1247,6 +1277,7 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
         // Collect folder IDs that received PDF uploads for auto-sorting
         const pdfsIn = (res.data.files || []).filter(f => f.type === 'pdf')
         pdfsIn.forEach(f => { if (f.folderId) pdfFolderIds.add(f.folderId) })
+        pdfsIn.forEach(f => newPdfFileIds.push(f.id))
       }
       await load()
 
@@ -1254,31 +1285,42 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
       if (pdfFolderIds.size > 0) {
         setOrganizing(true)
         setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded — sorting PDFs into account folders…`)
-        let orgOrg = 0, orgSkip = 0, orgFail = 0
+        let orgOrg = 0, orgSkip = 0, orgFail = 0, orgDupe = 0, orgFudge = 0
         const deletedFolders = []
         for (const fid of pdfFolderIds) {
           try {
             const r = await axios.post(`${API}/auto-organize`, { folderId: fid }, { timeout: 300000 })
-            orgOrg  += r.data.organized || 0
-            orgSkip += r.data.skipped   || 0
-            orgFail += r.data.failed    || 0
+            orgOrg   += r.data.organized          || 0
+            orgSkip  += r.data.skipped            || 0
+            orgFail  += r.data.failed             || 0
+            orgDupe  += r.data.duplicatesRemoved  || 0
+            orgFudge += r.data.fudgedCount        || 0
             if (r.data.sourceFolderDeleted) deletedFolders.push(r.data.sourceFolderName)
           } catch {}
         }
         await load()
         onTransactionsChanged?.()
-        setOrganizing(false)
         if (deletedFolders.length) setSelectedFolderId(null)
         const parts = [
-          orgOrg  > 0 ? `${orgOrg} PDF${orgOrg !== 1 ? 's' : ''} sorted into account folders` : null,
-          orgSkip > 0 ? `${orgSkip} couldn't be matched` : null,
-          orgFail > 0 ? `${orgFail} failed` : null,
+          orgOrg   > 0 ? `${orgOrg} PDF${orgOrg !== 1 ? 's' : ''} sorted into account folders` : null,
+          orgDupe  > 0 ? `${orgDupe} duplicate${orgDupe !== 1 ? 's' : ''} removed` : null,
+          orgFudge > 0 ? `⚠ ${orgFudge} potentially tampered statement${orgFudge !== 1 ? 's' : ''} flagged` : null,
+          orgSkip  > 0 ? `${orgSkip} couldn't be matched` : null,
+          orgFail  > 0 ? `${orgFail} failed` : null,
           deletedFolders.length ? `"${deletedFolders.join('", "')}" cleaned up` : null,
         ].filter(Boolean)
+        setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded · ${parts.join(' · ')} — extracting financial stats…`)
+        // Extract income/spending/net for the newly organized PDFs
+        try {
+          const sr = await axios.post(`${API}/extract-stats`, {}, { timeout: 600000 })
+          if (sr.data.processed > 0) await load()
+        } catch {}
+        setOrganizing(false)
         setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded · ${parts.join(' · ')}`)
       } else {
         setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded successfully`)
       }
+
     } catch (e) {
       setUploadError('Upload failed: ' + (e.response?.data?.error || e.message))
     }
@@ -1288,6 +1330,16 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
   const handleFiles = useCallback(async (fileList) => {
     const files = Array.from(fileList)
     if (!files.length) return
+
+    // PDFs are always auto-organized into the correct account folders —
+    // skip the merge-conflict check entirely and go straight to upload.
+    const hasPdfs = files.some(f => (f.webkitRelativePath || f.name).toLowerCase().endsWith('.pdf'))
+    if (hasPdfs) {
+      doUpload(files, 'merge')
+      return
+    }
+
+    // Non-PDF folders: check for name collisions as before
     const firstPath  = files[0].webkitRelativePath || files[0].name
     const folderName = firstPath.split('/')[0]
     const fileNames  = files.map(f=>(f.webkitRelativePath||f.name).split('/').pop())
@@ -1333,13 +1385,13 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
   }
 
   // Derived
-  const rootFolders    = meta.folders.filter(f => !f.parentId)
+  const rootFolders    = sortFoldersByDate(meta.folders.filter(f => !f.parentId))
   const selectedFolder = selectedFolderId ? meta.folders.find(f=>f.id===selectedFolderId) : null
 
   // Subfolders of the current location (shown first in explorer)
-  const childFolders = selectedFolderId
+  const childFolders = sortFoldersByDate(selectedFolderId
     ? meta.folders.filter(f => f.parentId === selectedFolderId)
-    : rootFolders
+    : rootFolders)
 
   // Recursive file count for a folder
   const countInFolder = (folderId) => {
@@ -1358,6 +1410,15 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
     if (search && !f.name.toLowerCase().includes(search.toLowerCase())) return false
     if (filterType !== 'all' && f.type !== filterType) return false
     return true
+  }).sort((a, b) => {
+    // Sort by year DESC, then month DESC (newest statement first)
+    const ay = parseInt(a.tags?.year  || '0')
+    const by = parseInt(b.tags?.year  || '0')
+    if (ay !== by) return by - ay
+    const am = parseInt(a.tags?.month || '0')
+    const bm = parseInt(b.tags?.month || '0')
+    if (am !== bm) return bm - am
+    return a.name.localeCompare(b.name)
   })
 
   const totalSize  = meta.files.reduce((s,f)=>s+(f.size||0),0)
@@ -1584,16 +1645,23 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
                       <span style={{textAlign:'right'}}>Size</span>
                     </div>
                     {visibleFiles.map((file, idx) => {
-                      const { icon, color } = FILE_ICONS[file.type]||FILE_ICONS.other
+                      const isFlagged = file.tags?.fudge === true
+                      const { icon, color } = isFlagged
+                        ? { icon:'ti-alert-triangle', color:'var(--coral)' }
+                        : (FILE_ICONS[file.type]||FILE_ICONS.other)
                       const summ = file.type === 'pdf' ? stmtSummary(file) : null
+                      const rowBg = isFlagged
+                        ? 'rgba(185,28,28,0.08)'
+                        : (idx%2===1 ? 'rgba(255,255,255,0.02)' : 'transparent')
                       return (
                         <div key={file.id} onClick={()=>setPreviewFile(file)}
-                          style={{ display:'grid', gridTemplateColumns:'1fr 90px 90px 90px 70px', gap:12, padding:'8px 10px', cursor:'pointer', borderRadius:'var(--radius-sm)', alignItems:'center', background: idx%2===1 ? 'rgba(255,255,255,0.02)' : 'transparent', transition:'background 0.1s' }}
-                          onMouseEnter={e=>e.currentTarget.style.background='var(--bg-secondary)'}
-                          onMouseLeave={e=>e.currentTarget.style.background=idx%2===1?'rgba(255,255,255,0.02)':'transparent'}>
+                          style={{ display:'grid', gridTemplateColumns:'1fr 90px 90px 90px 70px', gap:12, padding:'8px 10px', cursor:'pointer', borderRadius:'var(--radius-sm)', alignItems:'center', background: rowBg, transition:'background 0.1s', outline: isFlagged ? '1px solid rgba(185,28,28,0.3)' : 'none' }}
+                          onMouseEnter={e=>e.currentTarget.style.background=isFlagged?'rgba(185,28,28,0.15)':'var(--bg-secondary)'}
+                          onMouseLeave={e=>e.currentTarget.style.background=rowBg}>
                           <div style={{ display:'flex', alignItems:'center', gap:9, minWidth:0 }}>
                             <i className={`ti ${icon}`} style={{ fontSize:16, color, flexShrink:0 }} aria-hidden="true"/>
-                            <p style={{ fontSize:12, fontWeight:500, margin:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={file.name}>{file.name}</p>
+                            <p style={{ fontSize:12, fontWeight:500, margin:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', color: isFlagged ? 'var(--coral)' : undefined }} title={isFlagged ? `⚠ Potentially tampered — amounts differ from original statement` : file.name}>{file.name}</p>
+                            {isFlagged && <span style={{ fontSize:10, fontWeight:600, color:'var(--coral)', background:'rgba(185,28,28,0.15)', border:'1px solid rgba(185,28,28,0.4)', borderRadius:3, padding:'1px 5px', whiteSpace:'nowrap', flexShrink:0 }}>FLAGGED</span>}
                           </div>
                           {summ ? <>
                             <p style={{ fontSize:12, color:'var(--teal)', margin:0, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{fmtMoney(summ.income)}</p>

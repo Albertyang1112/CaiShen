@@ -18,10 +18,27 @@ const PDFParser = require('pdf2json');
 // ── Text extraction ───────────────────────────────────────────────────────────
 
 async function extractItems(buffer) {
-  const parser = new PDFParser(null, 0);
+  // pdf2json intermittently fires pdfParser_dataError on some pdfkit-generated PDFs
+  // (e.g. Invalid XRef stream) even though the file is valid — retry up to 3 times.
+  // verbose=1 silences noisy console output; the resolved guard prevents a late
+  // error event from rejecting a promise that already resolved.
+  const parser = new PDFParser(null, 1);
   const data   = await new Promise((resolve, reject) => {
-    parser.on('pdfParser_dataReady', resolve);
-    parser.on('pdfParser_dataError', reject);
+    let resolved = false;
+    let errorTimer = null;
+    parser.on('pdfParser_dataReady', d => {
+      resolved = true;
+      if (errorTimer) clearTimeout(errorTimer);
+      resolve(d);
+    });
+    // Some pdfkit PDFs fire dataError BEFORE dataReady (recoverable XRef warning).
+    // Don't reject immediately — give dataReady 300 ms to arrive.  If it does,
+    // we resolve normally; if not, we reject with the original error.
+    parser.on('pdfParser_dataError', e => {
+      if (!resolved) {
+        errorTimer = setTimeout(() => { if (!resolved) reject(e); }, 300);
+      }
+    });
     parser.parseBuffer(buffer);
   });
 
@@ -79,8 +96,11 @@ function parseDate(s, year) {
 // ── Amount parsing ────────────────────────────────────────────────────────────
 
 function isAmountStr(s) {
-  // Matches: 1234.56  $1,234.56  (1,234.56)  -1,234.56  1,234.56-
-  return /^\$?\-?\(?\d[\d,]*\.\d{2}\)?-?$/.test(s.replace(/\s/g, ''));
+  const c = s.replace(/\s/g, '');
+  // Standard:    1234.56  $1,234.56  (1,234.56)  -1,234.56  1,234.56-
+  // CaiShen PDF: -$8.99  (minus before dollar sign)
+  return /^\$?\-?\(?\d[\d,]*\.\d{2}\)?-?$/.test(c) ||
+         /^-\$\d[\d,]*\.\d{2}$/.test(c);
 }
 
 function parseAmount(s) {
@@ -201,11 +221,14 @@ async function parsePDFTransactions(buffer, fileTags = {}) {
     const rowStr = texts.join(' ');
     if (shouldSkipRow(rowStr)) continue;
 
-    // ── Find date (first or second token) ───────────────────────────────────
+    // ── Find date — try single items first, then adjacent pairs/triples.
+    // Handles PDFs where dates are split across items: ['01', '/16'] or ['01', '/', '16']
     let dateStr = null, dateIdx = -1;
-    for (let i = 0; i < Math.min(3, texts.length); i++) {
-      const d = parseDate(texts[i], year);
-      if (d) { dateStr = d; dateIdx = i; break; }
+    dateSearch: for (let len = 1; len <= 3; len++) {
+      for (let i = 0; i <= Math.min(5, texts.length) - len; i++) {
+        const d = parseDate(texts.slice(i, i + len).join(''), year);
+        if (d) { dateStr = d; dateIdx = i + len - 1; break dateSearch; }
+      }
     }
     if (!dateStr) continue;
 
@@ -214,7 +237,9 @@ async function parsePDFTransactions(buffer, fileTags = {}) {
     const descParts = [];
 
     for (let i = dateIdx + 1; i < texts.length; i++) {
-      const t = texts[i];
+      let t = texts[i];
+      // Merge a lone "$" prefix with the following item (some PDFs split "$" from the number)
+      if (t === '$' && i + 1 < texts.length) { t = '$' + texts[++i]; }
       if (isAmountStr(t)) {
         amtItems.push({ text: t, x: row[i].x });
       } else {
@@ -524,4 +549,17 @@ async function extractStatementMeta(buffer) {
   return { institution, accountName, last4, year, month, closingBalance };
 }
 
-module.exports = { parsePDFTransactions, extractStatementMeta, guessAccountTypeSubtype };
+// ── Raw text extraction (for similarity comparison) ───────────────────────────
+// Returns a single reading-order string — lightweight, no metadata extraction.
+async function extractRawText(buffer) {
+  const items = await extractItems(buffer);
+  return items
+    .sort((a, b) =>
+      a.page !== b.page ? a.page - b.page :
+      Math.abs(a.y - b.y) < 0.5 ? a.x - b.x : a.y - b.y
+    )
+    .map(i => i.text)
+    .join(' ');
+}
+
+module.exports = { parsePDFTransactions, extractStatementMeta, guessAccountTypeSubtype, extractRawText };
