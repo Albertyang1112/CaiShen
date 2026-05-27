@@ -1324,10 +1324,15 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
 
     // Derive year/month from tags; fall back to parsing filename
     // e.g. "2026-02 TOTAL CHECKING Statement.pdf"  →  year=2026, month=02
+    // e.g. "20190116-statements-9092-.pdf"          →  year=2019, month=01
     let year = tagYear, month = tagMonth
     if (!year || !month) {
       const m = file.name.match(/^(\d{4})[-._\s](\d{2})\b/)
       if (m) { year = m[1]; month = m[2] }
+    }
+    if (!year || !month) {
+      const m2 = file.name.match(/^(\d{4})(\d{2})\d{2}[-_.]/)
+      if (m2) { year = m2[1]; month = m2[2] }
     }
     if (!year || !month) return null
 

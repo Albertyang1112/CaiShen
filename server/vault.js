@@ -116,8 +116,11 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
         }
         fs.writeFileSync(path.join(physicalPath, file.originalname), file.buffer);
         // Auto-parse year/month from filenames like "2026-02 TOTAL CHECKING Statement.pdf"
-        const fnDate = file.originalname.match(/^(\d{4})[-._\s](\d{2})\b/);
-        const fnDateTags = fnDate ? { year: fnDate[1], month: fnDate[2] } : {};
+        // or YYYYMMDD format like "20190116-statements-9092-.pdf"
+        const fnDate1 = file.originalname.match(/^(\d{4})[-._\s](\d{2})\b/);
+        const fnDate2 = !fnDate1 && file.originalname.match(/^(\d{4})(\d{2})\d{2}[-_.]/);
+        const fnDateTags = fnDate1 ? { year: fnDate1[1], month: fnDate1[2] } :
+                           fnDate2 ? { year: fnDate2[1], month: fnDate2[2] } : {};
         const newFile = {
           id: `file_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, name: file.originalname,
           folderId: currentFolderId, folderPath, size: file.size,
@@ -308,9 +311,19 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
         const { file, detected } = outcome.value;
         results.processed++;
 
+        // ── Supplement with filename-based extraction ────────────────────────
+        // Chase format: "20190116-statements-9092-.pdf" → last4=9092, year=2019, month=01
+        const fnLast4M = file.name.match(/statements?[-_](\d{4})/i);
+        const fnDateM  = file.name.match(/^(\d{4})(\d{2})\d{2}[-_.]/);
+        const fnLast4  = fnLast4M ? fnLast4M[1] : null;
+        const fnYear   = fnDateM  ? parseInt(fnDateM[1]) : null;
+        const fnMonth  = fnDateM  ? parseInt(fnDateM[2]) : null;
+
         const inst  = detected.institution;
-        const l4    = detected.last4;
+        const l4    = fnLast4 || detected.last4;   // filename wins — most reliable
         const aName = detected.accountName;
+        const year  = detected.year  || fnYear;
+        const month = detected.month || fnMonth;
 
         // ── Account matching ─────────────────────────────────────────────────
         let matchedAcct = null;
@@ -351,18 +364,18 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
           autoCreated = true;
         }
 
-        if (!matchedAcct || !inst || !detected.year) {
+        if (!matchedAcct || !inst || !year) {
           results.skipped++;
           results.details.push({
             file: file.name, status: 'skipped',
-            reason: !inst ? 'Institution not detected' : !detected.year ? 'Year not detected' : 'No matching account',
+            reason: !inst ? 'Institution not detected' : !year ? 'Year not detected' : 'No matching account',
           });
           continue;
         }
 
         // ── Compute target folder ────────────────────────────────────────────
         const cleanName  = (matchedAcct.name || inst).replace(/[<>:"/\\|?*]/g,'').replace(/\s+/g,' ').trim();
-        const targetPath = `Bank Statements/${inst}/${cleanName}/${detected.year}`;
+        const targetPath = `Bank Statements/${inst}/${cleanName}/${year}`;
 
         if (file.folderPath === targetPath) {
           results.skipped++;
@@ -392,9 +405,9 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
             ...meta.files[fileIdx].tags,
             institution: inst,
             account:     matchedAcct.name,
-            ...(l4             && { last4: l4 }),
-            ...(detected.year  && { year:  String(detected.year) }),
-            ...(detected.month && { month: String(detected.month).padStart(2, '0') }),
+            ...(l4    && { last4: l4 }),
+            ...(year  && { year:  String(year) }),
+            ...(month && { month: String(month).padStart(2, '0') }),
           };
         }
 
@@ -402,7 +415,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
         results.details.push({
           file: dstName, status: 'organized', targetPath,
           institution: inst, account: matchedAcct.name,
-          year: detected.year, month: detected.month, autoCreated,
+          year, month, autoCreated,
         });
       }
 
@@ -465,9 +478,19 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
       let matchedAcct  = null;
       let autoCreated  = false;
 
-      const inst = detected.institution || file.tags?.institution || null;
-      const l4   = detected.last4       || file.tags?.last4       || null;
-      const aName= detected.accountName || file.tags?.account     || null;
+      // Supplement with filename-based extraction (e.g. "20190116-statements-9092-.pdf")
+      const fnLast4M2 = file.name.match(/statements?[-_](\d{4})/i);
+      const fnDateM2  = file.name.match(/^(\d{4})(\d{2})\d{2}[-_.]/);
+      const fnLast4_2 = fnLast4M2 ? fnLast4M2[1] : null;
+      const fnYear2   = fnDateM2  ? parseInt(fnDateM2[1]) : null;
+      const fnMonth2  = fnDateM2  ? parseInt(fnDateM2[2]) : null;
+
+      const inst  = detected.institution || file.tags?.institution || null;
+      const l4    = fnLast4_2 || detected.last4 || file.tags?.last4 || null;
+      const aName = detected.accountName || file.tags?.account     || null;
+      // Use PDF-detected year/month first; fall back to filename-parsed, then file tags
+      const detYear  = detected.year  || fnYear2  || (file.tags?.year  ? parseInt(file.tags.year)  : null);
+      const detMonth = detected.month || fnMonth2 || (file.tags?.month ? parseInt(file.tags.month) : null);
 
       if (l4 && inst) {
         // Most precise: last4 + institution prefix
@@ -516,9 +539,9 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
       let organized = false;
       let newFolderPath = file.folderPath;
 
-      if (inst && detected.year && matchedAcct) {
+      if (inst && detYear && matchedAcct) {
         const cleanName  = (matchedAcct.name || inst).replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, ' ').trim();
-        const targetPath = `Bank Statements/${inst}/${cleanName}/${detected.year}`;
+        const targetPath = `Bank Statements/${inst}/${cleanName}/${detYear}`;
 
         if (file.folderPath !== targetPath) {
           // Ensure target folder exists in meta + on disk
@@ -570,8 +593,8 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
           ...(inst              && { institution: inst }),
           ...(matchedAcct?.name && { account: matchedAcct.name }),
           ...(l4                && { last4: l4 }),
-          ...(detected.year     && { year: String(detected.year) }),
-          ...(detected.month    && { month: String(detected.month).padStart(2, '0') }),
+          ...(detYear           && { year: String(detYear) }),
+          ...(detMonth          && { month: String(detMonth).padStart(2, '0') }),
           ...(transactions.length && {
             income:   txIncome,
             spending: txSpending,
@@ -589,8 +612,8 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
         accountName:  matchedAcct?.name || aName,
         institution:  inst,
         last4:        l4,
-        year:         detected.year,
-        month:        detected.month,
+        year:         detYear,
+        month:        detMonth,
         autoCreated,
         organized,
         newFolderPath: organized ? newFolderPath : null,

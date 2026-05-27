@@ -395,6 +395,11 @@ function detectInstitution(text) {
 }
 
 function extractLast4(text) {
+  // Priority 0: full unmasked account number (e.g. "Account Number: 000000252859092")
+  // Must be checked before the 4-digit patterns to avoid false positives
+  const fullAcct = text.match(/account\s*(?:number|#|no\.?)[:\s]+(\d{6,})\b/i);
+  if (fullAcct) return fullAcct[1].slice(-4);
+
   // Ordered by reliability
   const patterns = [
     /account\s*(?:number|#|no\.?)[:\s]*[*•x\-\s]*(\d{4})\b/i,
@@ -403,8 +408,6 @@ function extractLast4(text) {
     /[-]{3,}(\d{4})\b/,
     /account\s+(\d{4})\b/i,
     /acct[:\s]+[*•x\-]*(\d{4})\b/i,
-    // Full account number — take last 4
-    /\b(\d{4})\s*(?:account|checking|savings)\b/i,
   ];
   for (const p of patterns) {
     const m = text.match(p);
@@ -414,11 +417,22 @@ function extractLast4(text) {
 }
 
 function extractAccountName(text) {
+  // Priority 1a: account name appears to the RIGHT of a "CHECKING/SAVINGS SUMMARY" header
+  // Chase layout: "CHECKING SUMMARY   High School Checking   AMOUNT   ..."
+  const afterSummaryM = text.match(/(?:checking|savings|credit card|brokerage|ira)\s+summary\s+([A-Za-z][A-Za-z ]{2,50}?)(?=\s+(?:AMOUNT|Balance|Beginning|Ending|DATE|Transaction|\$|\d))/i);
+  if (afterSummaryM) return afterSummaryM[1].trim().toUpperCase();
+
+  // Priority 1b: account name appears immediately BEFORE a "CHECKING/SAVINGS SUMMARY" header
+  // Some banks: "High School Checking   CHECKING SUMMARY" → "HIGH SCHOOL CHECKING"
+  const beforeSummaryM = text.match(/\b([A-Za-z][A-Za-z ]{1,39}?(?:checking|savings|credit card|brokerage|ira))\b\s+(?:checking|savings|credit card|brokerage|ira)\s+summary\b/i);
+  if (beforeSummaryM) return beforeSummaryM[1].trim().toUpperCase();
+
+  // Priority 2: explicit type keywords (longest/most-specific first)
   const upper = text.toUpperCase();
   for (const type of ACCOUNT_TYPES) {
     if (upper.includes(type)) return type;
   }
-  // Try "Account Type: ..." or "Account: ..."
+  // Priority 3: "Account Type: ..." or "Account Name: ..."
   const m = text.match(/account\s+(?:type|name)[:\s]+([A-Za-z ]{3,40})(?:\n|\.|\d|$)/i);
   if (m) return m[1].trim().toUpperCase();
   return null;
@@ -489,12 +503,21 @@ function guessAccountTypeSubtype(institution, accountName) {
 
 async function extractStatementMeta(buffer) {
   const items = await extractItems(buffer);
-  // Build a single text string for pattern matching
+  // Raw PDF-internal order (for institution/period/balance — mostly robust)
   const rawText = items.map(i => i.text).join(' ');
+  // Reading order (sorted page → Y → X) — required for position-sensitive patterns
+  // where one token (e.g. "Account Number:") must precede the value token
+  const readingText = [...items]
+    .sort((a, b) =>
+      a.page !== b.page ? a.page - b.page :
+      Math.abs(a.y - b.y) < 0.5 ? a.x - b.x : a.y - b.y
+    )
+    .map(i => i.text)
+    .join(' ');
 
   const institution    = detectInstitution(rawText);
-  const last4          = extractLast4(rawText);
-  const accountName    = extractAccountName(rawText);
+  const last4          = extractLast4(readingText);      // reading order: label before value
+  const accountName    = extractAccountName(readingText); // reading order: name before SUMMARY
   const { year, month} = extractPeriod(rawText);
   const closingBalance = extractClosingBalance(rawText);
 
