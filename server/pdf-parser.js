@@ -309,4 +309,196 @@ async function parsePDFTransactions(buffer, fileTags = {}) {
   return transactions;
 }
 
-module.exports = { parsePDFTransactions };
+// ── Statement metadata extraction ─────────────────────────────────────────────
+// Returns: { institution, accountName, last4, year, month, closingBalance }
+
+// Institution name lookup — ordered most-specific first
+const INST_PATTERNS = [
+  [/jpmorgan chase/i,           'Chase'],
+  [/\bchase\b/i,                'Chase'],
+  [/bank of america/i,          'Bank of America'],
+  [/wells fargo/i,              'Wells Fargo'],
+  [/charles schwab/i,           'Charles Schwab'],
+  [/\bschwab\b/i,               'Charles Schwab'],
+  [/citibank/i,                 'Citi'],
+  [/\bciti\b/i,                 'Citi'],
+  [/u\.s\.?\s*bank/i,           'U.S. Bank'],
+  [/\btd bank/i,                'TD Bank'],
+  [/capital one/i,              'Capital One'],
+  [/american express/i,         'American Express'],
+  [/discover bank/i,            'Discover'],
+  [/\bdiscover\b/i,             'Discover'],
+  [/pnc bank/i,                 'PNC'],
+  [/regions bank/i,             'Regions'],
+  [/fifth third/i,              'Fifth Third'],
+  [/huntington bank/i,          'Huntington'],
+  [/\btruist\b/i,               'Truist'],
+  [/suntrust/i,                 'Truist'],
+  [/bb&t/i,                     'Truist'],
+  [/navy federal/i,             'Navy Federal'],
+  [/\busaa\b/i,                 'USAA'],
+  [/\bsofi\b/i,                 'SoFi'],
+  [/ally bank/i,                'Ally Bank'],
+  [/marcus.*goldman/i,          'Marcus by Goldman Sachs'],
+  [/goldman sachs/i,            'Goldman Sachs'],
+  [/fidelity/i,                 'Fidelity'],
+  [/vanguard/i,                 'Vanguard'],
+  [/td ameritrade/i,            'TD Ameritrade'],
+  [/e\*?trade/i,                'E*TRADE'],
+  [/merrill edge/i,             'Merrill Edge'],
+  [/merrill lynch/i,            'Merrill Lynch'],
+  [/\bmerrill\b/i,              'Merrill'],
+  [/morgan stanley/i,           'Morgan Stanley'],
+  [/raymond james/i,            'Raymond James'],
+  [/edward jones/i,             'Edward Jones'],
+  [/interactive brokers/i,      'Interactive Brokers'],
+  [/m1 finance/i,               'M1 Finance'],
+  [/robinhood/i,                'Robinhood'],
+  [/wealthfront/i,              'Wealthfront'],
+  [/betterment/i,               'Betterment'],
+  [/acorns/i,                   'Acorns'],
+  [/coinbase/i,                 'Coinbase'],
+  [/gemini/i,                   'Gemini'],
+  [/kraken/i,                   'Kraken'],
+  [/webull/i,                   'Webull'],
+  [/tastytrade/i,               'tastytrade'],
+  [/firstrade/i,                'Firstrade'],
+  [/moomoo/i,                   'moomoo'],
+];
+
+// Account type keywords — ordered longest/most-specific first
+const ACCOUNT_TYPES = [
+  'TOTAL CHECKING', 'PREMIER CHECKING', 'SAPPHIRE CHECKING', 'SECURE CHECKING',
+  'STUDENT CHECKING', 'PERFORMANCE CHECKING', 'ADVANTAGE CHECKING',
+  'PREFERRED CHECKING', 'SIGNATURE CHECKING', 'PREMIER PLUS CHECKING',
+  'EVERYDAY CHECKING', 'FREE CHECKING', 'BASIC CHECKING',
+  'HIGH YIELD CHECKING', 'INTEREST CHECKING', 'BUSINESS CHECKING',
+  'MONEY MARKET CHECKING', 'CHECKING',
+  'HIGH YIELD SAVINGS', 'ONLINE SAVINGS', 'PREMIER SAVINGS', 'TOTAL SAVINGS',
+  'MONEY MARKET SAVINGS', 'STATEMENT SAVINGS', 'BUSINESS SAVINGS', 'SAVINGS',
+  'MONEY MARKET', 'CASH MANAGEMENT',
+  'INDIVIDUAL BROKERAGE', 'ONE BROKERAGE', 'BROKERAGE',
+  'ROTH IRA', 'TRADITIONAL IRA', 'ROLLOVER IRA', 'SEP IRA',
+  'INDIVIDUAL RETIREMENT ACCOUNT',
+  '401(K)', '403(B)', '457(B)',
+  'CASH BACK CREDIT', 'REWARDS CREDIT', 'PLATINUM CREDIT',
+  'CREDIT CARD', 'CHARGE CARD',
+  'HOME EQUITY LINE', 'HOME EQUITY',
+  'AUTO LOAN', 'STUDENT LOAN', 'PERSONAL LOAN', 'MORTGAGE',
+];
+
+function detectInstitution(text) {
+  for (const [re, name] of INST_PATTERNS) {
+    if (re.test(text)) return name;
+  }
+  return null;
+}
+
+function extractLast4(text) {
+  // Ordered by reliability
+  const patterns = [
+    /account\s*(?:number|#|no\.?)[:\s]*[*•x\-\s]*(\d{4})\b/i,
+    /account\s*(?:ending|end)\s*(?:in|with)?[:\s]*[*•x\-\s]*(\d{4})\b/i,
+    /[*•x]{3,}(\d{4})\b/,
+    /[-]{3,}(\d{4})\b/,
+    /account\s+(\d{4})\b/i,
+    /acct[:\s]+[*•x\-]*(\d{4})\b/i,
+    // Full account number — take last 4
+    /\b(\d{4})\s*(?:account|checking|savings)\b/i,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+function extractAccountName(text) {
+  const upper = text.toUpperCase();
+  for (const type of ACCOUNT_TYPES) {
+    if (upper.includes(type)) return type;
+  }
+  // Try "Account Type: ..." or "Account: ..."
+  const m = text.match(/account\s+(?:type|name)[:\s]+([A-Za-z ]{3,40})(?:\n|\.|\d|$)/i);
+  if (m) return m[1].trim().toUpperCase();
+  return null;
+}
+
+const MONTH_NAMES = ['january','february','march','april','may','june',
+                     'july','august','september','october','november','december'];
+
+function extractPeriod(text) {
+  const t = text.toLowerCase();
+  // "January 2024" or "January 1, 2024"
+  for (let i = 0; i < MONTH_NAMES.length; i++) {
+    const re = new RegExp(`${MONTH_NAMES[i]}\\s+(?:\\d{1,2}[,\\s]+)?(20\\d{2})`);
+    const m = t.match(re);
+    if (m) return { year: parseInt(m[1]), month: i + 1 };
+  }
+  // MM/DD/YYYY or MM/YYYY
+  const m2 = text.match(/\b(\d{1,2})\/(?:\d{1,2}\/)?(20\d{2})\b/);
+  if (m2) return { year: parseInt(m2[2]), month: parseInt(m2[1]) };
+  // YYYY-MM
+  const m3 = text.match(/\b(20\d{2})[\/\-](\d{2})\b/);
+  if (m3) return { year: parseInt(m3[1]), month: parseInt(m3[2]) };
+  return { year: null, month: null };
+}
+
+function extractClosingBalance(text) {
+  const patterns = [
+    /ending\s+balance[:\s]+\$?([\d,]+\.\d{2})/i,
+    /closing\s+balance[:\s]+\$?([\d,]+\.\d{2})/i,
+    /new\s+balance[:\s]+\$?([\d,]+\.\d{2})/i,
+    /statement\s+(?:closing|ending)\s+balance[:\s]+\$?([\d,]+\.\d{2})/i,
+    /balance\s+as\s+of[:\s]+.*?\$?([\d,]+\.\d{2})/i,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m) return parseFloat(m[1].replace(/,/g, ''));
+  }
+  return null;
+}
+
+// Guess Plaid-style type/subtype from institution + account name
+function guessAccountTypeSubtype(institution, accountName) {
+  const inst = (institution || '').toLowerCase();
+  const name = (accountName  || '').toLowerCase();
+
+  if (/coinbase|gemini|kraken|binance|crypto/i.test(inst))
+    return { type: 'investment', subtype: 'crypto exchange' };
+  if (/roth|traditional ira|rollover ira|sep ira|401|403b|457|retirement/i.test(name))
+    return { type: 'investment', subtype: name.includes('roth') ? 'roth' : name.includes('401') ? '401k' : 'ira' };
+  if (/brokerage|schwab|fidelity|vanguard|merrill|morgan stanley|e\*?trade|td ameritrade|robinhood|m1|wealthfront|betterment|interactive brokers|webull|tastytrade|firstrade|moomoo/i.test(inst))
+    return { type: 'investment', subtype: 'brokerage' };
+  if (/money market/i.test(name))
+    return { type: 'depository', subtype: 'money market' };
+  if (/savings/i.test(name))
+    return { type: 'depository', subtype: 'savings' };
+  if (/credit card|charge card|cash back|rewards/i.test(name) || /american express|discover/i.test(inst))
+    return { type: 'credit', subtype: 'credit card' };
+  if (/mortgage/i.test(name))
+    return { type: 'loan', subtype: 'mortgage' };
+  if (/home equity/i.test(name))
+    return { type: 'loan', subtype: 'home equity' };
+  if (/student loan/i.test(name))
+    return { type: 'loan', subtype: 'student' };
+  if (/auto loan/i.test(name))
+    return { type: 'loan', subtype: 'auto' };
+  return { type: 'depository', subtype: 'checking' };
+}
+
+async function extractStatementMeta(buffer) {
+  const items = await extractItems(buffer);
+  // Build a single text string for pattern matching
+  const rawText = items.map(i => i.text).join(' ');
+
+  const institution    = detectInstitution(rawText);
+  const last4          = extractLast4(rawText);
+  const accountName    = extractAccountName(rawText);
+  const { year, month} = extractPeriod(rawText);
+  const closingBalance = extractClosingBalance(rawText);
+
+  return { institution, accountName, last4, year, month, closingBalance };
+}
+
+module.exports = { parsePDFTransactions, extractStatementMeta, guessAccountTypeSubtype };

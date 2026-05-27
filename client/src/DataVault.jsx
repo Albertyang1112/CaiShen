@@ -440,10 +440,11 @@ function parseTransactionsFromText(text) {
 }
 
 // ── File preview modal ────────────────────────────────────────────────
-function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged }) {
+function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged, onVaultChanged }) {
   const [parseState, setParseState]     = useState('idle') // idle | loading | done | error
   const [parseResult, setParseResult]   = useState(null)
   const [parseError, setParseError]     = useState(null)
+  const [detected, setDetected]         = useState(null)   // metadata returned by parse-statement-local
   const [selAccountId, setSelAccountId] = useState(null)
   // Import flow: ready → previewing → reviewing (if conflicts) → importing → done
   const [importStep, setImportStep]     = useState('ready')
@@ -466,6 +467,7 @@ function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged 
     setParseState('loading')
     setParseError(null)
     setParseResult(null)
+    setDetected(null)
     setImportResult(null)
     setPreview(null)
     setImportStep('ready')
@@ -476,9 +478,14 @@ function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged 
         setParseState('error')
         return
       }
+      setDetected(res.data)
       setParseResult(res.data)
       setSelAccountId(res.data.accountId || (accounts[0]?.id ?? null))
       setParseState('done')
+      // If the file was auto-organized into a new folder, refresh the vault list
+      if (res.data.organized) onVaultChanged?.()
+      // If a new account was auto-created, refresh the accounts list in App
+      if (res.data.autoCreated) onTransactionsChanged?.()
     } catch (e) {
       setParseError(e.response?.data?.error || e.message)
       setParseState('error')
@@ -633,6 +640,41 @@ function FilePreviewModal({ file, accounts = [], onClose, onTransactionsChanged 
 
             {parseState === 'done' && importStep !== 'done' && (
               <>
+                {/* Auto-detected metadata badge */}
+                {detected && (detected.institution || detected.year) && (
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:6, alignItems:'center', marginBottom:10, padding:'6px 10px', background:'var(--bg-card)', borderRadius:'var(--radius-sm)', border:'0.5px solid var(--border)', fontSize:11 }}>
+                    <i className="ti ti-scan" style={{ fontSize:12, color:'var(--text-muted)', flexShrink:0 }} aria-hidden="true"/>
+                    {detected.institution && (
+                      <span style={{ color:'var(--text-primary)', fontWeight:500 }}>{detected.institution}</span>
+                    )}
+                    {detected.accountName && (
+                      <span style={{ color:'var(--text-secondary)' }}>
+                        {detected.accountName}{detected.last4 ? ` ••••${detected.last4}` : ''}
+                      </span>
+                    )}
+                    {detected.year && detected.month && (
+                      <span style={{ color:'var(--text-secondary)' }}>
+                        {new Date(detected.year, detected.month - 1).toLocaleString('en-US', { month:'long', year:'numeric' })}
+                      </span>
+                    )}
+                    {detected.autoCreated && (
+                      <span style={{ padding:'1px 7px', borderRadius:3, background:'var(--amber-light)', color:'var(--amber)', border:'0.5px solid var(--amber)', fontWeight:500 }}>
+                        <i className="ti ti-user-plus" style={{ fontSize:10 }} aria-hidden="true"/> New account created
+                      </span>
+                    )}
+                    {!detected.autoCreated && detected.accountId && (
+                      <span style={{ padding:'1px 7px', borderRadius:3, background:'var(--teal-light)', color:'var(--teal)', border:'0.5px solid var(--teal)', fontWeight:500 }}>
+                        <i className="ti ti-link" style={{ fontSize:10 }} aria-hidden="true"/> Matched
+                      </span>
+                    )}
+                    {detected.organized && detected.newFolderPath && (
+                      <span style={{ padding:'1px 7px', borderRadius:3, background:'var(--blue-light)', color:'var(--blue)', border:'0.5px solid var(--blue)', fontWeight:500 }} title={detected.newFolderPath}>
+                        <i className="ti ti-folder-check" style={{ fontSize:10 }} aria-hidden="true"/> Auto-filed
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 {/* Transaction preview rows */}
                 <div style={{ maxHeight:140, overflowY:'auto', marginBottom:10 }}>
                   {parseResult.transactions.slice(0, 8).map((t, i) => (
@@ -1453,6 +1495,7 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
           accounts={accounts}
           onClose={()=>setPreviewFile(null)}
           onTransactionsChanged={onTransactionsChanged}
+          onVaultChanged={load}
         />
       )}
 

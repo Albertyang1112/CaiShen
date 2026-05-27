@@ -30,6 +30,8 @@ const autoTag = (folderPath) => {
   return {};
 };
 
+const titleCase = s => s.toLowerCase().replace(/(?:^|\s)\S/g, c => c.toUpperCase());
+
 module.exports = function(BASE_VAULT_DIR, makeIO) {
   const router = express.Router();
 
@@ -236,33 +238,156 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
   });
 
   // ── POST /api/vault/parse-statement-local/:id — extract transactions (no AI) ──
+  // Full pipeline: parse PDF → detect metadata → match/create account →
+  // auto-organize vault file → tag file → return everything
   router.post('/parse-statement-local/:id', async (req, res) => {
     try {
-      const { parsePDFTransactions } = require('./pdf-parser');
+      const { parsePDFTransactions, extractStatementMeta, guessAccountTypeSubtype } = require('./pdf-parser');
       const userId   = req.user.id;
       const io       = makeIO(userId);
-      const meta     = readMeta(userId);
+      const vaultDir = getUserVaultDir(userId);
+      let   meta     = readMeta(userId);                    // may be mutated below
       const file     = meta.files.find(f => f.id === req.params.id);
       if (!file)                return res.status(404).json({ error: 'File not found' });
       if (file.type !== 'pdf') return res.status(400).json({ error: 'Only PDF files can be parsed' });
 
-      const filePath = path.join(getUserVaultDir(userId), file.folderPath, file.name);
+      let filePath = path.join(vaultDir, file.folderPath, file.name);
       if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File missing from disk' });
 
-      const buffer       = fs.readFileSync(filePath);
-      const transactions = await parsePDFTransactions(buffer, file.tags || {});
+      const buffer = fs.readFileSync(filePath);
 
-      // Attempt to match account from file tags
-      const accounts = io.read('accounts.json') || [];
-      const { account: acctName, institution } = file.tags || {};
-      const acct = accounts.find(a => a.name === acctName) || null;
+      // ── 1. Parse transactions + extract metadata in parallel ────────────────
+      const [transactions, detected] = await Promise.all([
+        parsePDFTransactions(buffer, file.tags || {}),
+        extractStatementMeta(buffer),
+      ]);
+
+      // ── 2. Account matching / auto-creation ─────────────────────────────────
+      let accounts     = io.read('accounts.json') || [];
+      let matchedAcct  = null;
+      let autoCreated  = false;
+
+      const inst = detected.institution || file.tags?.institution || null;
+      const l4   = detected.last4       || file.tags?.last4       || null;
+      const aName= detected.accountName || file.tags?.account     || null;
+
+      if (l4 && inst) {
+        // Most precise: last4 + institution prefix
+        const instKey = inst.toLowerCase().split(' ')[0];
+        matchedAcct = accounts.find(a =>
+          a.last4 === l4 && (a.institution || '').toLowerCase().includes(instKey)
+        );
+      }
+      if (!matchedAcct && l4) {
+        // last4 alone (rare collision risk but usually fine)
+        matchedAcct = accounts.find(a => a.last4 === l4);
+      }
+      if (!matchedAcct && inst && aName) {
+        // institution + account name prefix
+        const instKey  = inst.toLowerCase().split(' ')[0];
+        const nameKey  = aName.toLowerCase().split(' ')[0];
+        matchedAcct = accounts.find(a =>
+          (a.institution || '').toLowerCase().includes(instKey) &&
+          (a.name        || '').toLowerCase().includes(nameKey)
+        );
+      }
+
+      if (!matchedAcct && inst) {
+        // Auto-create a manual account from detected metadata
+        const { type, subtype } = guessAccountTypeSubtype(inst, aName);
+        const newAcct = {
+          id:               `pdf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          name:             aName ? titleCase(aName) : `${inst} Account`,
+          institution:      inst,
+          type, subtype,
+          balance:          detected.closingBalance ?? 0,
+          availableBalance: detected.closingBalance ?? 0,
+          last4:            l4 || null,
+          source:           'pdf_import',
+          createdAt:        new Date().toISOString(),
+          lastUpdated:      new Date().toISOString(),
+        };
+        accounts.push(newAcct);
+        io.write('accounts.json', accounts);
+        matchedAcct = newAcct;
+        autoCreated = true;
+        console.log(`[vault/parse-local] Auto-created account: ${newAcct.name} (${inst})`);
+      }
+
+      // ── 3. Auto-organize vault file into correct folder ─────────────────────
+      let organized = false;
+      let newFolderPath = file.folderPath;
+
+      if (inst && detected.year && matchedAcct) {
+        const cleanName  = (matchedAcct.name || inst).replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, ' ').trim();
+        const targetPath = `Bank Statements/${inst}/${cleanName}/${detected.year}`;
+
+        if (file.folderPath !== targetPath) {
+          // Ensure target folder exists in meta + on disk
+          const parts = targetPath.split('/').filter(Boolean);
+          let parentId = null;
+          for (let i = 0; i < parts.length; i++) {
+            const fullPath = parts.slice(0, i + 1).join('/');
+            let f = meta.folders.find(x => x.path === fullPath);
+            if (!f) {
+              f = {
+                id: `folder_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                name: parts[i], path: fullPath, parentId,
+                createdAt: new Date().toISOString(), tags: {},
+              };
+              meta.folders.push(f);
+              fs.mkdirSync(path.join(vaultDir, fullPath), { recursive: true });
+            }
+            parentId = f.id;
+          }
+
+          // Move physical file
+          const srcPath  = path.join(vaultDir, file.folderPath, file.name);
+          const dstDir   = path.join(vaultDir, targetPath);
+          const dstPath  = path.join(dstDir, file.name);
+          fs.mkdirSync(dstDir, { recursive: true });
+          fs.renameSync(srcPath, dstPath);
+
+          // Update file entry in vault meta
+          const fileIdx = meta.files.findIndex(f => f.id === file.id);
+          if (fileIdx >= 0) {
+            meta.files[fileIdx].folderPath = targetPath;
+            meta.files[fileIdx].folderId   = parentId;
+          }
+
+          newFolderPath = targetPath;
+          organized     = true;
+          filePath      = dstPath;
+          console.log(`[vault/parse-local] Organized: ${file.name} → ${targetPath}`);
+        }
+      }
+
+      // ── 4. Update file tags with detected metadata ───────────────────────────
+      const fileIdx = meta.files.findIndex(f => f.id === file.id);
+      if (fileIdx >= 0) {
+        meta.files[fileIdx].tags = {
+          ...meta.files[fileIdx].tags,
+          ...(inst             && { institution: inst }),
+          ...(matchedAcct?.name&& { account: matchedAcct.name }),
+          ...(l4               && { last4: l4 }),
+          ...(detected.year    && { year: String(detected.year) }),
+          ...(detected.month   && { month: String(detected.month).padStart(2, '0') }),
+        };
+      }
+      writeMeta(meta, userId);
 
       res.json({
         transactions,
-        count:       transactions.length,
-        accountId:   acct?.id   || null,
-        accountName: acctName   || null,
-        institution: institution || null,
+        count:        transactions.length,
+        accountId:    matchedAcct?.id   || null,
+        accountName:  matchedAcct?.name || aName,
+        institution:  inst,
+        last4:        l4,
+        year:         detected.year,
+        month:        detected.month,
+        autoCreated,
+        organized,
+        newFolderPath: organized ? newFolderPath : null,
       });
     } catch (e) {
       console.error('[vault/parse-statement-local]', e.message);
