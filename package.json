@@ -6,7 +6,13 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "nodemon --watch server server/index.js",
-    "build": "cd client && npm install && npm run build"
+    "build": "cd client && npm install && npm run build",
+    "test": "jest --forceExit --runInBand"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/server/tests/**/*.test.js"],
+    "testTimeout": 30000
   },
   "keywords": [],
   "author": "",
@@ -41,6 +47,8 @@
     "twilio": "^6.0.2"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "jest": "^30.4.2",
+    "nodemon": "^3.1.14",
+    "supertest": "^7.2.2"
   }
 }

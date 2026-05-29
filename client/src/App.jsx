@@ -4,6 +4,8 @@ import Projections from './Projections'
 import PersonalSpending from './PersonalSpending'
 import TransactionTransfer from './TransactionTransfer'
 import DataVault from './DataVault'
+import BankScraper from './BankScraper'
+import TaxCenter from './TaxCenter'
 import Advisor from './Advisor'
 import Accounting from './Accounting'
 import Crypto from './Crypto'
@@ -81,15 +83,21 @@ const ASSET_CLASSES = [
   {id:'retirement',label:'Retirement',       icon:'ti-briefcase',         color:'var(--teal)'},
   {id:'crypto',    label:'Crypto',           icon:'ti-currency-bitcoin',  color:'var(--amber)'},
 ]
+// True when running locally — used to gate the Bank Scraper tab
+const IS_LOCALHOST =
+  window.location.hostname === 'localhost' ||
+  window.location.hostname === '127.0.0.1'
+
 const NAV_TOOLS = [
-  {id:'connections',   label:'Connections',   icon:'ti-plug',             adminOnly:false},
-  {id:'data',          label:'Data Vault',    icon:'ti-database',         adminOnly:false},
-  {id:'taxes',         label:'Tax Center',    icon:'ti-receipt-tax',      adminOnly:false},
-  {id:'projections',   label:'Projections',   icon:'ti-trending-up',      adminOnly:false},
-  {id:'transactions',  label:'Transactions',  icon:'ti-arrows-exchange',  adminOnly:false},
-  {id:'accounting',    label:'Report',        icon:'ti-building-bank',    adminOnly:false},
-  {id:'advisor',       label:'AI Advisor',    icon:'ti-brain',            adminOnly:false},
-  {id:'settings',      label:'Settings',      icon:'ti-settings',         adminOnly:false},
+  {id:'connections',   label:'Connections',   icon:'ti-plug',             adminOnly:false, localhostOnly:false},
+  {id:'data',          label:'Data Vault',    icon:'ti-database',         adminOnly:false, localhostOnly:false},
+  {id:'taxes',         label:'Tax Center',    icon:'ti-receipt-tax',      adminOnly:false, localhostOnly:false},
+  {id:'projections',   label:'Projections',   icon:'ti-trending-up',      adminOnly:false, localhostOnly:false},
+  {id:'transactions',  label:'Transactions',  icon:'ti-arrows-exchange',  adminOnly:false, localhostOnly:false},
+  {id:'accounting',    label:'Report',        icon:'ti-building-bank',    adminOnly:false, localhostOnly:false},
+  {id:'advisor',       label:'AI Advisor',    icon:'ti-brain',            adminOnly:false, localhostOnly:false},
+  {id:'scraper',       label:'Bank Scraper',  icon:'ti-spider',           adminOnly:false, localhostOnly:true },
+  {id:'settings',      label:'Settings',      icon:'ti-settings',         adminOnly:false, localhostOnly:false},
 ]
 
 // ── Small components ──────────────────────────────────────────────────
@@ -1442,12 +1450,13 @@ function MainApp({ auth, onLogout }) {
     if(nav==='retirement') return <PlaceholderScreen label="Retirement"/>
     if(nav==='crypto') return <Crypto/>
     if(nav==='cash') return <Banking accounts={accounts} transactions={transactions}/>
-    if(nav==='taxes') return <PlaceholderScreen label="Tax Center"/>
+    if(nav==='taxes') return <TaxCenter/>
     if(nav==='projections') return <Projections/>
     if(nav==='advisor')    return <Advisor/>
     if(nav==='accounting') return <Accounting/>
     if(nav==='data')       return <DataVault accounts={accounts} transactions={transactions} onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])} onTransactionsChanged={()=>{ axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])).catch(()=>{}); axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])).catch(()=>{}) }}/>
     if(nav==='settings')   return <SettingsScreen auth={auth}/>
+    if(nav==='scraper' && IS_LOCALHOST) return <BankScraper/>
     return null
   }
 
@@ -1509,7 +1518,7 @@ function MainApp({ auth, onLogout }) {
             )}
 
             {!collapsed && <p style={{fontSize:10,fontWeight:500,color:'var(--text-muted)',margin:'12px 14px 4px',textTransform:'uppercase',letterSpacing:'0.8px'}}>Tools</p>}
-            {NAV_TOOLS.filter(t => !t.adminOnly || isAdmin).map(t=>(
+            {NAV_TOOLS.filter(t => (!t.adminOnly || isAdmin) && (!t.localhostOnly || IS_LOCALHOST)).map(t=>(
               <NavBtn key={t.id} id={t.id} label={t.label} icon={t.icon} active={nav===t.id} collapsed={collapsed} color="var(--blue)"
                 onClick={()=>go(t.id,t.label)}/>
             ))}

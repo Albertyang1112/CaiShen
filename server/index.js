@@ -265,6 +265,18 @@ app.delete('/api/transactions/:id', (req, res) => {
 // ── Routes: Vault (per-user) ──────────────────────────────────────────
 app.use('/api/vault', require('./vault')(VAULT_DIR, makeIO));
 
+// ── Localhost-only middleware (bank scraper) ──────────────────────────
+// Blocks access from any origin that isn't the user's own machine.
+// This ensures the scraper tab never appears or functions on mycaishen.ai.
+function localhostOnly(req, res, next) {
+  const h = req.hostname;
+  if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return next();
+  return res.status(403).json({ error: 'This feature is only available when running CaiShen locally.' });
+}
+
+// ── Routes: Bank Scraper (localhost only) ─────────────────────────────
+app.use('/api/scraper', localhostOnly, require('./bank-scraper')(makeIO, VAULT_DIR));
+
 // ── Server-Sent Events ────────────────────────────────────────────────
 const sseClients = new Set();
 app.get('/api/events', (req, res) => {
@@ -305,6 +317,9 @@ app.use('/api/accounting', accountingRouter);
 // ── Routes: Memory ────────────────────────────────────────────────────
 const { router: memoryRouter } = require('./memory')(makeIO);
 app.use('/api/memory', memoryRouter);
+
+// ── Routes: Tax Center ────────────────────────────────────────────────
+app.use('/api/taxes', require('./taxes')(makeIO, VAULT_DIR));
 
 // ── Import preview — dry-run before actual import ─────────────────────
 app.post('/api/import-history/preview', (req, res) => {
@@ -392,6 +407,123 @@ app.post('/api/tax-years', (req, res) => {
   years.sort((a, b) => b.year - a.year);
   writeData('tax_years.json', years, uid);
   res.json(entry);
+});
+
+// ── FIFO crypto gain computation (mirrors Crypto.jsx, used by /api/tax-estimate) ──
+function computeCryptoGainsByYear(txns, targetYear) {
+  const sorted = [...txns].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const lots = {}; // asset -> [{date, qty, costPerUnit}]
+  let stGains = 0, ltGains = 0, stCount = 0, ltCount = 0;
+  for (const tx of sorted) {
+    const asset = (tx.asset || '').toUpperCase();
+    if (!asset) continue;
+    if (!lots[asset]) lots[asset] = [];
+    const qty   = parseFloat(tx.quantity)    || 0;
+    const price = parseFloat(tx.pricePerUnit) || 0;
+    const fees  = parseFloat(tx.fees)         || 0;
+    if (tx.type === 'buy' || tx.type === 'receive' || tx.type === 'transfer_in') {
+      if (qty > 0) lots[asset].push({ date: tx.date, qty, costPerUnit: price + (qty > 0 ? fees / qty : 0) });
+    } else if (tx.type === 'sell') {
+      const txYear = (tx.date || '').slice(0, 4);
+      const proceeds = price * qty - fees;
+      let remaining = qty;
+      while (remaining > 1e-9 && lots[asset]?.length > 0) {
+        const lot  = lots[asset][0];
+        const used = Math.min(lot.qty, remaining);
+        const gain = used * price - used * lot.costPerUnit - (remaining === qty ? fees : 0);
+        const days = (new Date(tx.date) - new Date(lot.date)) / 86400000;
+        if (txYear === targetYear) {
+          if (days >= 365) { ltGains += gain; ltCount++; }
+          else             { stGains += gain; stCount++; }
+        }
+        lot.qty   -= used;
+        remaining -= used;
+        if (lot.qty < 1e-9) lots[asset].shift();
+      }
+    }
+  }
+  return { stGains: Math.round(stGains * 100) / 100, ltGains: Math.round(ltGains * 100) / 100, stCount, ltCount };
+}
+
+// ── GET /api/tax-estimate?year=YYYY ──────────────────────────────────
+// Estimates income fields from Plaid transactions, vault PDF stats, and crypto FIFO.
+app.get('/api/tax-estimate', (req, res) => {
+  const uid        = req.user.id;
+  const targetYear = (req.query.year || (new Date().getFullYear() - 1)).toString();
+
+  const transactions = readData('transactions.json', uid) || [];
+  const cryptoTxns   = readData('crypto_txns.json',  uid) || [];
+  const vault        = readData('vault.json',         uid) || { files: [] };
+
+  const yearTxs   = transactions.filter(t => (t.month || '').startsWith(targetYear));
+  const incomeTxs = yearTxs.filter(t => t.amount > 0 && t.category === 'Income');
+
+  // ── W-2: payroll-like Plaid income transactions ───────────────────
+  const PAYROLL_KW = ['payroll','paycheck','direct dep','adp','paychex','gusto','salary','wages','employer'];
+  const w2Txs  = incomeTxs.filter(t => PAYROLL_KW.some(kw => (t.desc || '').toLowerCase().includes(kw)));
+  const w2Total = Math.round(w2Txs.reduce((s, t) => s + t.amount, 0) * 100) / 100;
+
+  // ── Schedule E: vault property statement stats (property-tagged folders) ─
+  const PROP_IDS = ['haas','kobe','bayhill','bay hill','muirfield','alcita'];
+  const propFiles = (vault.files || []).filter(f =>
+    f.tags?.year === targetYear &&
+    f.tags?.income !== undefined &&
+    PROP_IDS.some(p => f.tags?.property === p || (f.folderPath || '').toLowerCase().includes(p))
+  );
+  const reGross    = propFiles.reduce((s, f) => s + (f.tags.income   || 0), 0);
+  const reExpenses = propFiles.reduce((s, f) => s + Math.abs(f.tags.spending || 0), 0);
+  const reNet      = Math.round((reGross - reExpenses) * 100) / 100;
+
+  // ── Schedule E fallback: rent deposits in Plaid transactions ─────
+  // Catches rent checks deposited to checking when no property-folder PDFs exist.
+  // Excludes anything that also looks like a payroll deposit (already counted above).
+  const RENTAL_KW  = ['rent','rental','lease',...PROP_IDS,'4500','7800','3210','6540']; // known addresses (1693 removed — it's a Chase branch address, not a property)
+  const rentalTxs  = incomeTxs.filter(t =>
+    !w2Txs.includes(t) &&
+    RENTAL_KW.some(kw => (t.desc || '').toLowerCase().includes(kw))
+  );
+  const rentalTotal = Math.round(rentalTxs.reduce((s, t) => s + t.amount, 0) * 100) / 100;
+
+  // Use vault stats if available, otherwise fall back to Plaid rental deposits
+  const reEstimate   = propFiles.length > 0 ? reNet : rentalTotal;
+  const reSource     = propFiles.length > 0
+    ? `${propFiles.length} property statement PDF${propFiles.length !== 1 ? 's' : ''} in vault`
+    : rentalTxs.length > 0
+      ? `${rentalTxs.length} rent deposit${rentalTxs.length !== 1 ? 's' : ''} via Plaid`
+      : null;
+  const reConfidence = propFiles.length > 0 ? 'medium' : rentalTxs.length > 0 ? 'low' : 'none';
+
+  // ── Capital gains: crypto FIFO ────────────────────────────────────
+  const { stGains, ltGains, stCount, ltCount } = computeCryptoGainsByYear(cryptoTxns, targetYear);
+  const totalCapGains = Math.round((stGains + ltGains) * 100) / 100;
+
+  res.json({
+    year: targetYear,
+    estimates: {
+      w2: {
+        value:    w2Total,
+        txCount:  w2Txs.length,
+        source:   'Plaid payroll deposits',
+        confidence: w2Txs.length > 0 ? 'medium' : 'none',
+      },
+      capitalGains: {
+        value:    totalCapGains,
+        stGains,  ltGains,
+        txCount:  stCount + ltCount,
+        source:   'Crypto FIFO (exact)',
+        confidence: (stCount + ltCount) > 0 ? 'high' : 'none',
+      },
+      scheduleEIncome: {
+        value:      reEstimate,
+        gross:      propFiles.length > 0 ? Math.round(reGross * 100) / 100 : rentalTotal,
+        expenses:   propFiles.length > 0 ? Math.round(reExpenses * 100) / 100 : 0,
+        statements: propFiles.length,
+        txCount:    rentalTxs.length,
+        source:     reSource || 'No rental data found',
+        confidence: reConfidence,
+      },
+    },
+  });
 });
 
 // ── Routes: Crypto transactions ───────────────────────────────────────

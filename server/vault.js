@@ -4,7 +4,42 @@ const path     = require('path');
 const fs       = require('fs');
 const archiver = require('archiver');
 
-const upload = multer({ storage: multer.memoryStorage() });
+// ── Upload validation ────────────────────────────────────────────────────────
+// Only financial document formats are accepted. Code files, project folders,
+// config files, and archives are rejected before anything touches disk.
+
+const ALLOWED_EXTS = new Set([
+  '.pdf',                                    // bank statements, tax forms, mortgages, contracts
+  '.csv',                                    // bank/brokerage transaction exports
+  '.xlsx', '.xls',                           // Excel exports (Quicken, brokerage, etc.)
+  '.jpg', '.jpeg', '.png', '.gif', '.webp',  // receipt/check images
+  '.doc', '.docx',                           // scanned Word documents
+  '.txt',                                    // plain-text exports (rare, but harmless)
+]);
+
+// Known-bad filenames and path segments — blocks things like .env, node_modules,
+// package.json even if the uploader renames them with an allowed extension.
+const SUSPICIOUS_NAMES = /^(\.env|package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|node_modules|\.git|\.gitignore|webpack\.config|vite\.config|tsconfig|eslint|babel\.config|\.babelrc|jest\.config|rollup\.config|CLAUDE\.md)/i;
+
+function validateUploadFile(filename, mimetype) {
+  const ext = path.extname(filename).toLowerCase();
+  if (SUSPICIOUS_NAMES.test(path.basename(filename))) {
+    return `"${filename}" looks like a project/config file and cannot be stored in the vault.`;
+  }
+  if (!ALLOWED_EXTS.has(ext)) {
+    return `"${filename}" (${ext || 'no extension'}) is not a supported financial document type. `
+      + `Allowed formats: PDF, CSV, Excel (.xlsx/.xls), images (JPG/PNG/GIF/WebP), Word (.doc/.docx).`;
+  }
+  return null; // valid
+}
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024,   // 50 MB per file
+    files: 500,                    // max 500 files per upload batch
+  },
+});
 
 const getFileType = (filename) => {
   const ext = path.extname(filename).toLowerCase();
@@ -16,6 +51,39 @@ const getFileType = (filename) => {
   if (['.txt', '.md'].includes(ext))                       return 'text';
   return 'other';
 };
+
+// ── Tax-form type detection from filename ─────────────────────────────────────
+// Populates tags.taxFormType so the Tax Center's "Import from docs" panel can
+// identify which forms are in the vault without re-reading each PDF.
+const TAX_FORM_PATTERNS = [
+  { type: 'SSA-1099', re: /\bSSA[-_]?1099\b/i },
+  { type: '1099-INT', re: /\b1099[-_]?INT\b/i },
+  { type: '1099-DIV', re: /\b1099[-_]?DIV\b/i },
+  { type: '1099-NEC', re: /\b1099[-_]?NEC\b/i },
+  { type: '1099-MISC',re: /\b1099[-_]?MISC\b/i },
+  { type: '1099-R',   re: /\b1099[-_]?R\b/i },
+  { type: '1099-B',   re: /\b1099[-_]?B\b/i },
+  { type: '1099',     re: /\b1099\b/i },
+  { type: '1098-E',   re: /\b1098[-_]?E\b/i },
+  { type: '1098',     re: /\b1098\b/i },
+  { type: 'W-2',      re: /\bW[-_]?2\b/i },
+];
+
+function detectTaxFormTags(filename) {
+  const extra = {};
+  for (const { type, re } of TAX_FORM_PATTERNS) {
+    if (re.test(filename)) {
+      extra.taxFormType = type;
+      break;
+    }
+  }
+  // Pull 4-digit year from filename if present and not already tagged
+  if (!extra.year) {
+    const ym = filename.match(/\b(20\d{2})\b/);
+    if (ym) extra.year = ym[1];
+  }
+  return extra;
+}
 
 const autoTag = (folderPath) => {
   const l = folderPath.toLowerCase();
@@ -91,6 +159,21 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
       const folderPath = req.body.folderPath || 'Uploads';
       const mergeMode  = req.body.mergeMode  || 'merge';
 
+      // ── Validate every file before touching disk ──────────────────────
+      const rejections = [];
+      for (const file of req.files || []) {
+        const err = validateUploadFile(file.originalname, file.mimetype);
+        if (err) rejections.push({ name: file.originalname, reason: err });
+      }
+      if (rejections.length > 0) {
+        return res.status(400).json({
+          error: 'One or more files were rejected.',
+          rejected: rejections,
+          hint: 'The vault only accepts financial documents: PDF, CSV, Excel, images (JPG/PNG), and Word docs. '
+            + 'Code files, project folders, and config files are not allowed.',
+        });
+      }
+
       const parts = folderPath.split('/').filter(Boolean);
       let parentId = null, currentFolderId = null;
       for (let i = 0; i < parts.length; i++) {
@@ -142,7 +225,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
           folderId: currentFolderId, folderPath, size: file.size,
           type: getFileType(file.originalname), mimeType: file.mimetype,
           createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), version: 1,
-          tags: { ...autoTag(folderPath), ...fnDateTags },
+          tags: { ...autoTag(folderPath), ...fnDateTags, ...detectTaxFormTags(file.originalname) },
         };
         meta.files.push(newFile); uploaded.push(newFile);
       }
@@ -449,11 +532,15 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
 
         // If canonical name already exists (owned by a DIFFERENT meta entry) → duplicate
         if (fs.existsSync(path.join(dir, canonical))) {
-          try { fs.unlinkSync(oldPath); } catch {}
+          try {
+            const archDir = path.join(vaultDir, '_deleted', `dup_${Date.now()}`);
+            fs.mkdirSync(archDir, { recursive: true });
+            fs.renameSync(oldPath, path.join(archDir, f.name));
+          } catch { try { fs.unlinkSync(oldPath); } catch {} }
           const fi = meta.files.findIndex(x => x.id === f.id);
           if (fi >= 0) meta.files.splice(fi, 1);
           dupeRemoved++;
-          console.log(`[vault/auto-organize] Auto-removed duplicate: ${f.name} (kept: ${canonical})`);
+          console.log(`[vault/auto-organize] Auto-archived duplicate: ${f.name} (kept: ${canonical})`);
           continue;
         }
 
@@ -489,11 +576,17 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
         });
         for (const dup of group.slice(1)) {
           const fp = path.join(vaultDir, dup.folderPath, dup.name);
-          try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch {}
+          try {
+            if (fs.existsSync(fp)) {
+              const archDir = path.join(vaultDir, '_deleted', `dup_${Date.now()}`);
+              fs.mkdirSync(archDir, { recursive: true });
+              fs.renameSync(fp, path.join(archDir, dup.name));
+            }
+          } catch { try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch {} }
           const fi = meta.files.findIndex(x => x.id === dup.id);
           if (fi >= 0) meta.files.splice(fi, 1);
           dupeRemoved++;
-          console.log(`[vault/auto-organize] Auto-removed duplicate: ${dup.name} (kept: ${group[0].name})`);
+          console.log(`[vault/auto-organize] Auto-archived duplicate: ${dup.name} (kept: ${group[0].name})`);
         }
       }
 
@@ -656,6 +749,19 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
             f2.tags?.month === mStr
           );
           if (existingPeriodFile) {
+            // ── Ghost-file guard ──────────────────────────────────────────────
+            // vault.json may reference a file that was renamed/moved (e.g. old
+            // "2026-03 TOTAL CHECKING Statement.pdf" → canonical "9092 Statement Mar 2026.pdf").
+            // If the physical file no longer exists at the recorded path, the entry
+            // is stale. Remove the ghost from vault.json and let this upload proceed.
+            const existingPhysPath = path.join(vaultDir, existingPeriodFile.folderPath, existingPeriodFile.name);
+            if (!fs.existsSync(existingPhysPath)) {
+              console.log(`[vault/auto-organize] Ghost entry removed: ${existingPeriodFile.name} (file missing on disk)`);
+              const ghostIdx = meta.files.findIndex(f2 => f2.id === existingPeriodFile.id);
+              if (ghostIdx >= 0) meta.files.splice(ghostIdx, 1);
+              // fall through — no duplicate, organize normally
+            } else {
+
             // ── Compare transactions to distinguish fudge from true duplicate ──
             // Run in a child process: pdf2json has shared global state that
             // corrupts when a pdfkit "bufferPages" PDF is parsed after another PDF
@@ -671,7 +777,9 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
                 process.execPath, [workerPath, origPath, newPath, tags.year || '', tags.month || ''],
                 { cwd: __dirname, timeout: 30000, maxBuffer: 1024 * 1024 }
               );
-              const { orig: origTxs, new: newTxs } = JSON.parse(raw.toString().trim());
+              const jsonLine2 = raw.toString().split('\n')
+                .map(l => l.trim()).filter(l => l.startsWith('{')).pop() || '{}';
+              const { orig: origTxs, new: newTxs } = JSON.parse(jsonLine2);
               if (newTxs.length > 0 && origTxs.length > 0) {
                 let fudgeCount = 0, matchCount = 0;
                 for (const t2 of newTxs) {
@@ -715,18 +823,25 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
               console.log(`[vault/auto-organize] Fudge detected: ${file.name} vs ${existingPeriodFile.name}`);
               continue;
             } else if (file.folderPath !== targetPath) {
-              // True duplicate arriving from a different folder — auto-remove
+              // True duplicate arriving from a different folder — archive to _deleted
               const srcPath = path.join(vaultDir, file.folderPath, file.name);
-              try { if (fs.existsSync(srcPath)) fs.unlinkSync(srcPath); } catch {}
+              try {
+                if (fs.existsSync(srcPath)) {
+                  const archDir = path.join(vaultDir, '_deleted', `dup_${Date.now()}`);
+                  fs.mkdirSync(archDir, { recursive: true });
+                  fs.renameSync(srcPath, path.join(archDir, file.name));
+                }
+              } catch { try { if (fs.existsSync(srcPath)) fs.unlinkSync(srcPath); } catch {} }
               const fi = meta.files.findIndex(f2 => f2.id === file.id);
               if (fi >= 0) meta.files.splice(fi, 1);
               results.duplicatesRemoved++;
-              console.log(`[vault/auto-organize] Auto-removed duplicate: ${file.name} (kept: ${existingPeriodFile.name})`);
+              console.log(`[vault/auto-organize] Auto-archived duplicate: ${file.name} (kept: ${existingPeriodFile.name})`);
               continue;
             } else {
               // True duplicate already in target folder — silently ignore
               continue;
             }
+            } // end ghost-file else
           }
         }
 
@@ -1150,6 +1265,59 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
     }
   });
 
+  // ── POST /api/vault/parse-tax-form/:id — extract tax form boxes via Claude ──
+  // Reads the PDF from disk, sends to Claude, caches result in file.tags.taxFormData.
+  // On repeat calls the cached result is returned without re-calling the API.
+  router.post('/parse-tax-form/:id', async (req, res) => {
+    try {
+      const { extractTaxFormData, detectFormTypeFromFilename } = require('./tax-form-parser');
+      const userId   = req.user.id;
+      const vaultDir = getUserVaultDir(userId);
+      let   meta     = readMeta(userId);
+      const file     = meta.files.find(f => f.id === req.params.id);
+      if (!file)                return res.status(404).json({ error: 'File not found' });
+      if (file.type !== 'pdf') return res.status(400).json({ error: 'Only PDF files can be parsed as tax forms' });
+
+      const filePath = path.join(vaultDir, file.folderPath, file.name);
+      if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File missing from disk' });
+
+      // Return cached result if already extracted (skip API call)
+      if (file.tags?.taxFormData && !req.body?.force) {
+        return res.json({ cached: true, ...file.tags.taxFormData });
+      }
+
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (!apiKey || apiKey === 'your_anthropic_api_key_here') {
+        return res.status(503).json({ error: 'ANTHROPIC_API_KEY not configured — add it to .env to enable tax form extraction' });
+      }
+
+      const buffer   = fs.readFileSync(filePath);
+      const formData = await extractTaxFormData(buffer, file.name);
+
+      // Fill in formType from filename if Claude didn't detect it
+      if (!formData.formType) {
+        formData.formType = detectFormTypeFromFilename(file.name) || 'Unknown';
+      }
+
+      // Cache in vault metadata
+      const fi = meta.files.findIndex(f => f.id === file.id);
+      if (fi >= 0) {
+        meta.files[fi].tags = {
+          ...meta.files[fi].tags,
+          taxFormType: formData.formType,
+          taxFormData: formData,
+          taxFormExtractedAt: new Date().toISOString(),
+        };
+      }
+      writeMeta(meta, userId);
+
+      res.json({ cached: false, ...formData });
+    } catch (e) {
+      console.error('[vault/parse-tax-form]', e.response?.data || e.message);
+      res.status(500).json({ error: e.response?.data?.error?.message || e.message });
+    }
+  });
+
   // ── POST /api/vault/parse-statement/:id — extract transactions via Claude ──
   router.post('/parse-statement/:id', async (req, res) => {
     try {
@@ -1277,6 +1445,154 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
 
       res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── POST /api/vault/verify ─────────────────────────────────────────────
+  // Compares each organized PDF statement against settled Plaid transactions.
+  // Sets file.tags.verificationStatus:
+  //   'verified'     — ≥70% of PDF transactions matched in Plaid (permanent)
+  //   'unverified'   — Plaid exists but match rate is low, OR file is flagged fudge
+  //   'no_plaid_data'— no settled Plaid transactions for that account+month
+  // Once 'verified', the status is NEVER downgraded automatically.
+  router.post('/verify', async (req, res) => {
+    try {
+      const { execFileSync } = require('child_process');
+      const workerPath = path.join(__dirname, 'pdf-parse-worker.js');
+      const userId   = req.user.id;
+      const io       = makeIO(userId);
+      const vaultDir = getUserVaultDir(userId);
+      const meta     = readMeta(userId);
+      const allTxs   = io.read('transactions.json') || [];
+      const accounts = io.read('accounts.json') || [];
+
+      // Only settled Plaid transactions are reliable for matching
+      const plaidTxs = allTxs.filter(t => t.source === 'plaid' && !t.pending);
+
+      // Month abbreviation → 2-digit month
+      const MONTH_ABBR = {
+        jan:'01', feb:'02', mar:'03', apr:'04', may:'05', jun:'06',
+        jul:'07', aug:'08', sep:'09', oct:'10', nov:'11', dec:'12',
+      };
+
+      // Build candidate list — include fudge-named files even if missing year/month tags
+      const isFudgeName = (name) => /fudged|_flagged/i.test(name);
+      const candidates  = meta.files.filter(f =>
+        f.type === 'pdf' &&
+        f.tags?.institution &&
+        f.tags?.verificationStatus !== 'verified' && // frozen once verified
+        (
+          (f.tags?.year && f.tags?.month) ||          // normal organized file
+          f.tags?.fudge === true ||                    // fudge-tagged
+          isFudgeName(f.name)                          // fudge-named
+        )
+      );
+
+      const counts = { verified: 0, unverified: 0, noPlaidData: 0, failed: 0 };
+      let changed = false;
+
+      for (const file of candidates) {
+        const fi = meta.files.findIndex(x => x.id === file.id);
+        if (fi < 0) continue;
+
+        // Resolve year/month — from tags or filename
+        let { last4, year, month } = file.tags || {};
+        if (!year || !month) {
+          // e.g. "9092 Statement May 2026 (fudged).pdf"
+          const m = file.name.match(/Statement\s+([A-Za-z]{3})\s+(\d{4})/i);
+          if (m) { month = MONTH_ABBR[m[1].toLowerCase()]; year = m[2]; }
+        }
+        if (!year || !month) { counts.failed++; continue; }
+
+        const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+
+        // Find the Plaid account for this statement's last4.
+        // Only use a Plaid-sourced account ID — a pdf_import account would filter
+        // out every Plaid transaction since the IDs don't match.
+        let plaidAcctId = null;
+        if (last4) {
+          const pa = accounts.find(a => a.last4 === String(last4) && a.source === 'plaid');
+          plaidAcctId = pa?.id || null;
+        }
+
+        // Settled Plaid transactions for this account + month
+        const monthPlaid = plaidTxs.filter(t =>
+          t.month === monthStr &&
+          (!plaidAcctId || t.account === plaidAcctId)
+        );
+
+        if (monthPlaid.length === 0) {
+          meta.files[fi].tags.verificationStatus = 'no_plaid_data';
+          counts.noPlaidData++;
+          changed = true;
+          continue;
+        }
+
+        // Extract PDF transactions — run in a child process so pdf2json's
+        // global state is reset for every file (avoids wrong-transactions bug
+        // when parsing multiple files sequentially in the same process).
+        let pdfTxs = [];
+        try {
+          const fp = path.join(vaultDir, file.folderPath, file.name);
+          if (!fs.existsSync(fp)) { counts.failed++; continue; }
+          const raw = execFileSync(
+            process.execPath,
+            [workerPath, fp, String(year), String(month)],
+            { cwd: __dirname, timeout: 30000, maxBuffer: 1024 * 1024 }
+          );
+          // pdf2json emits "Warning: Setting up fake worker." on stdout before
+          // the JSON line — find the last line that starts with '{'
+          const jsonLine = raw.toString().split('\n')
+            .map(l => l.trim()).filter(l => l.startsWith('{')).pop() || '{}';
+          const result = JSON.parse(jsonLine);
+          pdfTxs = result.transactions || [];
+        } catch {
+          counts.failed++;
+          continue;
+        }
+        if (!pdfTxs.length) { counts.failed++; continue; }
+
+        // Match by amount (±$0.02) AND date (±1 day)
+        let matched = 0;
+        for (const pt of pdfTxs) {
+          const ptAmt = Math.abs(pt.amount);
+          const ptMs  = new Date(pt.date).getTime();
+          if (monthPlaid.some(lt =>
+            Math.abs(Math.abs(lt.amount) - ptAmt) <= 0.02 &&
+            Math.abs(new Date(lt.date).getTime() - ptMs) <= 86400000
+          )) matched++;
+        }
+
+        const score = matched / pdfTxs.length;
+
+        // A fudge-flagged file is always unverified regardless of match rate
+        const isFudged = file.tags?.fudge === true || isFudgeName(file.name);
+        const newStatus = (!isFudged && score >= 0.70) ? 'verified' : 'unverified';
+
+        meta.files[fi].tags.verificationStatus      = newStatus;
+        meta.files[fi].tags.verificationScore       = +score.toFixed(3);
+        meta.files[fi].tags.verificationMatchCount  = matched;
+        meta.files[fi].tags.verificationPdfCount    = pdfTxs.length;
+        meta.files[fi].tags.verificationPlaidCount  = monthPlaid.length;
+
+        if (newStatus === 'verified') {
+          // verifiedAt is set once and never cleared
+          if (!meta.files[fi].tags.verifiedAt) {
+            meta.files[fi].tags.verifiedAt = new Date().toISOString();
+          }
+          counts.verified++;
+        } else {
+          counts.unverified++;
+        }
+        changed = true;
+        console.log(`[vault/verify] ${file.name}: ${newStatus} (score=${score.toFixed(2)}, matched=${matched}/${pdfTxs.length}, plaid=${monthPlaid.length})`);
+      }
+
+      if (changed) writeMeta(meta, userId);
+      res.json({ ...counts, total: candidates.length });
+    } catch (e) {
+      console.error('[vault/verify]', e.message);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   return router;

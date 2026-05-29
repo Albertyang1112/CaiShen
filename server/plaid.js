@@ -90,7 +90,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     let txCount = 0;
     try {
       const endDate  = new Date().toISOString().split('T')[0];
-      const start    = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const start    = startDate || new Date(Date.now() - 730 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       const plaidTxs = await fetchAllTransactions(access_token, start, endDate, institution_name);
       const existing = read('transactions.json') || [];
       write('transactions.json', [

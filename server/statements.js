@@ -197,6 +197,21 @@ async function generateForUser(userId, makeIO, BASE_VAULT_DIR) {
         }
       }
 
+      // Skip if this period is already covered by ANY vault file (real bank PDF or
+      // previously-generated statement) — match on year + month + last4 so the
+      // canonical-named bank PDFs ("9092 Statement Feb 2026.pdf") are treated as
+      // equivalent and we don't regenerate on every cron cycle.
+      const periodAlreadyPresent = meta.files.some(f =>
+        f.type === 'pdf' &&
+        String(f.tags?.year)  === String(year)  &&
+        String(f.tags?.month) === String(month) &&
+        (acct.last4
+          ? String(f.tags?.last4) === String(acct.last4)
+          : f.tags?.account === acct.name)
+      );
+      if (periodAlreadyPresent) { skipped++; continue; }
+
+      // Fallback exact-name check (pre-existing entries without last4 tag)
       const existingFolder = meta.folders.find(f => f.path === folderPath);
       if (existingFolder && meta.files.find(f => f.folderId === existingFolder.id && f.name === fileName)) {
         skipped++; continue;
@@ -363,3 +378,6 @@ module.exports = function(makeIO, BASE_VAULT_DIR) {
 
   return { router, generateForUser: (userId) => generateForUser(userId, makeIO, BASE_VAULT_DIR) };
 };
+
+// Expose buildStatementPDF for use in tests
+module.exports.buildStatementPDF = buildStatementPDF;

@@ -1098,6 +1098,7 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
   const [exporting, setExporting]   = useState(false)
   const [wiping, setWiping]         = useState(false)
   const [organizing, setOrganizing] = useState(false)
+  const [verifying, setVerifying]   = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
   const [showWipeConfirm, setShowWipeConfirm] = useState(false)
   const folderRef  = useRef()
@@ -1229,9 +1230,37 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
         } catch {}
 
         setOrganizing(false)
+
+        // 4. Silently compare all PDF statements against Plaid data.
+        //    'verified' status is permanent — only new/changed files get re-checked.
+        try {
+          setVerifying(true)
+          const vr = await axios.post(`${API}/verify`, {}, { timeout: 600000 })
+          if (vr.data.verified > 0 || vr.data.unverified > 0) await load()
+        } catch {}
+        setVerifying(false)
       })()
     })
   }, [])
+
+  const verifyStatements = async () => {
+    setVerifying(true)
+    try {
+      const vr = await axios.post(`${API}/verify`, {}, { timeout: 600000 })
+      if (vr.data.verified > 0 || vr.data.unverified > 0) {
+        await load()
+        const parts = [
+          vr.data.verified    > 0 ? `${vr.data.verified} verified ✓`    : null,
+          vr.data.unverified  > 0 ? `${vr.data.unverified} unverified`  : null,
+          vr.data.noPlaidData > 0 ? `${vr.data.noPlaidData} outside Plaid window` : null,
+        ].filter(Boolean)
+        setUploadSuccess('Plaid verification: ' + parts.join(' · '))
+      }
+    } catch (e) {
+      setUploadError('Verification failed: ' + (e.response?.data?.error || e.message))
+    }
+    setVerifying(false)
+  }
 
   const organizeFolder = async (folderId) => {
     setOrganizing(true); setUploadError(null)
@@ -1327,9 +1356,35 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
     setUploading(false); setPendingUpload(null); setMergeInfo(null)
   }, [selectedFolderId, meta.folders])
 
+  // ── Allowed financial document extensions ──────────────────────────────
+  const VAULT_ALLOWED_EXTS = new Set([
+    '.pdf', '.csv', '.xlsx', '.xls',
+    '.jpg', '.jpeg', '.png', '.gif', '.webp',
+    '.doc', '.docx', '.txt',
+  ])
+  const VAULT_SUSPICIOUS = /^(\.env|package\.json|package-lock\.json|yarn\.lock|node_modules|\.git|\.gitignore|webpack\.config|vite\.config|tsconfig|eslint|babel\.config|\.babelrc|jest\.config|CLAUDE\.md)/i
+
   const handleFiles = useCallback(async (fileList) => {
     const files = Array.from(fileList)
     if (!files.length) return
+
+    // ── Client-side validation: catch bad files before any network request ──
+    const rejected = files.filter(f => {
+      const name = f.webkitRelativePath || f.name
+      const base = name.split('/').pop()
+      const ext  = '.' + base.split('.').pop().toLowerCase()
+      return VAULT_SUSPICIOUS.test(base) || !VAULT_ALLOWED_EXTS.has(ext)
+    })
+    if (rejected.length > 0) {
+      const names  = rejected.slice(0, 5).map(f => (f.webkitRelativePath || f.name).split('/').pop())
+      const extra  = rejected.length > 5 ? ` and ${rejected.length - 5} more` : ''
+      setUploadError(
+        `Upload blocked — ${rejected.length} file${rejected.length !== 1 ? 's' : ''} can't be stored in the vault: `
+        + names.join(', ') + extra
+        + '. Only financial documents are allowed: PDF, CSV, Excel, images (JPG/PNG), and Word docs.'
+      )
+      return
+    }
 
     // PDFs are always auto-organized into the correct account folders —
     // skip the merge-conflict check entirely and go straight to upload.
@@ -1500,6 +1555,12 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
         </select>
         <span style={{ fontSize:11, color:'var(--text-secondary)' }}>{meta.files.length} files · {formatSize(totalSize)}</span>
         <div style={{ marginLeft:'auto', display:'flex', gap:6 }}>
+          <button onClick={verifyStatements} disabled={verifying}
+            title="Compare PDF statement transactions against Plaid data to verify authenticity"
+            style={{ fontSize:12, background:'var(--blue-light)', color:'var(--blue)', borderColor:'var(--blue)' }}>
+            <i className={`ti ${verifying ? 'ti-loader-2' : 'ti-shield-check'}`} style={{ animation: verifying ? 'spin 1s linear infinite' : 'none' }} aria-hidden="true"/>
+            {' '}{verifying ? 'Verifying…' : 'Verify vs Plaid'}
+          </button>
           <button onClick={() => setShowImportModal(true)}
             title="Import Chase or other bank CSV to add historical transactions"
             style={{ fontSize:12, background:'var(--amber-light)', color:'var(--amber)', borderColor:'var(--amber)' }}>
@@ -1519,7 +1580,7 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
           </button>
         </div>
         <input ref={folderRef} type="file" webkitdirectory="" multiple style={{ display:'none' }} onChange={e=>handleFiles(e.target.files)}/>
-        <input ref={fileRef}   type="file" multiple          style={{ display:'none' }} onChange={e=>handleFiles(e.target.files)}/>
+        <input ref={fileRef}   type="file" multiple accept=".pdf,.csv,.xlsx,.xls,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.txt" style={{ display:'none' }} onChange={e=>handleFiles(e.target.files)}/>
       </div>
 
       {organizing && !uploadSuccess?.includes('sorting') && (
@@ -1662,6 +1723,20 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
                             <i className={`ti ${icon}`} style={{ fontSize:16, color, flexShrink:0 }} aria-hidden="true"/>
                             <p style={{ fontSize:12, fontWeight:500, margin:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', color: isFlagged ? 'var(--coral)' : undefined }} title={isFlagged ? `⚠ Potentially tampered — amounts differ from original statement` : file.name}>{file.name}</p>
                             {isFlagged && <span style={{ fontSize:10, fontWeight:600, color:'var(--coral)', background:'rgba(185,28,28,0.15)', border:'1px solid rgba(185,28,28,0.4)', borderRadius:3, padding:'1px 5px', whiteSpace:'nowrap', flexShrink:0 }}>FLAGGED</span>}
+                          {file.tags?.verificationStatus === 'verified' && (
+                            <span
+                              title={`Verified against Plaid · ${Math.round((file.tags.verificationScore||0)*100)}% match (${file.tags.verificationMatchCount||0}/${file.tags.verificationPdfCount||0} txs)${file.tags.verifiedAt ? ' · ' + new Date(file.tags.verifiedAt).toLocaleDateString() : ''}`}
+                              style={{ fontSize:9, fontWeight:700, color:'var(--teal)', background:'rgba(20,184,166,0.12)', border:'1px solid rgba(20,184,166,0.35)', borderRadius:3, padding:'1px 5px', whiteSpace:'nowrap', flexShrink:0, letterSpacing:'0.3px' }}>
+                              ✓ VERIFIED
+                            </span>
+                          )}
+                          {file.tags?.verificationStatus === 'unverified' && (
+                            <span
+                              title={`Plaid mismatch · ${Math.round((file.tags.verificationScore||0)*100)}% match (${file.tags.verificationMatchCount||0}/${file.tags.verificationPdfCount||0} PDF txs vs ${file.tags.verificationPlaidCount||0} Plaid txs)`}
+                              style={{ fontSize:9, fontWeight:700, color:'var(--amber)', background:'rgba(245,158,11,0.12)', border:'1px solid rgba(245,158,11,0.35)', borderRadius:3, padding:'1px 5px', whiteSpace:'nowrap', flexShrink:0, letterSpacing:'0.3px' }}>
+                              ✗ UNVERIFIED
+                            </span>
+                          )}
                           </div>
                           {summ ? <>
                             <p style={{ fontSize:12, color:'var(--teal)', margin:0, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{fmtMoney(summ.income)}</p>
