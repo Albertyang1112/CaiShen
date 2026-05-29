@@ -2,16 +2,32 @@
 node_modules/
 client/node_modules/
 
-# Build output
+# Build output — both possible locations
 client/dist/
+client-dist/
 
 # Environment variables — NEVER commit this
 .env
+.env.*
+!.env.example
 
 # Local data — stays on your machine only
 data/
 backups/
 vault/
+
+# Bank scraper HAR fixtures — contain real bank session data / session cookies
+server/scraper-fixtures/
+
+# Bank scraper — automation code for live/record/replay bank sessions; keep local only
+extension/
+server/bank-scraper.js
+client/src/BankScraper.jsx
+
+# Log files
+*.log
+server_log.txt
+logs/
 
 # OS files
 .DS_Store
