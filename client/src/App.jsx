@@ -4,7 +4,6 @@ import Projections from './Projections'
 import PersonalSpending from './PersonalSpending'
 import TransactionTransfer from './TransactionTransfer'
 import DataVault from './DataVault'
-import BankScraper from './BankScraper'
 import TaxCenter from './TaxCenter'
 import Advisor from './Advisor'
 import Accounting from './Accounting'
@@ -1456,7 +1455,6 @@ function MainApp({ auth, onLogout }) {
     if(nav==='accounting') return <Accounting/>
     if(nav==='data')       return <DataVault accounts={accounts} transactions={transactions} onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])} onTransactionsChanged={()=>{ axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])).catch(()=>{}); axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])).catch(()=>{}) }}/>
     if(nav==='settings')   return <SettingsScreen auth={auth}/>
-    if(nav==='scraper' && IS_LOCALHOST) return <BankScraper/>
     return null
   }
 
