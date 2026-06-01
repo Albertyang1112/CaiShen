@@ -275,7 +275,14 @@ function localhostOnly(req, res, next) {
 }
 
 // ── Routes: Bank Scraper (localhost only) ─────────────────────────────
-app.use('/api/scraper', localhostOnly, require('./bank-scraper')(makeIO, VAULT_DIR));
+// Guarded require: bank-scraper.js is an optional local-only module that may
+// not be present in every checkout. Skip-mount it when absent so the server
+// still boots; behavior is identical to before when the real file is present.
+if (fs.existsSync(path.join(__dirname, 'bank-scraper.js'))) {
+  app.use('/api/scraper', localhostOnly, require('./bank-scraper')(makeIO, VAULT_DIR));
+} else {
+  console.warn('[scraper] server/bank-scraper.js not found — /api/scraper disabled for this run.');
+}
 
 // ── Server-Sent Events ────────────────────────────────────────────────
 const sseClients = new Set();
@@ -552,6 +559,11 @@ app.delete('/api/crypto/transactions/:id', (req, res) => {
   writeData('crypto_txns.json', (readData('crypto_txns.json', uid) || []).filter(t => t.id !== req.params.id), uid);
   res.json({ success: true });
 });
+
+// ── Routes: Crypto tax report (read-only; cost-basis engine parity) ───
+// Adds GET /api/crypto/report and /report/download only. The Crypto tab does not call these
+// yet — they exist so the ported engine can be verified against the Python reference first.
+app.use('/api/crypto', require('./crypto')(makeIO));
 
 // ── Routes: Wallets ───────────────────────────────────────────────────
 app.get('/api/wallets', (req, res) => {

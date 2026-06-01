@@ -193,6 +193,222 @@ const emptyForm = () => ({
 })
 const emptyWallet = () => ({ name: '', type: 'bitcoin', address: '', exchange: '', notes: '' })
 
+// ── Server-engine tax report (Form 8949 / Schedule D / income / portfolio) ──
+// Backed by GET /api/crypto/report, which runs the audited cost-basis engine
+// (FIFO / LIFO / HIFO / Spec-ID; universal or per-account pooling). Money values
+// arrive PRE-FORMATTED as strings ("9700.00", "-2052.00", "" when blank), so this
+// view never re-runs them through fd() — it only adds a $ and thousands separators.
+const TAX_METHODS  = [['fifo', 'FIFO'], ['lifo', 'LIFO'], ['hifo', 'HIFO'], ['specid', 'Spec ID']]
+const TAX_POOLINGS = [['universal', 'Universal'], ['per_account', 'Per-account']]
+const TAX_DOWNLOADS = [
+  ['form8949', 'Form 8949'], ['schedule_d', 'Schedule D'],
+  ['income', 'Income'], ['gains', 'Gains detail'], ['portfolio', 'Portfolio'],
+]
+
+const usd = (s) => {
+  if (s === '' || s === null || s === undefined) return '—'
+  const n = parseFloat(s)
+  if (!isFinite(n)) return String(s)
+  return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+const gainColor = (s) => (parseFloat(s) || 0) >= 0 ? 'var(--teal)' : 'var(--coral)'
+
+function CryptoTaxReport({ report, reportLoading, reportErr, method, setMethod, pooling, setPooling, reportYear, setReportYear, reportYears, downloading, onDownload, onRefresh }) {
+  const selStyle = { fontSize: 12, padding: '6px 8px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '0.5px solid var(--border)', borderRadius: 'var(--radius-sm)' }
+  const sd  = report?.scheduleD
+  const inc = report?.income
+  const hasWarnings = report && ((report.warnings && report.warnings.length) || report.unmatchedTransfers > 0)
+  const f8 = report?.form8949 || []
+  const pf = report?.portfolio || []
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      {/* Header + controls */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
+        <div style={{ marginRight: 'auto' }}>
+          <p style={{ fontSize: 13, fontWeight: 600, margin: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <i className="ti ti-file-invoice" style={{ color: 'var(--amber)' }} aria-hidden="true" />
+            IRS-Style Tax Report
+          </p>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '2px 0 0' }}>
+            Form 8949 · Schedule D · ordinary income · holdings — computed by the cost-basis engine
+          </p>
+        </div>
+        <label style={{ fontSize: 10, color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          Method
+          <select value={method} onChange={e => setMethod(e.target.value)} style={selStyle}>
+            {TAX_METHODS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 10, color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          Pooling
+          <select value={pooling} onChange={e => setPooling(e.target.value)} style={selStyle}>
+            {TAX_POOLINGS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 10, color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          Year
+          <select value={reportYear} onChange={e => setReportYear(e.target.value)} style={selStyle}>
+            <option value="all">All years</option>
+            {reportYears.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </label>
+        <button onClick={onRefresh} disabled={reportLoading} style={{ fontSize: 12 }}>
+          <i className={`ti ${reportLoading ? 'ti-loader-2 spin' : 'ti-refresh'}`} aria-hidden="true" /> Refresh
+        </button>
+      </div>
+
+      {/* Disclaimer — always shown */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 12px', background: 'var(--amber-light)', borderRadius: 'var(--radius-sm)', borderLeft: '3px solid var(--amber)', marginBottom: 12 }}>
+        <i className="ti ti-alert-triangle" style={{ color: 'var(--amber)', fontSize: 14, marginTop: 1 }} aria-hidden="true" />
+        <p style={{ fontSize: 11, color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
+          {report?.disclaimer || 'NOT tax advice. Verify against your records and a tax professional (CPA).'}
+        </p>
+      </div>
+
+      {reportErr && (
+        <div style={{ padding: '8px 12px', background: 'var(--coral-light)', borderRadius: 'var(--radius-sm)', fontSize: 12, color: 'var(--coral)', marginBottom: 12 }}>
+          <i className="ti ti-alert-circle" aria-hidden="true" /> {reportErr}
+        </div>
+      )}
+
+      {reportLoading && !report && (
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: '20px 0' }}>
+          <i className="ti ti-loader-2 spin" aria-hidden="true" /> Computing report…
+        </p>
+      )}
+
+      {report && (
+        <>
+          {/* Warnings (engine + unmatched self-transfers) */}
+          {hasWarnings && (
+            <div style={{ padding: '8px 12px', background: 'var(--blue-light)', borderRadius: 'var(--radius-sm)', borderLeft: '3px solid var(--blue)', marginBottom: 12 }}>
+              {report.unmatchedTransfers > 0 && (
+                <p style={{ fontSize: 11, color: 'var(--text-secondary)', margin: '0 0 4px' }}>
+                  <i className="ti ti-arrows-exchange" aria-hidden="true" /> {report.unmatchedTransfers} transfer(s) couldn't be matched to a self-transfer pair and were treated per their type. Review if you were moving coins between your own wallets.
+                </p>
+              )}
+              {(report.warnings || []).map((w, i) => (
+                <p key={i} style={{ fontSize: 11, color: 'var(--text-secondary)', margin: '2px 0 0' }}>• {w}</p>
+              ))}
+            </div>
+          )}
+
+          {/* Schedule D summary cards */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
+            {[['Short-Term', sd?.short_term], ['Long-Term', sd?.long_term]].map(([label, blk]) => (
+              <div key={label} style={{ background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)', padding: '12px 14px' }}>
+                <p style={{ fontSize: 11, color: 'var(--text-secondary)', margin: '0 0 4px', fontWeight: 500 }}>{label} Gain/Loss</p>
+                <p style={{ fontSize: 18, fontWeight: 600, margin: '0 0 4px', color: gainColor(blk?.gain) }}>{usd(blk?.gain)}</p>
+                <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: 0 }}>
+                  {blk?.count || 0} disposal(s) · proceeds {usd(blk?.proceeds)} · cost {usd(blk?.cost_basis)}
+                </p>
+              </div>
+            ))}
+            <div style={{ background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)', padding: '12px 14px', border: '0.5px solid var(--amber)' }}>
+              <p style={{ fontSize: 11, color: 'var(--text-secondary)', margin: '0 0 4px', fontWeight: 500 }}>Net Capital Gain/Loss</p>
+              <p style={{ fontSize: 18, fontWeight: 600, margin: '0 0 4px', color: gainColor(sd?.net_gain) }}>{usd(sd?.net_gain)}</p>
+              <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: 0 }}>{report.summary?.period || (report.year || 'All years')} · {method.toUpperCase()} · {pooling === 'per_account' ? 'per-account' : 'universal'}</p>
+            </div>
+          </div>
+
+          {/* Form 8949 */}
+          <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>Form 8949 — Sales &amp; Dispositions</p>
+          {f8.length === 0 ? (
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', padding: '10px 0' }}>No disposals in this period.</p>
+          ) : (
+            <div style={{ border: '0.5px solid var(--border)', borderRadius: 'var(--radius-md)', overflow: 'hidden', marginBottom: 16 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '54px 1.4fr 84px 84px 90px 90px 90px', gap: 6, padding: '7px 12px', background: 'var(--bg-secondary)', borderBottom: '0.5px solid var(--border)' }}>
+                {['Part', 'Description', 'Acquired', 'Sold', 'Proceeds', 'Cost', 'Gain'].map(h => (
+                  <span key={h} style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{h}</span>
+                ))}
+              </div>
+              {f8.map((r, i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '54px 1.4fr 84px 84px 90px 90px 90px', gap: 6, padding: '7px 12px', borderBottom: i < f8.length - 1 ? '0.5px solid var(--border)' : 'none', alignItems: 'center' }}>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{r.part}/{r.box}</span>
+                  <span style={{ fontSize: 12, fontWeight: 500 }}>{r.description}</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{r.date_acquired}</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{r.date_sold}</span>
+                  <span style={{ fontSize: 11 }}>{usd(r.proceeds)}</span>
+                  <span style={{ fontSize: 11 }}>{usd(r.cost_basis)}</span>
+                  <span style={{ fontSize: 12, fontWeight: 500, color: gainColor(r.gain) }}>{usd(r.gain)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Ordinary income */}
+          <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>Ordinary Income <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(staking · mining · interest · rewards · airdrops)</span></p>
+          {(!inc || inc.rows.length === 0) ? (
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', padding: '10px 0' }}>No ordinary income in this period.</p>
+          ) : (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10, alignItems: 'center' }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--teal)' }}>Total {usd(inc.total)}</span>
+                {Object.entries(inc.by_kind).map(([k, v]) => (
+                  <span key={k} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>{k}: {usd(v)}</span>
+                ))}
+              </div>
+              <div style={{ border: '0.5px solid var(--border)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '84px 90px 60px 1fr 100px', gap: 6, padding: '7px 12px', background: 'var(--bg-secondary)', borderBottom: '0.5px solid var(--border)' }}>
+                  {['Date', 'Kind', 'Asset', 'Amount', 'Value (USD)'].map(h => (
+                    <span key={h} style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase' }}>{h}</span>
+                  ))}
+                </div>
+                {inc.rows.map((r, i) => (
+                  <div key={i} style={{ display: 'grid', gridTemplateColumns: '84px 90px 60px 1fr 100px', gap: 6, padding: '7px 12px', borderBottom: i < inc.rows.length - 1 ? '0.5px solid var(--border)' : 'none', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{r.date}</span>
+                    <span style={{ fontSize: 11 }}>{r.kind}</span>
+                    <span style={{ fontSize: 12, fontWeight: 500 }}>{r.asset}</span>
+                    <span style={{ fontSize: 11 }}>{r.amount}</span>
+                    <span style={{ fontSize: 11 }}>{usd(r.value_usd)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Holdings */}
+          <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>Holdings <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(remaining lots &amp; cost basis)</span></p>
+          {pf.length === 0 ? (
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', padding: '10px 0' }}>No remaining holdings.</p>
+          ) : (
+            <div style={{ border: '0.5px solid var(--border)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '60px 1fr 110px 110px 110px', gap: 6, padding: '7px 12px', background: 'var(--bg-secondary)', borderBottom: '0.5px solid var(--border)' }}>
+                {['Asset', 'Amount', 'Cost Basis', 'Unit Cost', 'Frozen'].map(h => (
+                  <span key={h} style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase' }}>{h}</span>
+                ))}
+              </div>
+              {pf.map((r, i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '60px 1fr 110px 110px 110px', gap: 6, padding: '7px 12px', borderBottom: i < pf.length - 1 ? '0.5px solid var(--border)' : 'none', alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, fontWeight: 500 }}>{r.asset}</span>
+                  <span style={{ fontSize: 11 }}>{r.amount}</span>
+                  <span style={{ fontSize: 11 }}>{usd(r.cost_basis)}</span>
+                  <span style={{ fontSize: 11 }}>{usd(r.unit_cost)}</span>
+                  <span style={{ fontSize: 11, color: parseFloat(r.frozen_amount) > 0 ? 'var(--coral)' : 'var(--text-muted)' }}>{r.frozen_amount}{parseFloat(r.frozen_amount) > 0 ? ' ⚠' : ''}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '6px 0 0' }}>
+            This report runs offline, so live market value / unrealized P&amp;L aren't shown here — see the Portfolio tab for live pricing.
+          </p>
+
+          {/* CSV downloads */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 16, paddingTop: 14, borderTop: '0.5px solid var(--border)' }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', alignSelf: 'center', marginRight: 4 }}>Download CSV:</span>
+            {TAX_DOWNLOADS.map(([w, l]) => (
+              <button key={w} onClick={() => onDownload(w)} disabled={!!downloading} style={{ fontSize: 12 }}>
+                <i className={`ti ${downloading === w ? 'ti-loader-2 spin' : 'ti-download'}`} aria-hidden="true" /> {l}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 export default function Crypto() {
   const [tab, setTab]             = useState('portfolio')
   const [txns, setTxns]           = useState([])
@@ -211,6 +427,14 @@ export default function Crypto() {
   const [lookupResult, setLookupResult] = useState(null)
   const [lookupLoading, setLookupLoading] = useState(false)
   const [lookupError, setLookupError]   = useState(null)
+  // Server-engine tax report (GET /api/crypto/report) — separate from the client-side estimate below
+  const [report, setReport]             = useState(null)
+  const [reportLoading, setReportLoading] = useState(false)
+  const [reportErr, setReportErr]       = useState('')
+  const [method, setMethod]             = useState('fifo')
+  const [pooling, setPooling]           = useState('universal')
+  const [reportYear, setReportYear]     = useState('all')
+  const [downloading, setDownloading]   = useState('')
 
   useEffect(() => {
     Promise.all([
@@ -265,6 +489,48 @@ export default function Crypto() {
     }
     return { stAll, ltAll, totalAll: stAll + ltAll, stYTD, ltYTD, totalYTD: stYTD + ltYTD }
   }, [realized])
+
+  // Distinct years present in the data, newest first (drives the report Year selector)
+  const reportYears = useMemo(() => {
+    const ys = new Set()
+    for (const t of txns) { const y = (t.date || '').slice(0, 4); if (/^\d{4}$/.test(y)) ys.add(y) }
+    return [...ys].sort((a, b) => b.localeCompare(a))
+  }, [txns])
+
+  const loadReport = async () => {
+    setReportLoading(true); setReportErr('')
+    try {
+      const res = await axios.get(`${API}/crypto/report`, { params: { year: reportYear, method, pooling } })
+      setReport(res.data)
+    } catch (e) {
+      setReportErr(e.response?.data?.error || e.message || 'Failed to load report')
+    }
+    setReportLoading(false)
+  }
+
+  // (Re)compute the server-engine report whenever the tax tab is active or its controls change.
+  useEffect(() => {
+    if (tab !== 'tax' || loading) return
+    loadReport()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, method, pooling, reportYear, txns, loading])
+
+  const downloadReport = async (which) => {
+    setDownloading(which)
+    try {
+      const res = await axios.get(`${API}/crypto/report/download`, {
+        params: { which, year: reportYear, method, pooling },
+        responseType: 'blob',
+      })
+      const url = URL.createObjectURL(res.data)
+      const a = Object.assign(document.createElement('a'), { href: url, download: `crypto-${which}-${reportYear}.csv` })
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setReportErr('Download failed — ' + (e.message || 'please try again'))
+    }
+    setDownloading('')
+  }
 
   const addTx = async () => {
     if (!form.asset || !form.quantity || !form.date) { setError('Asset, quantity, and date are required'); return }
@@ -590,7 +856,22 @@ export default function Crypto() {
 
       {/* ── TAX REPORT TAB ── */}
       {tab === 'tax' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div>
+          <CryptoTaxReport
+            report={report}
+            reportLoading={reportLoading}
+            reportErr={reportErr}
+            method={method} setMethod={setMethod}
+            pooling={pooling} setPooling={setPooling}
+            reportYear={reportYear} setReportYear={setReportYear}
+            reportYears={reportYears}
+            downloading={downloading}
+            onDownload={downloadReport}
+            onRefresh={loadReport}
+          />
+
+          {/* ── Existing client-side estimate (unchanged) ── */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 16 }}>
           {/* Left column: YTD realized events */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div className="card">
@@ -695,6 +976,7 @@ export default function Crypto() {
               )}
             </div>
           </div>
+        </div>
         </div>
       )}
 

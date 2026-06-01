@@ -29,7 +29,13 @@ CaiShen/
 │   ├── fudge-detect-worker.js ← Child-process worker for isolated fudge detection
 │   ├── advisor.js        ← AI Advisor (Claude Opus 4.7 streaming)
 │   ├── accounting.js     ← Chart of accounts, invoices, bills, journal entries
-│   └── statements.js     ← Auto-generate monthly PDF bank statements
+│   ├── statements.js     ← Auto-generate monthly PDF bank statements
+│   ├── crypto-engine.js  ← Crypto cost-basis engine (FIFO/LIFO/HIFO/SpecID, lot tracking, transfer matching)
+│   ├── crypto-reports.js ← Report builders: Form 8949 / Schedule D / income / portfolio + CSV (injection-guarded)
+│   ├── crypto.js         ← Read-only crypto tax endpoints — router mounted at /api/crypto (report, report/download)
+│   ├── bank-scraper.js   ← Bank Scraper API (LOCAL-ONLY, gitignored — see "Local-only files" below)
+│   └── tests/
+│       └── crypto.test.js ← 47 engine + report parity tests (run with `node --test`)
 ├── client/
 │   └── src/
 │       ├── App.jsx           ← Main app, routing, sidebar, state
@@ -40,6 +46,8 @@ CaiShen/
 │       ├── PersonalSpending.jsx     ← CSV upload, auto-categorization, friend sidebar
 │       ├── TransactionTransfer.jsx  ← Move/split transactions, auto-transfer rules
 │       ├── Projections.jsx          ← Tax projections, property sale optimizer, net worth
+│       ├── Crypto.jsx               ← Crypto module (Portfolio / Transactions / Tax Report / Wallets)
+│       ├── BankScraper.jsx          ← Bank Scraper UI (LOCAL-ONLY, gitignored — see "Local-only files" below)
 │       └── DataVault.jsx            ← File browser, folder upload, PDF/Excel preview
 ├── data/                 ← Local JSON storage (gitignored)
 │   ├── users/            ← Per-user financial data directories (data/users/{userId}/)
@@ -72,6 +80,28 @@ cd C:\Users\Albert Yang\Desktop\CaiShen\client
 npm run dev
 ```
 Runs on http://localhost:5173
+
+---
+
+## Continue on a Different Computer (fresh-clone setup)
+Steps to pick the project back up on another machine from the **private** repo. Paths below are generic — substitute your own clone location.
+
+1. **Clone the private repo** (HTTPS; Git Credential Manager will prompt once and cache):
+   ```bash
+   git clone <PRIVATE-REPO-URL> CaiShen
+   cd CaiShen
+   ```
+2. **Install dependencies in BOTH roots** (the client is a separate npm project):
+   ```bash
+   npm install            # server deps (repo root)
+   cd client && npm install && cd ..
+   ```
+3. **Recreate `.env` in the repo root** — it is gitignored and never committed, so it won't come down with the clone. Recreate it with the variable **names** from the ".env Structure" section below and paste in your own secrets. Minimum to boot: `DATABASE_URL` (shared Neon user list), `MASTER_PASSWORD` + `ADMIN_EMAIL` (seeds/admin login), `EMAIL_FROM` + `EMAIL_PASS` (2FA emails on new devices). `JWT_SECRET` is optional — the server falls back to a built-in default if it's unset (set your own for production). Everything else (Plaid, QuickBooks, Anthropic, Etherscan) is feature-specific and can be filled in later.
+4. **Recreate the two local-only gitignored files** (see "Local-only files" under Git / GitHub):
+   - **`client/src/BankScraper.jsx` is REQUIRED** — without it `npm run dev` / `npm run build` fail with *"Could not resolve './BankScraper'"* and the whole client bundle won't build. Drop in your real local copy, or create a minimal default-export React component as a placeholder.
+   - `server/bank-scraper.js` is optional for startup (the server guards its require and just logs that `/api/scraper` is disabled). Add it back only to use the Bank Scraper feature.
+5. **Local data does NOT travel with the repo** — `data/`, `vault/`, and `backups/` are gitignored. A fresh clone starts with no financial data; user **accounts** still resolve because they live in the shared Neon DB (via `DATABASE_URL`). Per-user crypto/transactions/etc. are recreated locally as you use the app (or copy the `data/` folder over manually).
+6. **Run it** — two terminals: `npm start` (root → :3001) and `npm run dev` (client → :5173). Sanity-check the crypto engine with `node --test server/tests/`.
 
 ---
 
@@ -333,7 +363,9 @@ Parses vault PDFs for income/spending/net and caches financial stats in file tag
 Full Koinly-style crypto tracker. Four tabs:
 - **Portfolio** — FIFO cost basis engine computes holdings from manual transactions; live prices from CoinGecko free API; shows quantity, avg cost, live price, value, unrealized P&L, return %
 - **Transactions** — manual ledger (buy/sell/receive/send/transfer in/out); CSV export; data stored in `crypto_txns.json`
-- **Tax Report** — YTD short-term/long-term realized gains from FIFO; estimated tax at 37% ST rate; rule-based tax optimization tips (harvesting, ST→LT shift, etc.)
+- **Tax Report** — TWO stacked panels:
+  1. **Server-engine report (new, Phase 2)** — fetches `GET /api/crypto/report` (backed by `crypto-engine.js` + `crypto-reports.js`). Controls for **method** (FIFO / LIFO / HIFO / SpecID), **pooling** (universal vs per-account), and **year**. Renders Schedule D cards (short-term / long-term / net, sign-colored), a Form 8949 table, ordinary-income total + by-kind + rows, and a holdings table. Five CSV download buttons (`form8949`, `schedule_d`, `income`, `gains`, `portfolio`) hit `GET /api/crypto/report/download`. Always shows the CPA disclaimer and any engine warnings / unmatched-transfer count. Market values are `null` (offline — no server-side price source yet).
+  2. **Quick estimate (original)** — YTD short-term/long-term realized gains from the in-browser FIFO; estimated tax at 37% ST rate; rule-based tax optimization tips (harvesting, ST→LT shift, etc.). Left unchanged beneath the new panel.
 - **Wallets** — two features:
   1. **Quick address lookup** — paste any public address; server auto-detects chain (BTC/ETH/SOL/LTC/DOGE) and fetches live balance + last 25 txns from free blockchain APIs
   2. **Saved wallets** — name, type, address, exchange, notes; each card with address gets "Sync on-chain" button that expands inline with balance + transactions + block explorer links
@@ -349,6 +381,16 @@ Full Koinly-style crypto tracker. Four tabs:
 **Data files**: `crypto_txns.json` and `wallets.json` per user in `data/users/{userId}/`
 
 **COINS map** supports: BTC, ETH, SOL, ADA, DOT, AVAX, MATIC, LINK, UNI, USDC, USDT, XRP, BNB, DOGE, LTC
+
+#### Crypto Tax Engine (server-side, Phase 2)
+A JS port of a previously-built Python cost-basis engine, wired into the Crypto tab's Tax Report.
+- **`server/crypto-engine.js`** — the core engine. Lot tracking with selectable disposal **method** (FIFO / LIFO / HIFO / SpecID) and **pooling** (`universal` = one pool per asset, or `per_account` = separate pools per exchange/wallet — needed once funds are filed across accounts). Classifies short- vs long-term (held > 1 year), matches `TRANSFER_OUT`/`TRANSFER_IN` pairs as **non-taxable self-transfers**, and surfaces `warnings` + `unmatched_transfers`. Money is carried as `Number` and only rounded at the report boundary. Exports `TxKind`, `D` (decimal coerce), `makeTx`, `run`, `portfolioBuild`, `fmtQty`, `utcParts`.
+- **`server/crypto-reports.js`** — turns engine output into IRS-shaped rows: `form8949Rows`, `scheduleDTotals` / `scheduleDRows`, `incomeRows` / `incomeByKind` / `incomeTotal`, `gainsDetailRows`, `portfolioRows`, and `buildSummary`. `money()` rounds half-up at 2 dp; `toCsv()` emits RFC-4180 CSV with a **formula-injection guard** (prefixes a `'` to any cell starting with `= + - @ TAB CR`, while exempting plain signed numbers so `-2052.00` survives). `DISCLAIMER = "NOT tax advice. Verify against your records and a tax professional (CPA)."`
+- **`server/crypto.js`** — `module.exports = function(makeIO)` read-only router, mounted in `index.js` as `app.use('/api/crypto', require('./crypto')(makeIO))` **after** the existing inline `/api/crypto/transactions` routes (adds only NEW paths, changes nothing the UI already used).
+  - `GET /api/crypto/report?year=&method=&pooling=` → `{ year, method, pooling, summary, form8949[], scheduleD{short_term,long_term,net_gain}, income{total,by_kind,rows[]}, portfolio[], warnings[], unmatchedTransfers, disclaimer }`. Money fields are **pre-formatted strings** (`"0.00"`, `"-2052.00"`, `""`).
+  - `GET /api/crypto/report/download?which=form8949|schedule_d|income|gains|portfolio&year=&method=&pooling=` → CSV attachment.
+  - Reads the **same** per-user `crypto_txns.json` the tab already writes (via `makeIO(req.user.id)`); `adaptRow()` maps each flat row → an engine transaction. Fully **offline** — `OFFLINE_PRICES` returns `null`, so portfolio market values are blank until a hosted price source is added.
+- **`server/tests/crypto.test.js`** — 47 `node --test` cases covering engine math + report parity against the Python reference. Run: `node --test server/tests/`.
 
 ### Settings
 - **Data & Privacy card** — "Export all data" button downloads full JSON backup via `GET /api/backup` as a blob file download
@@ -451,9 +493,16 @@ Because of the pdf2json shared-state bug above, fudge detection cannot parse two
 ---
 
 ## Git / GitHub
-- Repo: https://github.com/Albertyang1112/CaiShen (private)
+- **Existing remote `origin`:** https://github.com/Albertyang1112/CaiShen.git — this repo is **PUBLIC**. Do **not** push private/financial work here. (The old note in this file said "(private)"; that was wrong.)
+- **New private repo:** `<PASTE-NEW-PRIVATE-REPO-URL>` — created for the crypto-tax work so it doesn't ship to a public repo. Add it as a remote and push `main` to it.
 - Main branch: main
-- .gitignore excludes: .env, node_modules, data/, backups/, vault/
+- Auth: Git Credential Manager (`credential.helper=manager`) caches the HTTPS login — no `gh` CLI installed on this machine.
+- **.gitignore excludes** (none of these ever get committed): `.env`, `.env.*`, `node_modules/`, `client/node_modules/`, `client/dist/`, `client-dist/`, `data/`, `backups/`, `vault/`, `server/scraper-fixtures/`, `extension/`, `*.log`, `server_log.txt`, `logs/`, and the two **local-only** files below.
+
+### Local-only files (gitignored — must be recreated per machine)
+Two files are deliberately kept off GitHub but are **required for the app to build/run**:
+- **`client/src/BankScraper.jsx`** — `App.jsx` does a static `import BankScraper from './BankScraper'`. A missing static import breaks the **entire** Vite bundle, so this file must exist or `npm run dev` / `npm run build` fails with *"Could not resolve './BankScraper'"*. On a fresh clone, drop your real local copy back in, or create a minimal placeholder default-export component. (The tab only mounts on localhost: `nav==='scraper' && IS_LOCALHOST`.)
+- **`server/bank-scraper.js`** — `index.js` guards its require: `if (fs.existsSync(path.join(__dirname,'bank-scraper.js'))) app.use('/api/scraper', localhostOnly, require('./bank-scraper')(makeIO, VAULT_DIR))`. If absent, the server still boots and just logs `[scraper] ... disabled for this run.` — so this one is optional for startup, required only for the Bank Scraper feature.
 
 ---
 
