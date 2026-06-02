@@ -321,6 +321,28 @@ app.use('/api/memory', memoryRouter);
 // ── Routes: Tax Center ────────────────────────────────────────────────
 app.use('/api/taxes', require('./taxes')(makeIO, VAULT_DIR));
 
+// ── Routes: Tax Calculation Engine ───────────────────────────────────
+const { makeRouter: makeTaxEngineRouter } = require('./tax-engine');
+app.use('/api/tax-engine', makeTaxEngineRouter());
+
+// ── Routes: Tax History, Transactions, AI Session Log ────────────────
+const taxHistoryMod = require('./tax-history');
+app.use('/api/tax-history',      taxHistoryMod.makeCalculationsRouter());
+app.use('/api/tax-transactions', taxHistoryMod.makeTransactionsRouter());
+app.use('/api/ai-sessions',      taxHistoryMod.makeAISessionsRouter());
+
+// ── Routes: RAG Tax-Law Retrieval ────────────────────────────────────
+const { makeRouter: makeRagRouter } = require('./rag');
+app.use('/api/rag', makeRagRouter());
+
+// ── Routes: Tax Advisor (RAG + engine + guardrails + audit) ──────────
+const { makeRouter: makeTaxAdvisorRouter } = require('./tax-advisor');
+app.use('/api/tax-advisor', makeTaxAdvisorRouter());
+
+// ── Routes: Tax Normalization (transactions → categories → TaxInput) ──
+const { makeRouter: makeTaxNormalizeRouter } = require('./tax-normalize');
+app.use('/api/tax-normalize', makeTaxNormalizeRouter(makeIO));
+
 // ── Import preview — dry-run before actual import ─────────────────────
 app.post('/api/import-history/preview', (req, res) => {
   const { transactions } = req.body;
