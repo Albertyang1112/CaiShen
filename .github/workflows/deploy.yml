@@ -15,9 +15,15 @@ jobs:
           username: ${{ secrets.DO_USER }}
           key: ${{ secrets.DO_SSH_KEY }}
           script: |
+            set -e
             cd /var/www/caishen
             git fetch origin
             git reset --hard origin/main
             npm install --production
+            # Rebuild the React frontend on every deploy. client-dist/ is no longer
+            # committed to git (it was removed during a security cleanup), so the
+            # server must regenerate it here or the live site serves a stale build.
+            cd client && npm install && npm run build
+            cd ..
             pm2 restart caishen
             pm2 save
