@@ -5,6 +5,7 @@ import PersonalSpending from './PersonalSpending'
 import TransactionTransfer from './TransactionTransfer'
 import DataVault from './DataVault'
 import BankScraper from './BankScraper'
+import Scrapers from './Scrapers'
 import TaxCenter from './TaxCenter'
 import Advisor from './Advisor'
 import TaxAdvisor from './TaxAdvisor'
@@ -99,6 +100,7 @@ const NAV_TOOLS = [
   {id:'advisor',       label:'AI Advisor',    icon:'ti-brain',            adminOnly:false, localhostOnly:false},
   {id:'tax-advisor',   label:'Tax Advisor',   icon:'ti-message-chatbot',  adminOnly:false, localhostOnly:false},
   {id:'scraper',       label:'Bank Scraper',  icon:'ti-spider',           adminOnly:false, localhostOnly:true },
+  {id:'importers',     label:'Importers',     icon:'ti-file-import',      adminOnly:false, localhostOnly:true },
   {id:'settings',      label:'Settings',      icon:'ti-settings',         adminOnly:false, localhostOnly:false},
 ]
 
@@ -1460,6 +1462,7 @@ function MainApp({ auth, onLogout }) {
     if(nav==='data')       return <DataVault accounts={accounts} transactions={transactions} onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])} onTransactionsChanged={()=>{ axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])).catch(()=>{}); axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])).catch(()=>{}) }}/>
     if(nav==='settings')   return <SettingsScreen auth={auth}/>
     if(nav==='scraper' && IS_LOCALHOST) return <BankScraper/>
+    if(nav==='importers' && IS_LOCALHOST) return <Scrapers/>
     return null
   }
 

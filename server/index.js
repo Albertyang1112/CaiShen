@@ -277,6 +277,15 @@ function localhostOnly(req, res, next) {
 // ── Routes: Bank Scraper (localhost only) ─────────────────────────────
 app.use('/api/scraper', localhostOnly, require('./bank-scraper')(makeIO, VAULT_DIR));
 
+// ── Routes: Imported Python scrapers bridge (localhost only) ──────────
+// Guarded so the server still boots if the (gitignored) bridge file is absent.
+try {
+  app.use('/api/scrapers', localhostOnly, require('./scraper-bridge')(makeIO, VAULT_DIR));
+  console.log('✓ Scraper bridge loaded (chase, boa, amazon, mortgage)');
+} catch (e) {
+  console.log('⚠ Scraper bridge not loaded:', e.message);
+}
+
 // ── Server-Sent Events ────────────────────────────────────────────────
 const sseClients = new Set();
 app.get('/api/events', (req, res) => {
