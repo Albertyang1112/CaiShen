@@ -197,6 +197,7 @@ async function initSchema() {
                ON tax_sources USING GIN(topic_tags)`);
 
   console.log('✓ Database connected and schema ready');
+  await require('./db-banking-schema').init(query);
 }
 
 module.exports = { query, initSchema };

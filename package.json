@@ -11,7 +11,9 @@
   },
   "jest": {
     "testEnvironment": "node",
-    "testMatch": ["**/server/tests/**/*.test.js"],
+    "testMatch": [
+      "**/server/tests/**/*.test.js"
+    ],
     "testTimeout": 30000
   },
   "keywords": [],
@@ -26,6 +28,7 @@
     "better-sqlite3": "^12.10.0",
     "cors": "^2.8.6",
     "crypto-js": "^4.2.0",
+    "discord.js": "^14.26.4",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "intuit-oauth": "^4.2.3",

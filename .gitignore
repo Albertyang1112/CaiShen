@@ -45,3 +45,6 @@ Thumbs.db
 # Dropbox
 .dropboxignore
 excludelist.txt
+
+# Personal working doc — feature roadmap (local only, do not commit)
+ROADMAP.md

@@ -33,7 +33,7 @@ const PLAID_CAT_MAP = {
 // so a re-sync never wipes them.
 const PLAID_CSV   = 'plaid_transactions.csv';
 const CSV_COLUMNS = ['id', 'date', 'month', 'desc', 'amount', 'category', 'plaidCategory', 'account', 'institution', 'pending', 'source', 'lastUpdated'];
-const KEEP        = ['coaId', 'note', 'reconciled', 'isSplit', 'splitOf', 'splitNote', 'propertyId'];
+const KEEP        = ['coaId', 'note', 'reconciled', 'isSplit', 'splitOf', 'splitNote', 'propertyId', 'approved', 'categorizedBy', 'verification', 'taxCategory', 'bucket', 'attachments', 'notified'];
 
 const rawRow    = t => { const o = {}; for (const c of CSV_COLUMNS) o[c] = t[c]; return o; };
 const coerceRow = r => ({ ...r, amount: r.amount === '' || r.amount == null ? 0 : Number(r.amount), pending: r.pending === 'true' || r.pending === true });
@@ -179,6 +179,8 @@ module.exports = function(makeIO, notifyClients = () => {}) {
         if (count) { io.write('transactions.json', transactions); console.log(`[Auto-cat] user ${userId}: ${count} txns categorized by rule`); }
       }
     } catch (e) { console.error('[Auto-cat] error:', e.message); }
+    try { const m = await require('./neon-mirror').mirrorPlaid(userId, io.read('transactions.json') || []); console.log(`[Neon] user ${userId}: mirrored ${m} plaid rows`); } catch (e) { console.error('[Neon mirror] error:', e.message); }
+    try { const _n = await require('./notifier').notifyNew(io, process.env.DISCORD_WEBHOOK_URL); if (_n) console.log(`[notify] user ${userId}: ${_n} Discord alert(s) sent`); } catch (e) { console.error('[notify] error', e.message); }
     notifyClients();
     // Run verification checks and print report to server terminal
     try { verifyUser(userId, io); } catch (e) { console.error('[Verify] Error:', e.message); }
