@@ -409,7 +409,8 @@ app.use('/api/plaid', plaidRouter);
 const { router: stmtRouter, generateForUser } = require('./statements')(makeIO, VAULT_DIR);
 app.use('/api/statements', stmtRouter);
 
-
+// ── Routes: Reconciliation (Phase 3) ─────────────────────────────────
+app.use('/api/reconcile', require('./reconcile-routes')(makeIO));
 
 // ── Routes: QuickBooks ────────────────────────────────────────────────
 const { authRouter: qbAuth, apiRouter: qbApi } = require('./quickbooks')(makeIO);

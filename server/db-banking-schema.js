@@ -68,5 +68,25 @@ module.exports.init = async (query) => {
   `);
   await query(`CREATE INDEX IF NOT EXISTS idx_txnmsg_open ON txn_messages(user_id, state)`);
 
-  console.log('✓ Banking/notification schema ready (source_transactions, categorization_memory, telegram_links, txn_messages)');
+  // Phase 3 — reconciliation match results: one row per (statement txn, plaid txn) pair,
+  // or a stmt_only/plaid_only stub when one side has no match.
+  await query(`
+    CREATE TABLE IF NOT EXISTS statement_matches (
+      id               TEXT        PRIMARY KEY,
+      user_id          TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      stmt_source_id   TEXT,                    -- FK to source_transactions (statement row)
+      plaid_txn_id     TEXT,                    -- local Plaid tx id (from transactions.json)
+      match_score      DECIMAL(5,4),
+      date_delta_days  SMALLINT,
+      name_sim         DECIMAL(5,4),
+      status           TEXT        NOT NULL,    -- 'matched'|'stmt_only'|'plaid_only'|'conflict'
+      flag_reason      TEXT,
+      period_year      INTEGER,
+      reconciled_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS idx_stmtmatch_user   ON statement_matches(user_id, status)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_stmtmatch_year   ON statement_matches(user_id, period_year)`);
+
+  console.log('✓ Banking/notification schema ready (source_transactions, categorization_memory, telegram_links, txn_messages, statement_matches)');
 };
