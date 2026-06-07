@@ -26,6 +26,7 @@ const VAULT_DIR  = path.join(__dirname, '../vault');
 const defaultUserFiles = {
   'accounts.json':          [],
   'transactions.json':      [],
+  'tx_overrides.json':      {},   // per-tx user edits: { [txId]: {category,excluded,vendor,attachments} }
   'properties.json':        [],
   'tax_years.json':         [],
   'connections.json':       { plaid: [], quickbooks: null },
@@ -35,6 +36,7 @@ const defaultUserFiles = {
   'bills.json':             [],
   'vendors.json':           [],
   'journal_entries.json':   [],
+  'categorization_rules.json': [],   // auto-categorization rules: [{ id, field, op, value, coaId, enabled }]
   'vault.json':             { folders: [], files: [] },
   'crypto_txns.json':       [],
   'wallets.json':           [],
@@ -97,9 +99,14 @@ function writeData(file, data, userId = null) {
 
 /** Returns user-scoped read/write helpers */
 function makeIO(userId) {
+  const dir = userId ? path.join(USERS_DIR, userId) : DATA_DIR;
   return {
     read:  (file) => readData(file, userId),
-    write: (file, data) => writeData(file, data, userId)
+    write: (file, data) => writeData(file, data, userId),
+    dir,
+    // Raw-text helpers for non-JSON artifacts (e.g. CSV staging files).
+    readText:  (file) => { try { return fs.readFileSync(path.join(dir, file), 'utf8'); } catch (e) { return null; } },
+    writeText: (file, text) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, file), text); },
   };
 }
 
@@ -209,7 +216,25 @@ app.delete('/api/accounts/:id', (req, res) => {
   writeData('accounts.json', accounts.filter(a => a.id !== req.params.id), uid);
   res.json({ success: true });
 });
-app.get('/api/transactions', (req, res) => res.json(readData('transactions.json', req.user?.id)));
+// Merge per-transaction user overrides (category / excluded / vendor / attachments)
+// onto the synced transactions. Overrides live in a separate store so a Plaid
+// re-sync (which replaces plaid txs) never wipes the user's edits.
+app.get('/api/transactions', (req, res) => {
+  const uid = req.user?.id;
+  const txs = readData('transactions.json', uid) || [];
+  const ov  = readData('tx_overrides.json', uid) || {};
+  res.json(txs.map(t => {
+    const o = ov[t.id];
+    if (!o) return t;
+    return {
+      ...t,
+      ...(o.category    !== undefined ? { category:    o.category }    : {}),
+      ...(o.excluded    !== undefined ? { excluded:    o.excluded }    : {}),
+      ...(o.vendor      !== undefined ? { vendor:      o.vendor }      : {}),
+      ...(o.attachments !== undefined ? { attachments: o.attachments } : {}),
+    };
+  }));
+});
 app.get('/api/properties',  (req, res) => res.json(readData('properties.json', req.user?.id)));
 app.get('/api/tax-years',   (req, res) => res.json(readData('tax_years.json', req.user?.id)));
 
@@ -262,6 +287,75 @@ app.delete('/api/transactions/:id', (req, res) => {
   res.json({ success: true });
 });
 
+// Per-transaction overrides (sync-safe; never wiped by Plaid re-sync).
+// Body may include: category, excluded, vendor, attachments (full array),
+// or addAttachment / removeAttachment (vault file id helpers).
+app.patch('/api/tx-overrides/:id', (req, res) => {
+  const uid = req.user.id;
+  const ov  = readData('tx_overrides.json', uid) || {};
+  const next = { ...(ov[req.params.id] || {}) };
+  const b = req.body || {};
+  if (b.category    !== undefined) next.category    = b.category;
+  if (b.excluded    !== undefined) next.excluded    = !!b.excluded;
+  if (b.vendor      !== undefined) next.vendor      = b.vendor;
+  if (b.attachments !== undefined) next.attachments = b.attachments;
+  if (b.addAttachment)    next.attachments = [...new Set([...(next.attachments || []), b.addAttachment])];
+  if (b.removeAttachment) next.attachments = (next.attachments || []).filter(x => x !== b.removeAttachment);
+  // Prune an override that no longer carries anything, to keep the store tidy.
+  if (next.category === undefined && !next.excluded && next.vendor === undefined && !(next.attachments && next.attachments.length)) {
+    delete ov[req.params.id];
+  } else {
+    ov[req.params.id] = next;
+  }
+  writeData('tx_overrides.json', ov, uid);
+  res.json({ id: req.params.id, override: ov[req.params.id] || null });
+});
+
+// ── Routes: Auto-categorization rules (description → Chart-of-Accounts) ─
+const { applyRules: applyCatRules, suggestKeyword: suggestCatKeyword } = require('./categorize');
+app.get('/api/categorization-rules', (req, res) => {
+  res.json(readData('categorization_rules.json', req.user?.id) || []);
+});
+app.get('/api/categorization-rules/suggest', (req, res) => {
+  res.json({ keyword: suggestCatKeyword(req.query.desc || '') });
+});
+app.post('/api/categorization-rules', (req, res) => {
+  const uid = req.user.id;
+  const b = req.body || {};
+  if (!b.value || !b.coaId) return res.status(400).json({ error: 'value and coaId are required' });
+  const rules = readData('categorization_rules.json', uid) || [];
+  const rule = {
+    id: `rule_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    field: b.field || 'desc', op: b.op || 'contains',
+    value: b.value, coaId: b.coaId, enabled: b.enabled !== false,
+    createdAt: new Date().toISOString(),
+  };
+  rules.push(rule);
+  writeData('categorization_rules.json', rules, uid);
+  // Optionally back-fill existing uncategorized transactions right away.
+  let applied = 0;
+  if (b.applyNow) {
+    const txs = readData('transactions.json', uid) || [];
+    const r = applyCatRules(txs, [rule]);
+    if (r.count) { writeData('transactions.json', r.transactions, uid); applied = r.count; }
+  }
+  res.json({ rule, applied });
+});
+app.delete('/api/categorization-rules/:id', (req, res) => {
+  const uid = req.user.id;
+  const rules = readData('categorization_rules.json', uid) || [];
+  writeData('categorization_rules.json', rules.filter(r => r.id !== req.params.id), uid);
+  res.json({ success: true });
+});
+app.post('/api/categorization-rules/apply', (req, res) => {
+  const uid = req.user.id;
+  const txs   = readData('transactions.json', uid) || [];
+  const rules = readData('categorization_rules.json', uid) || [];
+  const r = applyCatRules(txs, rules, { overwrite: !!(req.body && req.body.overwrite) });
+  if (r.count) writeData('transactions.json', r.transactions, uid);
+  res.json({ count: r.count, byRule: r.byRule });
+});
+
 // ── Routes: Vault (per-user) ──────────────────────────────────────────
 app.use('/api/vault', require('./vault')(VAULT_DIR, makeIO));
 
@@ -282,6 +376,15 @@ if (fs.existsSync(path.join(__dirname, 'bank-scraper.js'))) {
   app.use('/api/scraper', localhostOnly, require('./bank-scraper')(makeIO, VAULT_DIR));
 } else {
   console.warn('[scraper] server/bank-scraper.js not found — /api/scraper disabled for this run.');
+}
+
+// ── Routes: Imported Python scrapers bridge (localhost only) ──────────
+// Guarded so the server still boots if the (gitignored) bridge file is absent.
+try {
+  app.use('/api/scrapers', localhostOnly, require('./scraper-bridge')(makeIO, VAULT_DIR));
+  console.log('✓ Scraper bridge loaded (chase, boa, amazon, mortgage)');
+} catch (e) {
+  console.log('⚠ Scraper bridge not loaded:', e.message);
 }
 
 // ── Server-Sent Events ────────────────────────────────────────────────
@@ -327,6 +430,28 @@ app.use('/api/memory', memoryRouter);
 
 // ── Routes: Tax Center ────────────────────────────────────────────────
 app.use('/api/taxes', require('./taxes')(makeIO, VAULT_DIR));
+
+// ── Routes: Tax Calculation Engine ───────────────────────────────────
+const { makeRouter: makeTaxEngineRouter } = require('./tax-engine');
+app.use('/api/tax-engine', makeTaxEngineRouter());
+
+// ── Routes: Tax History, Transactions, AI Session Log ────────────────
+const taxHistoryMod = require('./tax-history');
+app.use('/api/tax-history',      taxHistoryMod.makeCalculationsRouter());
+app.use('/api/tax-transactions', taxHistoryMod.makeTransactionsRouter());
+app.use('/api/ai-sessions',      taxHistoryMod.makeAISessionsRouter());
+
+// ── Routes: RAG Tax-Law Retrieval ────────────────────────────────────
+const { makeRouter: makeRagRouter } = require('./rag');
+app.use('/api/rag', makeRagRouter());
+
+// ── Routes: Tax Advisor (RAG + engine + guardrails + audit) ──────────
+const { makeRouter: makeTaxAdvisorRouter } = require('./tax-advisor');
+app.use('/api/tax-advisor', makeTaxAdvisorRouter());
+
+// ── Routes: Tax Normalization (transactions → categories → TaxInput) ──
+const { makeRouter: makeTaxNormalizeRouter } = require('./tax-normalize');
+app.use('/api/tax-normalize', makeTaxNormalizeRouter(makeIO));
 
 // ── Import preview — dry-run before actual import ─────────────────────
 app.post('/api/import-history/preview', (req, res) => {

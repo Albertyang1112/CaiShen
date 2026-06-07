@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import axios from 'axios'
 
 const API = '/api'
@@ -235,6 +235,37 @@ const CAT_COLOR = {
   Transfer:'var(--text-secondary)',Other:'var(--text-muted)',
 }
 
+// ── Chart of Accounts types (mirrors Accounting.jsx) ──────────────────────────
+// The "Account Type" — the QuickBooks-style top-level classification of a GL
+// account. Determines which financial statement it lands on (Balance Sheet vs P&L).
+const TYPE_ORDER  = ['asset','liability','equity','income','expense']
+const TYPE_LABELS = { asset:'Assets', liability:'Liabilities', equity:'Equity', income:'Income', expense:'Expenses' }
+const TYPE_COLORS = { asset:'var(--blue)', liability:'var(--coral)', equity:'var(--teal)', income:'var(--green)', expense:'var(--amber)' }
+
+// ── Reusable modal + field (mirrors Accounting.jsx) ───────────────────────────
+function Modal({ title, onClose, children }) {
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000 }} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'24px', width:520, maxHeight:'85vh', overflowY:'auto' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:18 }}>
+          <p style={{ fontSize:15, fontWeight:500, margin:0 }}>{title}</p>
+          <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--text-muted)', padding:4, fontSize:16, cursor:'pointer' }}>✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function Field({ label, children }) {
+  return (
+    <div style={{ marginBottom:12 }}>
+      <label style={{ fontSize:12, color:'var(--text-secondary)', display:'block', marginBottom:4 }}>{label}</label>
+      {children}
+    </div>
+  )
+}
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 function MetricCard({ label, value, sub, subColor, icon, iconColor }) {
   return (
@@ -324,29 +355,75 @@ function StmtCard({ f }) {
   )
 }
 
-function TxRow({ tx, bankAccounts }) {
-  const acct     = bankAccounts.find(a => a.id === tx.account)
-  const catColor = CAT_COLOR[tx.category] || 'var(--text-muted)'
-  const isDebit  = tx.amount < 0
+// ── Transactions table (QuickBooks-style columns) ──────────────────────────────
+function TxTable({ txs, bankAccounts, showAccount, sortDir, onToggleSort, onRowClick, coaById }) {
+  if (!txs.length) {
+    return <p style={{color:'var(--text-muted)',fontSize:13,padding:'2rem',textAlign:'center'}}>No transactions match the current filters.</p>
+  }
+  const th = (label, opts={}) => (
+    <th onClick={opts.onClick} style={{
+      textAlign:opts.align||'left', padding:'8px 12px', fontSize:10, fontWeight:600,
+      textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-muted)',
+      borderBottom:'0.5px solid var(--border)', whiteSpace:'nowrap',
+      cursor:opts.onClick?'pointer':'default', userSelect:'none',
+    }}>
+      {label}
+      {opts.sortable && <i className={`ti ti-arrow-${sortDir==='desc'?'down':'up'}`} style={{fontSize:11,marginLeft:4,verticalAlign:'middle',color:'var(--text-secondary)'}} aria-hidden="true"/>}
+    </th>
+  )
   return (
-    <div style={{display:'flex',alignItems:'center',gap:12,padding:'10px 0',borderBottom:'0.5px solid var(--border)'}}>
-      <div style={{width:32,height:32,borderRadius:'var(--radius-md)',background:catColor+'22',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-        <i className={`ti ${isDebit?'ti-arrow-up-right':'ti-arrow-down-left'}`} style={{fontSize:14,color:catColor}} aria-hidden="true"/>
-      </div>
-      <div style={{flex:1,minWidth:0}}>
-        <p style={{fontSize:13,fontWeight:500,margin:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tx.desc||'—'}</p>
-        <p style={{fontSize:11,color:'var(--text-secondary)',margin:'2px 0 0'}}>
-          {tx.date}
-          {tx.category ? ` · ${tx.category}` : ''}
-          {acct ? ` · ${acct.name}` : ''}
-        </p>
-      </div>
-      <div style={{textAlign:'right',flexShrink:0}}>
-        <p style={{fontSize:14,fontWeight:500,margin:0,color:tx.amount>=0?'var(--teal)':'var(--text-primary)'}}>
-          {tx.amount>=0?'+':''}{fmtFull(tx.amount)}
-        </p>
-        {tx.pending && <p style={{fontSize:10,color:'var(--amber)',margin:'2px 0 0'}}>Pending</p>}
-      </div>
+    <div style={{border:'0.5px solid var(--border)',borderRadius:'var(--radius-sm)',overflow:'hidden'}}>
+      <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+        <thead>
+          <tr style={{background:'var(--bg-secondary)'}}>
+            {th('Date', {onClick:onToggleSort, sortable:true})}
+            {th('Description')}
+            {showAccount && th('Account')}
+            {th('Category')}
+            {th('Spent', {align:'right'})}
+            {th('Received', {align:'right'})}
+          </tr>
+        </thead>
+        <tbody>
+          {txs.map(tx => {
+            const acct = bankAccounts.find(a => a.id === tx.account)
+            const catColor = CAT_COLOR[tx.category] || 'var(--text-muted)'
+            const glAcct = coaById?.get(tx.coaId)            // assigned chart-of-accounts entry, if any
+            const debit = tx.amount < 0
+            return (
+              <tr key={tx.id} onClick={()=>onRowClick?.(tx)} style={{borderBottom:'0.5px solid var(--border)',cursor:onRowClick?'pointer':'default'}}
+                onMouseEnter={e=>e.currentTarget.style.background='var(--bg-hover)'}
+                onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                <td style={{padding:'9px 12px',color:'var(--text-secondary)',whiteSpace:'nowrap'}}>
+                  {tx.date}
+                  {tx.pending && <span style={{marginLeft:6,fontSize:9,padding:'1px 5px',borderRadius:4,background:'var(--amber-light)',color:'var(--amber)',textTransform:'uppercase',letterSpacing:'0.3px'}}>Pending</span>}
+                </td>
+                <td style={{padding:'9px 12px',maxWidth:340}}>
+                  <span style={{display:'block',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={tx.desc||''}>{tx.desc||'—'}</span>
+                </td>
+                {showAccount && <td style={{padding:'9px 12px',color:'var(--text-secondary)',whiteSpace:'nowrap'}}>{acct?.name||'—'}</td>}
+                <td style={{padding:'9px 12px'}}>
+                  {glAcct ? (
+                    <span style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,whiteSpace:'nowrap'}}
+                      title={`${TYPE_LABELS[glAcct.type]||glAcct.type}${glAcct.subtype?' · '+glAcct.subtype:''}`}>
+                      <span style={{width:7,height:7,borderRadius:2,background:TYPE_COLORS[glAcct.type]||'var(--text-muted)',flexShrink:0}}/>
+                      {glAcct.name}
+                    </span>
+                  ) : tx.category ? (
+                    <span style={{fontSize:11,padding:'2px 8px',borderRadius:99,background:catColor+'22',color:catColor,whiteSpace:'nowrap'}}>{tx.category}</span>
+                  ) : null}
+                </td>
+                <td style={{padding:'9px 12px',textAlign:'right',color:'var(--coral)',whiteSpace:'nowrap',fontVariantNumeric:'tabular-nums'}}>
+                  {debit ? fmtFull(Math.abs(tx.amount)) : ''}
+                </td>
+                <td style={{padding:'9px 12px',textAlign:'right',color:'var(--teal)',whiteSpace:'nowrap',fontVariantNumeric:'tabular-nums'}}>
+                  {!debit ? fmtFull(tx.amount) : ''}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -387,17 +464,273 @@ function SpendingBreakdown({ txs }) {
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
-export default function Banking({ accounts, transactions }) {
+// ── Horizontal account strip — overflow scroll + paging arrows + drag-to-pan ────
+function ArrowBtn({ dir, onClick }) {
+  return (
+    <button onClick={onClick} aria-label={dir==='left'?'Scroll left':'Scroll right'}
+      style={{
+        position:'absolute', top:'50%', [dir]:-4, transform:'translateY(-50%)', zIndex:3,
+        width:30, height:30, borderRadius:'50%', background:'var(--bg-card)',
+        border:'1px solid var(--border-light)', color:'var(--text-secondary)', cursor:'pointer',
+        display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 2px 8px rgba(0,0,0,0.4)',
+      }}>
+      <i className={`ti ti-chevron-${dir}`} style={{ fontSize:16 }} aria-hidden="true"/>
+    </button>
+  )
+}
+
+function AccountStrip({ bankAccounts, selectedAcct, setSelectedAcct }) {
+  const ref  = useRef(null)
+  const drag = useRef({ active:false, startX:0, startScroll:0, moved:false })
+  const [arrows, setArrows] = useState({ left:false, right:false })
+
+  const updateArrows = () => {
+    const el = ref.current; if (!el) return
+    setArrows({
+      left:  el.scrollLeft > 4,
+      right: el.scrollLeft < el.scrollWidth - el.clientWidth - 4,
+    })
+  }
+
+  useEffect(() => {
+    updateArrows()
+    const el = ref.current
+    const onScroll = () => updateArrows()
+    el?.addEventListener('scroll', onScroll, { passive:true })
+    window.addEventListener('resize', updateArrows)
+
+    // Drag-to-pan: window-level listeners so a drag survives leaving the strip.
+    const onMove = (e) => {
+      const d = drag.current
+      if (!d.active || !ref.current) return
+      const dx = e.clientX - d.startX
+      if (Math.abs(dx) > 4) d.moved = true
+      ref.current.scrollLeft = d.startScroll - dx
+    }
+    const onUp = () => {
+      if (drag.current.active && ref.current) ref.current.style.cursor = 'grab'
+      drag.current.active = false
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      el?.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', updateArrows)
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [bankAccounts.length])
+
+  const onDown = (e) => {
+    const el = ref.current; if (!el) return
+    drag.current = { active:true, startX:e.clientX, startScroll:el.scrollLeft, moved:false }
+    el.style.cursor = 'grabbing'
+  }
+
+  const page = (d) => {
+    const el = ref.current; if (!el) return
+    el.scrollBy({ left: d * Math.max(el.clientWidth * 0.85, 250), behavior:'smooth' })
+  }
+
+  // A click that came from a drag should not toggle the account filter.
+  const clickCard = (id) => {
+    if (drag.current.moved) { drag.current.moved = false; return }
+    setSelectedAcct(prev => prev === id ? null : id)
+  }
+
+  return (
+    <div style={{ position:'relative' }}>
+      {arrows.left  && <ArrowBtn dir="left"  onClick={()=>page(-1)}/>}
+      {arrows.right && <ArrowBtn dir="right" onClick={()=>page(1)}/>}
+      <div ref={ref} className="acct-scroll"
+        onMouseDown={onDown} onDragStart={e=>e.preventDefault()}
+        style={{ display:'flex', gap:10, overflowX:'auto', cursor:'grab', userSelect:'none', paddingBottom:2 }}>
+        {bankAccounts.map(a => (
+          <div key={a.id} style={{ flex:'0 0 240px' }}>
+            <AccountCard acc={a} selected={selectedAcct===a.id} onClick={()=>clickCard(a.id)}/>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Transaction detail + QuickBooks-style categorization modal ────────────────
+function TxDetailModal({ tx, bankAccounts, coa, coaById, onUpdate, reload, onClose }) {
+  const [coaId,  setCoaId]  = useState(tx.coaId || '')
+  const [note,   setNote]   = useState(tx.note  || '')
+  const [saving, setSaving] = useState(false)
+  const [remember, setRemember] = useState(false)
+  const [keyword,  setKeyword]  = useState('')
+
+  // Pre-fill a "remember this" keyword from the description (server heuristic).
+  useEffect(() => {
+    let alive = true
+    axios.get(`${API}/categorization-rules/suggest`, { params: { desc: tx.desc || '' } })
+      .then(r => alive && setKeyword(r.data.keyword || ''))
+      .catch(() => {})
+    return () => { alive = false }
+  }, [tx.id])
+
+  const acct   = bankAccounts.find(a => a.id === tx.account)   // resolved regardless of table's showAccount
+  const glAcct = coaById.get(coaId)                             // currently-selected COA entry
+  const debit  = tx.amount < 0
+
+  // Active COA accounts grouped by Account Type for the <select>. Keep the
+  // currently-assigned account selectable even if it was made inactive/deleted.
+  const grouped = useMemo(() => {
+    const byType = {}
+    for (const t of TYPE_ORDER) byType[t] = coa.filter(a => a.type === t && a.active !== false)
+    const cur = coaId ? coaById.get(coaId) : null
+    if (cur && cur.active === false) (byType[cur.type] = byType[cur.type] || []).push(cur)
+    return byType
+  }, [coa, coaId, coaById])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await axios.patch(`${API}/transactions/${tx.id}`, { coaId: coaId || null, note, approved: !!coaId })
+      // Functional update so a concurrent SSE refetch doesn't get mapped over a stale snapshot.
+      onUpdate(prev => prev.map(t => t.id === tx.id ? { ...t, coaId: coaId || null, note, approved: !!coaId } : t))
+      // "Remember this": save a rule and back-fill matching uncategorized txns.
+      if (remember && coaId && keyword.trim()) {
+        const { data } = await axios.post(`${API}/categorization-rules`, { value: keyword.trim(), coaId, applyNow: true })
+        if (data.applied && reload) await reload()
+      }
+      onClose()
+    } catch (e) {
+      console.error('Save categorization failed:', e.message)
+      setSaving(false)
+    }
+  }
+
+  const row = (label, value) => (
+    <div key={label} style={{display:'flex',justifyContent:'space-between',gap:14,padding:'7px 0',borderBottom:'0.5px solid var(--border)',fontSize:13}}>
+      <span style={{color:'var(--text-secondary)',flexShrink:0}}>{label}</span>
+      <span style={{textAlign:'right',color:'var(--text-primary)',minWidth:0,wordBreak:'break-word'}}>{value}</span>
+    </div>
+  )
+
+  const tc = TYPE_COLORS[glAcct?.type] || 'var(--text-muted)'
+  const sourceLabel = tx.source === 'plaid' ? 'Live (Plaid)' : tx.source === 'csv_import' ? 'CSV Import' : 'Manual'
+
+  return (
+    <Modal title="Transaction Detail" onClose={onClose}>
+      {/* Amount headline */}
+      <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',marginBottom:16}}>
+        <p style={{fontSize:24,fontWeight:600,margin:0,color:debit?'var(--coral)':'var(--teal)',fontVariantNumeric:'tabular-nums'}}>
+          {debit?'-':'+'}{fmtFull(Math.abs(tx.amount))}
+        </p>
+        <span style={{fontSize:10,padding:'2px 9px',borderRadius:99,textTransform:'uppercase',letterSpacing:'0.3px',
+          background: tx.pending?'var(--amber-light)':'var(--bg-secondary)',
+          color: tx.pending?'var(--amber)':'var(--text-muted)'}}>
+          {tx.pending?'Pending':'Posted'}
+        </span>
+      </div>
+
+      {/* Read-only details */}
+      <div style={{marginBottom:18}}>
+        {row('Description', tx.desc || '—')}
+        {row('Date', tx.date)}
+        {row('Account', acct ? `${acct.name}${acct.last4?` ••••${acct.last4}`:''}` : (tx.account || '—'))}
+        {tx.institution && row('Institution', tx.institution)}
+        {row('Source', sourceLabel)}
+        {tx.plaidCategory && row('Bank category', tx.plaidCategory)}
+        {row('Spending bucket', tx.category || '—')}
+        {(tx.reconciled || tx.isSplit) && row('Flags', (
+          <>
+            {tx.reconciled && <span style={{fontSize:10,padding:'1px 6px',borderRadius:4,background:'var(--teal-light)',color:'var(--teal)'}}>Reconciled</span>}
+            {tx.isSplit && <span style={{marginLeft:4,fontSize:10,padding:'1px 6px',borderRadius:4,background:'var(--purple-light)',color:'var(--purple)'}}>Split</span>}
+          </>
+        ))}
+        {row('ID', <span style={{fontSize:11,color:'var(--text-muted)',fontFamily:'monospace'}}>{tx.id}</span>)}
+      </div>
+
+      {/* Categorization — assign to a Chart-of-Accounts account */}
+      <Field label="Category (Chart of Accounts)">
+        <select value={coaId} onChange={e=>setCoaId(e.target.value)} style={{width:'100%'}}>
+          <option value="">Uncategorized</option>
+          {TYPE_ORDER.map(t => grouped[t]?.length ? (
+            <optgroup key={t} label={TYPE_LABELS[t]}>
+              {grouped[t].map(a => <option key={a.id} value={a.id}>{a.number?`${a.number} `:''}{a.name}</option>)}
+            </optgroup>
+          ) : null)}
+        </select>
+      </Field>
+
+      {/* Live Account Type badge — the QuickBooks "Account Type" of the chosen category */}
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14,minHeight:24}}>
+        <span style={{fontSize:12,color:'var(--text-secondary)'}}>Account Type:</span>
+        {glAcct ? (
+          <span style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:500,padding:'2px 10px',borderRadius:99,background:tc+'22',color:tc}}>
+            <span style={{width:7,height:7,borderRadius:2,background:tc}}/>
+            {TYPE_LABELS[glAcct.type]||glAcct.type}{glAcct.subtype?` · ${glAcct.subtype}`:''}
+          </span>
+        ) : <span style={{fontSize:12,color:'var(--text-muted)'}}>— uncategorized</span>}
+      </div>
+
+      <Field label="Memo">
+        <textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} placeholder="Add a note…"
+          style={{width:'100%',resize:'vertical',fontFamily:'inherit'}}/>
+      </Field>
+
+      {/* "Remember this" — turn this categorization into an auto-rule */}
+      {coaId && (
+        <div style={{marginBottom:14,padding:'10px 12px',background:'var(--bg-secondary)',borderRadius:'var(--radius-sm)',border:'0.5px solid var(--border)'}}>
+          <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,color:'var(--text-secondary)',cursor:'pointer'}}>
+            <input type="checkbox" checked={remember} onChange={e=>setRemember(e.target.checked)} style={{width:'auto',cursor:'pointer'}}/>
+            Always categorize transactions like this
+          </label>
+          {remember && (
+            <div style={{marginTop:8}}>
+              <p style={{fontSize:11,color:'var(--text-muted)',margin:'0 0 4px'}}>…when the description contains:</p>
+              <input value={keyword} onChange={e=>setKeyword(e.target.value)} placeholder="e.g. SHELL OIL" style={{width:'100%'}}/>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
+        <button onClick={onClose} style={{cursor:'pointer'}}>Cancel</button>
+        <button onClick={save} disabled={saving} style={{background:'var(--green)',color:'#fff',border:'none',cursor:'pointer',opacity:saving?0.6:1}}>
+          {saving?'Saving…':'Save'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+export default function Banking({ accounts, transactions, onUpdate }) {
   const [vaultData, setVaultData]       = useState(null)
+  const [coa, setCoa]                   = useState([])             // chart of accounts
+  const [detailTx, setDetailTx]         = useState(null)           // transaction open in detail modal
   const [selectedAcct, setSelectedAcct] = useState(null)          // null = all accounts
   const [view, setView]                 = useState('transactions') // 'transactions' | 'statements'
   const [search, setSearch]             = useState('')
   const [filterMonth, setFilterMonth]   = useState('all')
   const [sortDir, setSortDir]           = useState('desc')
+  const [statusFilter, setStatusFilter] = useState('all')          // 'all' | 'pending' | 'approved'
+  const [autoMsg, setAutoMsg]           = useState('')             // transient auto-categorize feedback
 
   useEffect(() => {
     axios.get(`${API}/vault`).then(r => setVaultData(r.data)).catch(() => {})
+    axios.get(`${API}/accounting/coa`).then(r => setCoa(r.data || [])).catch(() => {})
   }, [])
+
+  // Lookup a COA entry by id — tolerant of missing (deleted) accounts.
+  const coaById = useMemo(() => new Map(coa.map(a => [a.id, a])), [coa])
+
+  // Refetch the full transaction list after server-side rule application.
+  const reload = () => axios.get(`${API}/transactions`).then(r => onUpdate(r.data)).catch(() => {})
+  const autoCategorize = async () => {
+    setAutoMsg('Categorizing…')
+    try {
+      const { data } = await axios.post(`${API}/categorization-rules/apply`)
+      await reload()
+      setAutoMsg(data.count ? `Categorized ${data.count} transaction${data.count===1?'':'s'}` : 'No matching rules yet')
+      setTimeout(() => setAutoMsg(''), 3500)
+    } catch { setAutoMsg('') }
+  }
 
   const bankAccounts = accounts.filter(isBankAccount)
   const bankTxs = transactions.filter(tx => bankAccounts.some(a => a.id === tx.account))
@@ -458,13 +791,24 @@ export default function Banking({ accounts, transactions }) {
   // ── Transaction filtering (clicking an account is the filter) ──────────
   const months = [...new Set(bankTxs.map(t=>t.month))].sort().reverse()
 
-  let filteredTxs = [...bankTxs]
-  if (selectedAcct)          filteredTxs = filteredTxs.filter(t => t.account === selectedAcct)
-  if (filterMonth !== 'all') filteredTxs = filteredTxs.filter(t => t.month === filterMonth)
-  if (search.trim())         filteredTxs = filteredTxs.filter(t =>
+  // account + month + search (everything except the status tab) → scopedTxs
+  let scopedTxs = [...bankTxs]
+  if (selectedAcct)          scopedTxs = scopedTxs.filter(t => t.account === selectedAcct)
+  if (filterMonth !== 'all') scopedTxs = scopedTxs.filter(t => t.month === filterMonth)
+  if (search.trim())         scopedTxs = scopedTxs.filter(t =>
     (t.desc||'').toLowerCase().includes(search.toLowerCase()) ||
     (t.category||'').toLowerCase().includes(search.toLowerCase())
   )
+  const statusCounts = {
+    all:     scopedTxs.length,
+    pending:  scopedTxs.filter(t => !t.approved).length,
+    approved: scopedTxs.filter(t =>  t.approved).length,
+  }
+
+  // status tab + sort → filteredTxs
+  let filteredTxs = statusFilter === 'pending'  ? scopedTxs.filter(t => !t.approved)
+                  : statusFilter === 'approved' ? scopedTxs.filter(t =>  t.approved)
+                  : [...scopedTxs]
   filteredTxs.sort((a,b) => sortDir==='desc'
     ? b.date.localeCompare(a.date)
     : a.date.localeCompare(b.date))
@@ -520,12 +864,7 @@ export default function Banking({ accounts, transactions }) {
                 </button>
               )}
             </div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(230px,1fr))',gap:10}}>
-              {bankAccounts.map(a => (
-                <AccountCard key={a.id} acc={a} selected={selectedAcct===a.id}
-                  onClick={()=>setSelectedAcct(prev => prev===a.id ? null : a.id)}/>
-              ))}
-            </div>
+            <AccountStrip bankAccounts={bankAccounts} selectedAcct={selectedAcct} setSelectedAcct={setSelectedAcct}/>
           </div>
 
           {/* ── Transactions | Statements toggle ───────────────────── */}
@@ -549,19 +888,35 @@ export default function Banking({ accounts, transactions }) {
           {/* ── Transactions view ──────────────────────────────────── */}
           {view==='transactions' && (
             <div>
-              <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
+              {/* Filters: search + month */}
+              <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
                 <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search description or category…"
                   style={{...inputStyle,flex:1,minWidth:180}}/>
                 <select value={filterMonth} onChange={e=>setFilterMonth(e.target.value)} style={inputStyle}>
                   <option value="all">All months</option>
                   {months.map(m => <option key={m} value={m}>{m}</option>)}
                 </select>
-                <button onClick={()=>setSortDir(d=>d==='desc'?'asc':'desc')}
-                  style={{...inputStyle,color:'var(--text-secondary)',cursor:'pointer',display:'flex',alignItems:'center',gap:5}}>
-                  <i className={`ti ti-sort-${sortDir==='desc'?'descending':'ascending'}`} aria-hidden="true"/> Date
-                </button>
               </div>
 
+              {/* Status tabs (All / Pending / Approved — CaiShen confirmation state) */}
+              <div style={{display:'flex',gap:6,marginBottom:14,alignItems:'center'}}>
+                {[['all','All'],['pending','Pending'],['approved','Approved']].map(([id,label]) => (
+                  <button key={id} onClick={()=>setStatusFilter(id)} style={{
+                    fontSize:12, padding:'5px 13px', borderRadius:99, cursor:'pointer',
+                    border:`0.5px solid ${statusFilter===id?'var(--green)':'var(--border)'}`,
+                    background: statusFilter===id?'rgba(99,153,34,0.10)':'var(--bg-secondary)',
+                    color: statusFilter===id?'var(--green)':'var(--text-secondary)',
+                  }}>{label} ({statusCounts[id]})</button>
+                ))}
+                <div style={{flex:1}}/>
+                {autoMsg && <span style={{fontSize:11,color:'var(--text-muted)'}}>{autoMsg}</span>}
+                <button onClick={autoCategorize} title="Apply your saved rules to uncategorized transactions" style={{
+                  fontSize:12, padding:'5px 13px', borderRadius:99, cursor:'pointer',
+                  border:'0.5px solid var(--blue)', background:'var(--blue-light)', color:'var(--blue)',
+                }}><i className="ti ti-wand" aria-hidden="true"/> Auto-categorize</button>
+              </div>
+
+              {/* Totals + table | spending sidebar */}
               <div style={{display:'grid',gridTemplateColumns:hasSpending?'1fr 240px':'1fr',gap:24,alignItems:'start'}}>
                 <div>
                   {filteredTxs.length > 0 && (
@@ -579,10 +934,9 @@ export default function Banking({ accounts, transactions }) {
                       ))}
                     </div>
                   )}
-                  {filteredTxs.length === 0
-                    ? <p style={{color:'var(--text-muted)',fontSize:13,padding:'2rem',textAlign:'center'}}>No transactions match the current filters.</p>
-                    : filteredTxs.map(tx => <TxRow key={tx.id} tx={tx} bankAccounts={bankAccounts}/>)
-                  }
+                  <TxTable txs={filteredTxs} bankAccounts={bankAccounts} showAccount={!selectedAcct}
+                    sortDir={sortDir} onToggleSort={()=>setSortDir(d=>d==='desc'?'asc':'desc')}
+                    onRowClick={setDetailTx} coaById={coaById}/>
                 </div>
                 {hasSpending && (
                   <div className="card" style={{padding:'14px 16px'}}>
@@ -644,6 +998,18 @@ export default function Banking({ accounts, transactions }) {
             </div>
           )}
         </div>
+      )}
+
+      {detailTx && (
+        <TxDetailModal
+          tx={detailTx}
+          bankAccounts={bankAccounts}
+          coa={coa}
+          coaById={coaById}
+          onUpdate={onUpdate}
+          reload={reload}
+          onClose={()=>setDetailTx(null)}
+        />
       )}
     </div>
   )

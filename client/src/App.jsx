@@ -6,6 +6,7 @@ import TransactionTransfer from './TransactionTransfer'
 import DataVault from './DataVault'
 import TaxCenter from './TaxCenter'
 import Advisor from './Advisor'
+import TaxAdvisor from './TaxAdvisor'
 import Accounting from './Accounting'
 import Crypto from './Crypto'
 import Banking, { classifyAccount } from './Banking'
@@ -78,8 +79,8 @@ const FRIEND_COMMENTS = {
 // Opt-in asset class modules (manually added via + button)
 const ASSET_CLASSES = [
   {id:'re',        label:'Real Estate',      icon:'ti-building-estate',   color:'var(--blue)'},
-  {id:'equity',    label:'Equities',         icon:'ti-chart-candle',      color:'var(--purple)'},
-  {id:'retirement',label:'Retirement',       icon:'ti-briefcase',         color:'var(--teal)'},
+  {id:'equity',    label:'Equities',         icon:'ti-chart-candle',      color:'var(--purple)', devOnly:true},
+  {id:'retirement',label:'Retirement',       icon:'ti-briefcase',         color:'var(--teal)',   devOnly:true},
   {id:'crypto',    label:'Crypto',           icon:'ti-currency-bitcoin',  color:'var(--amber)'},
 ]
 // True when running locally — used to gate the Bank Scraper tab
@@ -94,8 +95,10 @@ const NAV_TOOLS = [
   {id:'projections',   label:'Projections',   icon:'ti-trending-up',      adminOnly:false, localhostOnly:false},
   {id:'transactions',  label:'Transactions',  icon:'ti-arrows-exchange',  adminOnly:false, localhostOnly:false},
   {id:'accounting',    label:'Report',        icon:'ti-building-bank',    adminOnly:false, localhostOnly:false},
-  {id:'advisor',       label:'AI Advisor',    icon:'ti-brain',            adminOnly:false, localhostOnly:false},
+  {id:'advisor',       label:'AI Advisor',    icon:'ti-brain',            adminOnly:false, localhostOnly:true },
+  {id:'tax-advisor',   label:'Tax Advisor',   icon:'ti-message-chatbot',  adminOnly:false, localhostOnly:true },
   {id:'scraper',       label:'Bank Scraper',  icon:'ti-spider',           adminOnly:false, localhostOnly:true },
+  {id:'importers',     label:'Importers',     icon:'ti-file-import',      adminOnly:false, localhostOnly:true },
   {id:'settings',      label:'Settings',      icon:'ti-settings',         adminOnly:false, localhostOnly:false},
 ]
 
@@ -692,7 +695,7 @@ function StatementsPanel() {
 
       {/* Tabs */}
       <div style={{ display:'flex', borderBottom:'0.5px solid var(--border)', marginBottom:12 }}>
-        {[['monthly','Monthly Statements','ti-calendar-month'],['tax','Tax Forms','ti-receipt-tax'],['escrow','Escrow','ti-home-dollar']].map(([tab, label, icon]) => (
+        {[['monthly','Monthly Statements','ti-calendar-month'], ...(IS_LOCALHOST ? [['tax','Tax Forms','ti-receipt-tax'],['escrow','Escrow','ti-home-dollar']] : [])].map(([tab, label, icon]) => (
           <button key={tab} onClick={() => setActiveTab(tab)}
             style={{ fontSize:12, padding:'7px 14px', border:'none', borderRadius:0, borderBottom: activeTab === tab ? '2px solid var(--teal)' : '2px solid transparent', background:'none', color: activeTab === tab ? 'var(--teal)' : 'var(--text-secondary)', fontWeight: activeTab === tab ? 500 : 400, cursor:'pointer', display:'flex', alignItems:'center', gap:5 }}>
             <i className={`ti ${icon}`} aria-hidden="true"/>{label}
@@ -1445,13 +1448,14 @@ function MainApp({ auth, onLogout }) {
     if(nav==='personal') return <PersonalSpending transactions={transactions} onUpdate={setTransactions}/>
     if(nav==='transactions') return <TransactionTransfer transactions={transactions} onUpdate={setTransactions}/>
     if(nav==='connections') return <ConnectionsScreen status={status} accounts={accounts} onSync={()=>{ axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])); axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])) }}/>
-    if(nav==='equity') return <PlaceholderScreen label="Equities"/>
-    if(nav==='retirement') return <PlaceholderScreen label="Retirement"/>
+    if(nav==='equity' && IS_LOCALHOST) return <PlaceholderScreen label="Equities"/>
+    if(nav==='retirement' && IS_LOCALHOST) return <PlaceholderScreen label="Retirement"/>
     if(nav==='crypto') return <Crypto/>
-    if(nav==='cash') return <Banking accounts={accounts} transactions={transactions}/>
+    if(nav==='cash') return <Banking accounts={accounts} transactions={transactions} onUpdate={setTransactions}/>
     if(nav==='taxes') return <TaxCenter/>
     if(nav==='projections') return <Projections/>
-    if(nav==='advisor')    return <Advisor/>
+    if(nav==='advisor' && IS_LOCALHOST)    return <Advisor/>
+    if(nav==='tax-advisor' && IS_LOCALHOST) return <TaxAdvisor/>
     if(nav==='accounting') return <Accounting/>
     if(nav==='data')       return <DataVault accounts={accounts} transactions={transactions} onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])} onTransactionsChanged={()=>{ axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])).catch(()=>{}); axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])).catch(()=>{}) }}/>
     if(nav==='settings')   return <SettingsScreen auth={auth}/>
@@ -1505,7 +1509,7 @@ function MainApp({ auth, onLogout }) {
             )}
             {enabledClasses.map(id=>{
               const a = ASSET_CLASSES.find(x=>x.id===id)
-              if(!a) return null
+              if(!a || (a.devOnly && !IS_LOCALHOST)) return null
               return (
                 <NavBtn key={a.id} id={a.id} label={a.label} icon={a.icon} active={nav===a.id||(nav.startsWith('prop_')&&a.id==='re')} collapsed={collapsed} color={a.color}
                   onClick={()=>{ setNav(a.id); setTrail([{id:'dashboard',label:'Dashboard'},{id:a.id,label:a.label}]) }}/>

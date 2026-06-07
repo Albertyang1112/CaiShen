@@ -2,6 +2,8 @@ const { PlaidApi, PlaidEnvironments, Configuration } = require('plaid');
 const express = require('express');
 const path    = require('path');
 const fs      = require('fs');
+const csv     = require('./csv');
+const { applyRules } = require('./categorize');
 const { verifyUser } = require('./verify');
 
 const PLAID_CAT_MAP = {
@@ -21,6 +23,49 @@ const PLAID_CAT_MAP = {
   TRANSFER_IN:              'Transfer',
   TRANSFER_OUT:             'Transfer',
 };
+
+// ── CSV staging layer ─────────────────────────────────────────────────
+// Every Plaid sync stages its full pull to a per-user .csv file (raw bank
+// columns only), then re-reads that file as a table and imports it into
+// transactions.json. The CSV is an auditable snapshot of the bank data; the
+// user's own fields (categorization, notes, splits) are NOT stored in it —
+// they live on the transaction and are re-applied on import, keyed by Plaid id,
+// so a re-sync never wipes them.
+const PLAID_CSV   = 'plaid_transactions.csv';
+const CSV_COLUMNS = ['id', 'date', 'month', 'desc', 'amount', 'category', 'plaidCategory', 'account', 'institution', 'pending', 'source', 'lastUpdated'];
+const KEEP        = ['coaId', 'note', 'reconciled', 'isSplit', 'splitOf', 'splitNote', 'propertyId'];
+
+const rawRow    = t => { const o = {}; for (const c of CSV_COLUMNS) o[c] = t[c]; return o; };
+const coerceRow = r => ({ ...r, amount: r.amount === '' || r.amount == null ? 0 : Number(r.amount), pending: r.pending === 'true' || r.pending === true });
+
+/**
+ * Stage the Plaid pull to CSV, read it back as a table, and merge into the
+ * existing transactions. Pure except for the CSV read/write it is handed.
+ *   - This institution's fresh pull replaces its own rows (matched by id).
+ *   - Every other Plaid row (other institutions + this one's out-of-window
+ *     history) and all non-Plaid rows carry forward untouched.
+ *   - User-owned KEEP fields are re-applied by id so categorization survives.
+ * Returns the new transactions array to persist.
+ */
+function stageAndImport({ existing, plaidTxs, readText, writeText, csvFile = PLAID_CSV }) {
+  const prevById   = new Map(existing.map(t => [t.id, t]));
+  const pulledIds  = new Set(plaidTxs.map(p => p.id));
+  const otherPlaid = existing.filter(t => t.source === 'plaid' && !pulledIds.has(t.id));
+  const allRaw     = [...otherPlaid, ...plaidTxs].map(rawRow);
+
+  writeText(csvFile, csv.stringify(allRaw, CSV_COLUMNS));            // Plaid  -> CSV file
+  const table = csv.parse(readText(csvFile) || '').map(coerceRow);  // CSV    -> table
+
+  const imported = table.map(r => {                                 // table  -> transactions
+    const old = prevById.get(r.id);
+    if (!old) return r;
+    const carry = {};
+    for (const k of KEEP) if (old[k] !== undefined) carry[k] = old[k];
+    return { ...r, ...carry };
+  });
+  const importedIds = new Set(imported.map(r => r.id));
+  return [...existing.filter(t => !importedIds.has(t.id)), ...imported];
+}
 
 module.exports = function(makeIO, notifyClients = () => {}) {
   const router = express.Router();
@@ -69,7 +114,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
 
   async function syncItem(connection, io, startDate = null) {
     const { access_token, institution_name } = connection;
-    const { read, write } = io;
+    const { read, write, readText, writeText } = io;
 
     const accountsResp  = await plaidClient.accountsGet({ access_token });
     const plaidAccounts = accountsResp.data.accounts.map(a => ({
@@ -93,10 +138,10 @@ module.exports = function(makeIO, notifyClients = () => {}) {
       const start    = startDate || new Date(Date.now() - 730 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       const plaidTxs = await fetchAllTransactions(access_token, start, endDate, institution_name);
       const existing = read('transactions.json') || [];
-      write('transactions.json', [
-        ...existing.filter(t => t.source !== 'plaid' || !plaidTxs.find(p => p.id === t.id)),
-        ...plaidTxs
-      ]);
+      // Stage the pull to a CSV file, then import that file back into the table.
+      // stageAndImport preserves user-owned fields (categorization, notes, splits)
+      // by Plaid id, so a re-sync never wipes them.
+      write('transactions.json', stageAndImport({ existing, plaidTxs, readText, writeText }));
       txCount = plaidTxs.length;
     } catch (e) {
       if (e.response?.data?.error_code === 'PRODUCT_NOT_READY') {
@@ -126,6 +171,14 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     const updated = io.read('connections.json') || { plaid: [] };
     updated.plaid = updated.plaid.map(c => ({ ...c, lastSync: new Date().toISOString() }));
     io.write('connections.json', updated);
+    // Auto-categorize freshly-synced transactions against the user's saved rules.
+    try {
+      const rules = io.read('categorization_rules.json') || [];
+      if (rules.length) {
+        const { transactions, count } = applyRules(io.read('transactions.json') || [], rules);
+        if (count) { io.write('transactions.json', transactions); console.log(`[Auto-cat] user ${userId}: ${count} txns categorized by rule`); }
+      }
+    } catch (e) { console.error('[Auto-cat] error:', e.message); }
     notifyClients();
     // Run verification checks and print report to server terminal
     try { verifyUser(userId, io); } catch (e) { console.error('[Verify] Error:', e.message); }
@@ -257,3 +310,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
 
   return { router, syncUser };
 };
+
+// Exposed for unit testing the CSV staging-layer import in isolation.
+module.exports.stageAndImport = stageAndImport;
+module.exports.PLAID_CSV      = PLAID_CSV;

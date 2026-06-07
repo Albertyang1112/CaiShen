@@ -8,19 +8,13 @@ const DEFAULT_COA = [
   { id: 'a1200', number: '1200', name: 'Brokerage - Schwab',     type: 'asset',     subtype: 'investment',     active: true },
   { id: 'a1210', number: '1210', name: '401(k)',                  type: 'asset',     subtype: 'retirement',    active: true },
   { id: 'a1220', number: '1220', name: 'Crypto',                  type: 'asset',     subtype: 'investment',    active: true },
-  { id: 'a1500', number: '1500', name: 'Haas - Property',        type: 'asset',     subtype: 'fixed_asset',   active: true, propertyId: 'haas' },
-  { id: 'a1501', number: '1501', name: 'Kobe - Property',        type: 'asset',     subtype: 'fixed_asset',   active: true, propertyId: 'kobe' },
-  { id: 'a1502', number: '1502', name: 'Bay Hill - Property',    type: 'asset',     subtype: 'fixed_asset',   active: true, propertyId: 'bayhill' },
-  { id: 'a1503', number: '1503', name: 'Muirfield - Property',   type: 'asset',     subtype: 'fixed_asset',   active: true, propertyId: 'muirfield' },
-  { id: 'a1504', number: '1504', name: 'Alcita - Property',      type: 'asset',     subtype: 'fixed_asset',   active: true, propertyId: 'alcita' },
+  // NOTE: property-specific accounts (the property asset, its mortgage, and its
+  // rental-income account) are intentionally NOT seeded here — they belong to
+  // whichever properties a user actually adds, so nobody inherits someone else's
+  // portfolio. Generic property-related expense buckets (5000s) remain below.
   { id: 'a1600', number: '1600', name: 'Accounts Receivable',    type: 'asset',     subtype: 'receivable',    active: true },
 
   // Liabilities
-  { id: 'l2000', number: '2000', name: 'Haas Mortgage',          type: 'liability', subtype: 'mortgage',      active: true, propertyId: 'haas' },
-  { id: 'l2001', number: '2001', name: 'Kobe Mortgage',          type: 'liability', subtype: 'mortgage',      active: true, propertyId: 'kobe' },
-  { id: 'l2002', number: '2002', name: 'Bay Hill Mortgage',      type: 'liability', subtype: 'mortgage',      active: true, propertyId: 'bayhill' },
-  { id: 'l2003', number: '2003', name: 'Muirfield Mortgage',     type: 'liability', subtype: 'mortgage',      active: true, propertyId: 'muirfield' },
-  { id: 'l2004', number: '2004', name: 'Alcita Mortgage',        type: 'liability', subtype: 'mortgage',      active: true, propertyId: 'alcita' },
   { id: 'l2100', number: '2100', name: 'Amex Platinum',          type: 'liability', subtype: 'credit_card',   active: true },
   { id: 'l2200', number: '2200', name: 'Accounts Payable',       type: 'liability', subtype: 'payable',       active: true },
 
@@ -29,11 +23,6 @@ const DEFAULT_COA = [
   { id: 'e3100', number: '3100', name: 'Retained Earnings',      type: 'equity',    subtype: 'equity',        active: true },
 
   // Income
-  { id: 'i4000', number: '4000', name: 'Haas - Rental Income',   type: 'income',    subtype: 'rental',        active: true, propertyId: 'haas' },
-  { id: 'i4001', number: '4001', name: 'Kobe - Rental Income',   type: 'income',    subtype: 'rental',        active: true, propertyId: 'kobe' },
-  { id: 'i4002', number: '4002', name: 'Bay Hill - Rental Income',type:'income',    subtype: 'rental',        active: true, propertyId: 'bayhill' },
-  { id: 'i4003', number: '4003', name: 'Muirfield - Rental Income',type:'income',   subtype: 'rental',        active: true, propertyId: 'muirfield' },
-  { id: 'i4004', number: '4004', name: 'Alcita - Rental Income', type: 'income',    subtype: 'rental',        active: true, propertyId: 'alcita' },
   { id: 'i4100', number: '4100', name: 'W-2 / Salary Income',    type: 'income',    subtype: 'wage',          active: true },
   { id: 'i4200', number: '4200', name: 'RSU / Stock Income',     type: 'income',    subtype: 'investment',    active: true },
   { id: 'i4300', number: '4300', name: 'Interest / Dividends',   type: 'income',    subtype: 'interest',      active: true },
@@ -237,12 +226,30 @@ module.exports = function(makeIO) {
     let filteredTxs = txs.filter(t => t.date >= start && t.date <= end);
     if (propertyId) filteredTxs = filteredTxs.filter(t => t.propertyId === propertyId || t.account === propertyId);
 
-    // Group by category
+    // Group by category. Prefer the transaction's assigned Chart-of-Accounts
+    // account (coaId) — QuickBooks-style, the account's *type* decides income vs
+    // expense, and balance-sheet accounts (asset/liability/equity — e.g. transfers
+    // and credit-card payments) are excluded from the P&L. Fall back to the legacy
+    // sign-based bucketing by tx.category for any uncategorized transaction.
     const incomeByCategory  = {};
     const expenseByCategory = {};
     let totalIncome = 0, totalExpenses = 0;
+    const coaById = new Map(coa.map(a => [a.id, a]));
 
     for (const tx of filteredTxs) {
+      const acct = tx.coaId ? coaById.get(tx.coaId) : null;
+      if (acct) {
+        const amt = Math.abs(tx.amount);
+        if (acct.type === 'income') {
+          incomeByCategory[acct.name] = (incomeByCategory[acct.name] || 0) + amt;
+          totalIncome += amt;
+        } else if (acct.type === 'expense') {
+          expenseByCategory[acct.name] = (expenseByCategory[acct.name] || 0) + amt;
+          totalExpenses += amt;
+        }
+        // asset/liability/equity → balance-sheet account, excluded from P&L
+        continue;
+      }
       if (tx.amount > 0) {
         incomeByCategory[tx.category] = (incomeByCategory[tx.category] || 0) + tx.amount;
         totalIncome += tx.amount;

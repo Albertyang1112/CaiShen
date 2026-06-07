@@ -24,6 +24,15 @@ extension/
 server/bank-scraper.js
 client/src/BankScraper.jsx
 
+# Imported Python scrapers (chase/boa/amazon/mortgage) — credential-handling
+# automation + scraped financial data (PDFs, SQLite, session profiles). Each is
+# its own git repo under here; keep ALL of it out of the CaiShen repo.
+scrapers/
+# Node/React bridge for those scrapers — local-only, same posture as bank-scraper.js
+server/scraper-bridge.js
+server/scraper-import.js
+client/src/Scrapers.jsx
+
 # Log files
 *.log
 server_log.txt
