@@ -356,7 +356,7 @@ function StmtCard({ f }) {
 }
 
 // ── Transactions table (QuickBooks-style columns) ──────────────────────────────
-function TxTable({ txs, bankAccounts, showAccount, sortDir, onToggleSort, onRowClick, coaById }) {
+function TxTable({ txs, bankAccounts, showAccount, sortDir, onToggleSort, onRowClick, coaById, reconcileFlags = {} }) {
   if (!txs.length) {
     return <p style={{color:'var(--text-muted)',fontSize:13,padding:'2rem',textAlign:'center'}}>No transactions match the current filters.</p>
   }
@@ -390,6 +390,7 @@ function TxTable({ txs, bankAccounts, showAccount, sortDir, onToggleSort, onRowC
             const catColor = CAT_COLOR[tx.category] || 'var(--text-muted)'
             const glAcct = coaById?.get(tx.coaId)            // assigned chart-of-accounts entry, if any
             const debit = tx.amount < 0
+            const rcFlag = reconcileFlags[tx.id]
             return (
               <tr key={tx.id} onClick={()=>onRowClick?.(tx)} style={{borderBottom:'0.5px solid var(--border)',cursor:onRowClick?'pointer':'default'}}
                 onMouseEnter={e=>e.currentTarget.style.background='var(--bg-hover)'}
@@ -397,6 +398,9 @@ function TxTable({ txs, bankAccounts, showAccount, sortDir, onToggleSort, onRowC
                 <td style={{padding:'9px 12px',color:'var(--text-secondary)',whiteSpace:'nowrap'}}>
                   {tx.date}
                   {tx.pending && <span style={{marginLeft:6,fontSize:9,padding:'1px 5px',borderRadius:4,background:'var(--amber-light)',color:'var(--amber)',textTransform:'uppercase',letterSpacing:'0.3px'}}>Pending</span>}
+                  {rcFlag === 'conflict'   && <span title="Reconcile: conflict — amount/date matched a statement row but merchant names differ" style={{marginLeft:5,fontSize:10,color:'var(--coral)'}}>⚠</span>}
+                  {rcFlag === 'plaid_only' && <span title="Reconcile: transaction appears in Plaid but not in your bank statement" style={{marginLeft:5,fontSize:10,color:'var(--amber)'}}>◈</span>}
+                  {rcFlag === 'matched'    && <span title="Reconcile: matched to bank statement ✓" style={{marginLeft:5,fontSize:10,color:'var(--teal)'}}>✓</span>}
                 </td>
                 <td style={{padding:'9px 12px',maxWidth:340}}>
                   <span style={{display:'block',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={tx.desc||''}>{tx.desc||'—'}</span>
@@ -837,10 +841,12 @@ export default function Banking({ accounts, transactions, onUpdate }) {
   const [sortDir, setSortDir]           = useState('desc')
   const [statusFilter, setStatusFilter] = useState('all')          // 'all' | 'pending' | 'approved'
   const [autoMsg, setAutoMsg]           = useState('')             // transient auto-categorize feedback
+  const [reconcileFlags, setReconcileFlags] = useState({})        // {plaid_txn_id → status} for inline badges
 
   useEffect(() => {
     axios.get(`${API}/vault`).then(r => setVaultData(r.data)).catch(() => {})
     axios.get(`${API}/accounting/coa`).then(r => setCoa(r.data || [])).catch(() => {})
+    axios.get(`${API}/reconcile/txn-flags`).then(r => setReconcileFlags(r.data || {})).catch(() => {})
   }, [])
 
   // Lookup a COA entry by id — tolerant of missing (deleted) accounts.
@@ -1062,7 +1068,7 @@ export default function Banking({ accounts, transactions, onUpdate }) {
                   )}
                   <TxTable txs={filteredTxs} bankAccounts={bankAccounts} showAccount={!selectedAcct}
                     sortDir={sortDir} onToggleSort={()=>setSortDir(d=>d==='desc'?'asc':'desc')}
-                    onRowClick={setDetailTx} coaById={coaById}/>
+                    onRowClick={setDetailTx} coaById={coaById} reconcileFlags={reconcileFlags}/>
                 </div>
                 {hasSpending && (
                   <div className="card" style={{padding:'14px 16px'}}>

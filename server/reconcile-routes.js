@@ -1,50 +1,24 @@
 'use strict';
 /**
- * Phase 3 — Reconciliation API routes
+ * Reconciliation API routes
  * Mounted at /api/reconcile by server/index.js
  *
- * POST /api/reconcile/upload   — upload statement file → parse → mirror → reconcile
- * GET  /api/reconcile/status   — summary stats + uploaded file list
- * GET  /api/reconcile/flagged  — unmatched / conflict rows (?status=stmt_only|plaid_only|conflict)
- * POST /api/reconcile/run      — re-run reconciliation on already-uploaded data (?year=2026)
+ * Reconciliation is automatic — triggered by the bank scraper (after PDF download)
+ * and by Plaid sync (re-matches new transactions against existing statement data).
+ * No manual upload required.
+ *
+ * GET  /api/reconcile/status      — summary stats + statement file list
+ * GET  /api/reconcile/flagged     — flagged rows (?status=stmt_only|plaid_only|conflict)
+ * GET  /api/reconcile/txn-flags   — {plaid_txn_id → status} map for inline Banking display
+ * POST /api/reconcile/run         — re-run reconciliation on existing data (?year=2026)
  */
 
-const express  = require('express');
-const multer   = require('multer');
+const express = require('express');
 const { query } = require('./db');
-const { parseStatement, mirrorStatement, reconcileUser, getStatus, getFlagged } = require('./reconciler');
+const { reconcileUser, getStatus, getFlagged } = require('./reconciler');
 
 module.exports = function makeReconcileRouter(makeIO) {
   const router = express.Router();
-  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
-
-  // POST /upload — parse + mirror + reconcile in one shot
-  router.post('/upload', upload.single('file'), async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    const userId   = req.user.id;
-    const filename = req.file.originalname;
-    const io       = makeIO(userId);
-
-    try {
-      const rows = await parseStatement(req.file.buffer, filename);
-      if (!rows.length) {
-        return res.status(422).json({
-          error: 'No transactions found. Supported formats: PDF bank statements and CSV files with date, description, and amount columns (Chase, BofA, or generic).'
-        });
-      }
-
-      const mirrored = await mirrorStatement(query, userId, rows, filename);
-
-      const yearMatch = filename.match(/20\d{2}/);
-      const year      = yearMatch ? parseInt(yearMatch[0]) : null;
-      const summary   = await reconcileUser(query, userId, io, year);
-
-      res.json({ ok: true, parsed: rows.length, mirrored, filename, ...summary });
-    } catch (e) {
-      console.error('[reconcile/upload]', e.message);
-      res.status(500).json({ error: e.message });
-    }
-  });
 
   // GET /status
   router.get('/status', async (req, res) => {
@@ -59,6 +33,33 @@ module.exports = function makeReconcileRouter(makeIO) {
   router.get('/flagged', async (req, res) => {
     try {
       res.json(await getFlagged(query, req.user.id, req.query.status));
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /txn-flags — lightweight map for inline transaction-row badges
+  // Returns: { [plaid_txn_id]: 'matched' | 'conflict' | 'plaid_only' }
+  router.get('/txn-flags', async (req, res) => {
+    try {
+      const r = await query(
+        `SELECT plaid_txn_id, status
+           FROM statement_matches
+          WHERE user_id = $1
+            AND plaid_txn_id IS NOT NULL
+          ORDER BY period_year DESC`,
+        [req.user.id]
+      );
+      // One entry per Plaid txn — prefer conflict > plaid_only > matched if dupes
+      const priority = { conflict: 3, plaid_only: 2, matched: 1, stmt_only: 0 };
+      const map = {};
+      for (const row of r.rows) {
+        const cur = map[row.plaid_txn_id];
+        if (!cur || (priority[row.status] || 0) > (priority[cur] || 0)) {
+          map[row.plaid_txn_id] = row.status;
+        }
+      }
+      res.json(map);
     } catch (e) {
       res.status(500).json({ error: e.message });
     }

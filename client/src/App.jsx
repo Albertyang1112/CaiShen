@@ -10,7 +10,6 @@ import TaxAdvisor from './TaxAdvisor'
 import Accounting from './Accounting'
 import Crypto from './Crypto'
 import Banking, { classifyAccount } from './Banking'
-import Reconcile from './Reconcile'
 import Login from './Login'
 import { usePlaidLink } from 'react-plaid-link'
 
@@ -1453,7 +1452,6 @@ function MainApp({ auth, onLogout }) {
     if(nav==='retirement' && IS_LOCALHOST) return <PlaceholderScreen label="Retirement"/>
     if(nav==='crypto') return <Crypto/>
     if(nav==='cash') return <Banking accounts={accounts} transactions={transactions} onUpdate={setTransactions}/>
-    if(nav==='reconcile') return <Reconcile/>
     if(nav==='taxes') return <TaxCenter/>
     if(nav==='projections') return <Projections/>
     if(nav==='advisor' && IS_LOCALHOST)    return <Advisor/>
@@ -1482,8 +1480,6 @@ function MainApp({ auth, onLogout }) {
             {!collapsed && <p style={{fontSize:10,fontWeight:500,color:'var(--text-muted)',margin:'8px 14px 4px',textTransform:'uppercase',letterSpacing:'0.8px'}}>Overview</p>}
             <NavBtn id="dashboard" label="Dashboard" icon="ti-layout-dashboard" active={nav==='dashboard'} collapsed={collapsed} color="var(--blue)" onClick={()=>{ setNav('dashboard'); setTrail([{id:'dashboard',label:'Dashboard'}]) }}/>
             <NavBtn id="cash" label="Banking" icon="ti-building-bank" active={nav==='cash'} collapsed={collapsed} color="var(--green)" onClick={()=>go('cash','Banking')}/>
-            <NavBtn id="reconcile" label="Reconcile" icon="ti-arrows-exchange-2" active={nav==='reconcile'} collapsed={collapsed} color="var(--blue)" onClick={()=>go('reconcile','Reconcile')}/>
-
             {/* Asset Classes — opt-in */}
             {!collapsed && (
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',margin:'12px 14px 4px'}}>

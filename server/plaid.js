@@ -181,6 +181,15 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     } catch (e) { console.error('[Auto-cat] error:', e.message); }
     try { const m = await require('./neon-mirror').mirrorPlaid(userId, io.read('transactions.json') || []); console.log(`[Neon] user ${userId}: mirrored ${m} plaid rows`); } catch (e) { console.error('[Neon mirror] error:', e.message); }
     try { const _n = await require('./notifier').notifyNew(io, process.env.DISCORD_WEBHOOK_URL); if (_n) console.log(`[notify] user ${userId}: ${_n} Discord alert(s) sent`); } catch (e) { console.error('[notify] error', e.message); }
+    // Auto-reconcile: re-match Plaid rows against any previously uploaded statement data
+    try {
+      const { query } = require('./db');
+      const cnt = await query(`SELECT COUNT(*)::int AS c FROM source_transactions WHERE user_id=$1 AND source='statement'`, [userId]);
+      if (cnt.rows[0].c > 0) {
+        const r = await require('./reconciler').reconcileUser(query, userId, io);
+        console.log(`[Reconcile] user ${userId}: ${r.matched} matched, ${r.conflicts} conflicts, ${r.stmtOnly} stmt-only, ${r.plaidOnly} Plaid-only`);
+      }
+    } catch (e) { console.error('[Reconcile] error:', e.message); }
     notifyClients();
     // Run verification checks and print report to server terminal
     try { verifyUser(userId, io); } catch (e) { console.error('[Verify] Error:', e.message); }
