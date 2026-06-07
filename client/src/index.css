@@ -43,6 +43,10 @@ body {
 
 #root { height: 100vh; display: flex; flex-direction: column; }
 
+/* Horizontal account strip — hide the scrollbar (QuickBooks-style) but stay scrollable */
+.acct-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+.acct-scroll::-webkit-scrollbar { display: none; }
+
 button {
   font-family: inherit;
   font-size: 13px;

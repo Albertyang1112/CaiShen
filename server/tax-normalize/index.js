@@ -22,6 +22,7 @@ const express = require('express');
 const crypto  = require('crypto');
 
 const { classifyBatch }   = require('./rules');
+const { classifyByCoa }   = require('./coa-map');
 const { buildTaxInput }   = require('./aggregator');
 const { calculate }       = require('../tax-engine');
 const { TAX_CATEGORIES }  = require('../tax-history');
@@ -177,18 +178,37 @@ function clamp01(n) { const x = Number(n); return isNaN(x) ? null : Math.max(0, 
  * @param {object} [args.provider]    LLM provider (from tax-advisor/providers)
  * @returns {Promise<object>} summary
  */
-async function normalizeYear({ userId, year, transactions, useAI = false, provider = null }) {
+async function normalizeYear({ userId, year, transactions, coa = [], useAI = false, provider = null }) {
   const forYear = (transactions || []).filter(t => txnYear(t) === year);
-  const { classified, unmatched } = classifyBatch(forYear);
+
+  // COA-driven classification takes priority over description rules: a category
+  // the user explicitly assigned (tx.coaId) is more reliable than a regex guess.
+  const coaById = new Map((coa || []).map(a => [a.id, a]));
+  const coaClassified = [], remaining = [];
+  for (const txn of forYear) {
+    const acct = txn.coaId ? coaById.get(txn.coaId) : null;
+    const cls  = acct ? classifyByCoa(acct) : null;
+    if (cls) coaClassified.push({ txn, classification: cls });
+    else     remaining.push(txn);
+  }
+
+  const { classified, unmatched } = classifyBatch(remaining);
 
   let aiMap = new Map();
   if (useAI && provider && unmatched.length) {
     aiMap = await classifyUnmatchedWithAI(unmatched, provider, year);
   }
 
-  let byRule = 0, byAI = 0, needsReview = 0;
+  let byCoa = 0, byRule = 0, byAI = 0, needsReview = 0;
   const byCategory = {};
   const bump = (cat) => { byCategory[cat] = (byCategory[cat] || 0) + 1; };
+
+  // COA-classified (highest priority — the user's explicit category)
+  for (const { txn, classification } of coaClassified) {
+    await upsertTaxTransaction(userId, txn, classification);
+    byCoa++; bump(classification.taxCategory);
+    if (classification.taxCategory === 'needs_review') needsReview++;
+  }
 
   // Rule-classified
   for (const { txn, classification } of classified) {
@@ -215,9 +235,10 @@ async function normalizeYear({ userId, year, transactions, useAI = false, provid
 
   return {
     year,
-    totalForYear:     forYear.length,
-    classifiedByRule: byRule,
-    classifiedByAI:   byAI,
+    totalForYear:      forYear.length,
+    classifiedByCoa:   byCoa,
+    classifiedByRule:  byRule,
+    classifiedByAI:    byAI,
     needsReview,
     byCategory,
     aiUsed: useAI && !!provider,
@@ -272,13 +293,15 @@ function makeRouter(makeIO) {
     if (isNaN(year)) return res.status(400).json({ error: 'Invalid year' });
     const { useAI = false, provider: providerName } = req.body || {};
     try {
-      const transactions = makeIO(req.user.id).read('transactions.json') || [];
+      const io = makeIO(req.user.id);
+      const transactions = io.read('transactions.json') || [];
+      const coa          = io.read('chart_of_accounts.json') || [];
       let provider = null;
       if (useAI) {
         try { provider = require('../tax-advisor/providers').getProvider(providerName); }
         catch (_) { /* no provider configured — leftovers stay needs_review */ }
       }
-      const summary = await normalizeYear({ userId: req.user.id, year, transactions, useAI, provider });
+      const summary = await normalizeYear({ userId: req.user.id, year, transactions, coa, useAI, provider });
       res.json(summary);
     } catch (e) {
       console.error('[TaxNormalize] normalize error:', e.message);

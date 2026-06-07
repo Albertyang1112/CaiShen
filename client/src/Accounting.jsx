@@ -12,6 +12,7 @@ const PROPS = [
 ]
 
 const TYPE_ORDER  = ['asset','liability','equity','income','expense']
+const TYPE_BASE   = { asset:1000, liability:2000, equity:3000, income:4000, expense:5000 }
 const TYPE_LABELS = { asset:'Assets', liability:'Liabilities', equity:'Equity', income:'Income', expense:'Expenses' }
 const TYPE_COLORS = { asset:'var(--blue)', liability:'var(--coral)', equity:'var(--teal)', income:'var(--green)', expense:'var(--amber)' }
 const STATUS_STYLE = {
@@ -56,10 +57,19 @@ function Field({ label, children }) {
 // ── Chart of Accounts ─────────────────────────────────────────────────
 function ChartOfAccounts() {
   const [coa, setCoa]         = useState([])
+  const [rules, setRules]     = useState([])
   const [modal, setModal]     = useState(null) // null | 'add' | {edit account}
   const [form, setForm]       = useState({ number:'', name:'', type:'expense', subtype:'', active:true })
 
-  useEffect(() => { axios.get(`${API}/coa`).then(r => setCoa(r.data)).catch(() => {}) }, [])
+  useEffect(() => {
+    axios.get(`${API}/coa`).then(r => setCoa(r.data)).catch(() => {})
+    axios.get('/api/categorization-rules').then(r => setRules(r.data || [])).catch(() => {})
+  }, [])
+
+  const delRule = async (id) => {
+    await axios.delete(`/api/categorization-rules/${id}`)
+    setRules(prev => prev.filter(r => r.id !== id))
+  }
 
   const save = async () => {
     if (!form.name || !form.type) return
@@ -81,8 +91,14 @@ function ChartOfAccounts() {
     setCoa(prev => prev.filter(a => a.id !== id))
   }
 
+  // Suggest the next free account number in a type's range (1000s asset, 2000s liability, …).
+  const nextNumber = (type) => {
+    const base = TYPE_BASE[type] || 1000
+    const used = coa.filter(a => a.type === type).map(a => parseInt(a.number, 10)).filter(n => !isNaN(n) && n >= base && n < base + 1000)
+    return String((used.length ? Math.max(...used) : base - 10) + 10)
+  }
   const openEdit = (acct) => { setForm({ number:acct.number||'', name:acct.name, type:acct.type, subtype:acct.subtype||'', active:acct.active }); setModal(acct) }
-  const openAdd  = () => { setForm({ number:'', name:'', type:'expense', subtype:'', active:true }); setModal('add') }
+  const openAdd  = () => { setForm({ number:nextNumber('expense'), name:'', type:'expense', subtype:'', active:true }); setModal('add') }
 
   const grouped = TYPE_ORDER.reduce((acc, t) => { acc[t] = coa.filter(a => a.type === t); return acc }, {})
 
@@ -124,13 +140,39 @@ function ChartOfAccounts() {
         )
       })}
 
+      {/* Auto-categorization rules */}
+      <div style={{ marginTop:28 }}>
+        <p style={{ fontSize:14, fontWeight:500, margin:0 }}>Auto-categorization Rules</p>
+        <p style={{ fontSize:11, color:'var(--text-muted)', margin:'2px 0 12px' }}>{rules.length} rule{rules.length===1?'':'s'} — applied automatically on every sync and via the "Auto-categorize" button in Banking.</p>
+        {rules.length === 0 ? (
+          <p style={{ fontSize:12, color:'var(--text-muted)', padding:'14px', border:'0.5px dashed var(--border)', borderRadius:'var(--radius-md)', textAlign:'center' }}>
+            No rules yet. In Banking, open a transaction, choose a category, and tick "Always categorize transactions like this."
+          </p>
+        ) : (
+          <div style={{ border:'0.5px solid var(--border)', borderRadius:'var(--radius-md)', overflow:'hidden' }}>
+            {rules.map((r, i) => {
+              const acct = coa.find(a => a.id === r.coaId)
+              return (
+                <div key={r.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 14px', borderBottom: i<rules.length-1?'0.5px solid var(--border)':'none', background:'var(--bg-card)' }}>
+                  <span style={{ fontSize:11, color:'var(--text-muted)', whiteSpace:'nowrap' }}>{r.field||'desc'} {r.op||'contains'}</span>
+                  <span style={{ fontSize:12, fontWeight:500, fontFamily:'monospace', background:'var(--bg-secondary)', padding:'1px 6px', borderRadius:4 }}>{r.value}</span>
+                  <i className="ti ti-arrow-right" style={{ fontSize:13, color:'var(--text-muted)' }} aria-hidden="true"/>
+                  <span style={{ flex:1, fontSize:13, color: acct?'var(--text-primary)':'var(--coral)' }}>{acct ? `${acct.number?acct.number+' ':''}${acct.name}` : '(deleted account)'}</span>
+                  <button onClick={() => delRule(r.id)} title="Delete rule" style={{ fontSize:11, padding:'2px 6px', background:'none', border:'none', color:'var(--coral)' }}><i className="ti ti-trash" aria-hidden="true"/></button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
       {modal && (
         <Modal title={modal === 'add' ? 'Add Account' : 'Edit Account'} onClose={() => setModal(null)}>
           <Field label="Account number"><input value={form.number} onChange={e=>setForm(p=>({...p,number:e.target.value}))} placeholder="5000" style={{width:'100%'}}/></Field>
           <Field label="Account name *"><input value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="e.g. Repairs & Maintenance" style={{width:'100%'}}/></Field>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
             <Field label="Type *">
-              <select value={form.type} onChange={e=>setForm(p=>({...p,type:e.target.value}))} style={{width:'100%'}}>
+              <select value={form.type} onChange={e=>setForm(p=>({...p,type:e.target.value,number:(modal==='add'&&(!p.number||p.number===nextNumber(p.type)))?nextNumber(e.target.value):p.number}))} style={{width:'100%'}}>
                 {TYPE_ORDER.map(t => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
               </select>
             </Field>
