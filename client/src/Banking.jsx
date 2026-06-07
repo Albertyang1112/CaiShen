@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import axios from 'axios'
 
 const API = '/api'
@@ -555,6 +555,129 @@ function AccountStrip({ bankAccounts, selectedAcct, setSelectedAcct }) {
   )
 }
 
+// ── Phase 4: Receipt attachment + OCR panel ───────────────────────────────────
+const MATCH_STYLE = {
+  matched:    { color: 'var(--teal)',   icon: 'ti-circle-check', label: 'Matched' },
+  partial:    { color: 'var(--amber)',  icon: 'ti-alert-circle',  label: 'Partial match' },
+  mismatch:   { color: 'var(--coral)',  icon: 'ti-alert-triangle',label: 'Mismatch' },
+  unreviewed: { color: 'var(--text-muted)', icon: 'ti-clock',    label: 'Pending OCR' },
+}
+
+function ReceiptPanel({ txId, txAmount, txDate, txDesc }) {
+  const [receipts,   setReceipts]   = useState([])
+  const [uploading,  setUploading]  = useState(false)
+  const [expanded,   setExpanded]   = useState({})
+
+  const load = useCallback(() => {
+    axios.get(`${API}/receipts/${txId}`).then(r => setReceipts(r.data)).catch(() => {})
+  }, [txId])
+
+  useEffect(() => { load() }, [load])
+
+  async function attach(file) {
+    if (!file) return
+    setUploading(true)
+    const fd = new FormData(); fd.append('file', file)
+    try {
+      await axios.post(`${API}/receipts/attach/${txId}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+      load()
+    } catch (e) { console.error('receipt upload:', e.message) }
+    setUploading(false)
+  }
+
+  async function del(id) {
+    await axios.delete(`${API}/receipts/${id}`).catch(() => {})
+    setReceipts(prev => prev.filter(r => r.id !== id))
+  }
+
+  return (
+    <div style={{marginBottom:16,borderTop:'0.5px solid var(--border)',paddingTop:14}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+        <span style={{fontSize:12,fontWeight:600,color:'var(--text-secondary)',textTransform:'uppercase',letterSpacing:'0.5px'}}>
+          <i className="ti-receipt-2" style={{marginRight:5}}/>Receipts
+        </span>
+        <label style={{cursor:'pointer',fontSize:12,color:'var(--blue)',display:'flex',alignItems:'center',gap:4}}>
+          <i className={uploading ? 'ti-loader-2' : 'ti-upload'} style={uploading ? {animation:'spin 1s linear infinite'} : {}}/>
+          {uploading ? 'Scanning…' : 'Attach'}
+          <input type="file" accept="image/*,.pdf" style={{display:'none'}}
+            onChange={e => attach(e.target.files[0])} disabled={uploading}/>
+        </label>
+      </div>
+
+      {receipts.length === 0 && (
+        <p style={{fontSize:12,color:'var(--text-muted)',margin:'0 0 4px',fontStyle:'italic'}}>No receipts attached.</p>
+      )}
+
+      {receipts.map(r => {
+        const ms = MATCH_STYLE[r.match_status] || MATCH_STYLE.unreviewed
+        const ocr = r.ocr_data || {}
+        const open = !!expanded[r.id]
+        return (
+          <div key={r.id} style={{marginBottom:8,borderRadius:6,border:'0.5px solid var(--border)',overflow:'hidden'}}>
+            {/* Header row */}
+            <div style={{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',background:'var(--bg-secondary)',cursor:'pointer'}}
+                 onClick={() => setExpanded(p => ({...p,[r.id]:!p[r.id]}))}>
+              <i className={ms.icon} style={{color:ms.color,fontSize:13}}/>
+              <span style={{fontSize:12,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.original_name}</span>
+              <span style={{fontSize:11,color:ms.color,fontWeight:600}}>{ms.label}</span>
+              <i className={open?'ti-chevron-up':'ti-chevron-down'} style={{fontSize:11,color:'var(--text-muted)'}}/>
+            </div>
+
+            {/* Expanded detail */}
+            {open && (
+              <div style={{padding:'8px 10px',fontSize:12}}>
+                {/* OCR fields */}
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
+                  {[
+                    ['Merchant', ocr.merchant || '—'],
+                    ['Total',    ocr.total != null ? `$${Number(ocr.total).toFixed(2)}` : '—'],
+                    ['Date',     ocr.date || '—'],
+                  ].map(([lbl,val]) => (
+                    <div key={lbl} style={{background:'var(--bg-secondary)',borderRadius:4,padding:'4px 8px'}}>
+                      <div style={{fontSize:10,color:'var(--text-muted)',fontWeight:600}}>{lbl}</div>
+                      <div style={{fontWeight:500}}>{val}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Flags */}
+                {r.match_flags?.length > 0 && (
+                  <div style={{marginBottom:8}}>
+                    {r.match_flags.map((f,i) => (
+                      <div key={i} style={{fontSize:11,color:'var(--coral)',display:'flex',alignItems:'flex-start',gap:4,marginBottom:3}}>
+                        <i className="ti-alert-triangle" style={{marginTop:1,flexShrink:0}}/>
+                        {f}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Line items (if any) */}
+                {ocr.items?.length > 0 && (
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontSize:10,color:'var(--text-muted)',fontWeight:600,marginBottom:4}}>LINE ITEMS</div>
+                    {ocr.items.map((it,i) => (
+                      <div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:11,padding:'2px 0',borderBottom:'0.5px solid var(--border)'}}>
+                        <span style={{color:'var(--text-secondary)'}}>{it.desc}</span>
+                        <span>${Number(it.amount).toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <button onClick={() => del(r.id)}
+                  style={{fontSize:11,color:'var(--coral)',background:'none',border:'none',cursor:'pointer',padding:0}}>
+                  <i className="ti-trash" style={{marginRight:3}}/>Remove
+                </button>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── Transaction detail + QuickBooks-style categorization modal ────────────────
 function TxDetailModal({ tx, bankAccounts, coa, coaById, onUpdate, reload, onClose }) {
   const [coaId,  setCoaId]  = useState(tx.coaId || '')
@@ -689,6 +812,9 @@ function TxDetailModal({ tx, bankAccounts, coa, coaById, onUpdate, reload, onClo
           )}
         </div>
       )}
+
+      {/* ── Receipts (Phase 4) ── */}
+      <ReceiptPanel txId={tx.id} txAmount={tx.amount} txDate={tx.date} txDesc={tx.desc}/>
 
       <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
         <button onClick={onClose} style={{cursor:'pointer'}}>Cancel</button>

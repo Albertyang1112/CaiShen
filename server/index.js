@@ -412,6 +412,9 @@ app.use('/api/statements', stmtRouter);
 // ── Routes: Reconciliation (Phase 3) ─────────────────────────────────
 app.use('/api/reconcile', require('./reconcile-routes')(makeIO));
 
+// ── Routes: Receipts / OCR (Phase 4) ─────────────────────────────────
+app.use('/api/receipts', require('./receipt-routes')(makeIO, DATA_DIR));
+
 // ── Routes: QuickBooks ────────────────────────────────────────────────
 const { authRouter: qbAuth, apiRouter: qbApi } = require('./quickbooks')(makeIO);
 app.use('/auth/quickbooks', qbAuth);

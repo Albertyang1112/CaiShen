@@ -88,5 +88,23 @@ module.exports.init = async (query) => {
   await query(`CREATE INDEX IF NOT EXISTS idx_stmtmatch_user   ON statement_matches(user_id, status)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_stmtmatch_year   ON statement_matches(user_id, period_year)`);
 
-  console.log('✓ Banking/notification schema ready (source_transactions, categorization_memory, telegram_links, txn_messages, statement_matches)');
+  // Phase 4 — receipt attachments: one row per file attached to a transaction.
+  await query(`
+    CREATE TABLE IF NOT EXISTS receipts (
+      id            TEXT        PRIMARY KEY,
+      user_id       TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      txn_id        TEXT        NOT NULL,               -- local Plaid transaction id
+      file_path     TEXT        NOT NULL,               -- absolute path on disk (data/users/{id}/receipts/)
+      original_name TEXT,                               -- original uploaded filename
+      mime_type     TEXT,                               -- image/jpeg | image/png | application/pdf etc.
+      ocr_data      JSONB,                              -- { merchant, total, date, items }
+      match_status  TEXT NOT NULL DEFAULT 'unreviewed', -- 'matched'|'partial'|'mismatch'|'unreviewed'
+      match_flags   JSONB,                              -- array of flag description strings
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS idx_receipts_txn    ON receipts(user_id, txn_id)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_receipts_status ON receipts(user_id, match_status)`);
+
+  console.log('✓ Banking/notification schema ready (source_transactions, categorization_memory, telegram_links, txn_messages, statement_matches, receipts)');
 };
