@@ -1,10 +1,9 @@
 const { PlaidApi, PlaidEnvironments, Configuration } = require('plaid');
 const express = require('express');
-const path    = require('path');
-const fs      = require('fs');
 const csv     = require('../core/csv');
 const { applyRules } = require('./categorize');
 const { verifyUser } = require('../core/verify');
+const plaidItems = require('../core/plaid-items');   // Plaid connections live in the DB (encrypted), not connections.json
 
 const PLAID_CAT_MAP = {
   FOOD_AND_DRINK:           'Dining',
@@ -154,9 +153,8 @@ module.exports = function(makeIO, notifyClients = () => {}) {
   // ── Sync all items for a given user (used by cron and sync-history) ───
   async function syncUser(userId, startDate = null) {
     if (!plaidClient) return { skipped: true };
-    const io          = makeIO(userId);
-    const connections = io.read('connections.json') || { plaid: [] };
-    const items       = connections.plaid || [];
+    const io    = makeIO(userId);
+    const items = await plaidItems.listItems(userId);   // from DB (encrypted tokens), not connections.json
     if (!items.length) return { synced: 0 };
 
     const results = [];
@@ -168,9 +166,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
         results.push({ institution: conn.institution_name, error: e.message });
       }
     }
-    const updated = io.read('connections.json') || { plaid: [] };
-    updated.plaid = updated.plaid.map(c => ({ ...c, lastSync: new Date().toISOString() }));
-    io.write('connections.json', updated);
+    for (const it of items) { try { await plaidItems.touchSync(it.item_id); } catch {} }
     // Auto-categorize freshly-synced transactions against the user's saved rules.
     try {
       const rules = io.read('categorization_rules.json') || [];
@@ -222,12 +218,8 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     try {
       const response = await plaidClient.itemPublicTokenExchange({ public_token });
       const { access_token, item_id } = response.data;
-      const connections = io.read('connections.json') || { plaid: [] };
-      const existing = connections.plaid.findIndex(c => c.item_id === item_id);
-      const connection = { item_id, access_token, institution_name: institution_name || 'Unknown Bank', connectedAt: new Date().toISOString(), lastSync: null };
-      if (existing >= 0) connections.plaid[existing] = connection;
-      else connections.plaid.push(connection);
-      io.write('connections.json', connections);
+      await plaidItems.saveItem(req.user.id, { item_id, access_token, institution_name: institution_name || 'Unknown Bank' });
+      const connection = { item_id, access_token, institution_name: institution_name || 'Unknown Bank' };
       res.json({ success: true, institution: institution_name });
       syncItem(connection, io).catch(e => console.error('Initial sync error:', e.response?.data || e.message));
     } catch (e) {
@@ -237,12 +229,14 @@ module.exports = function(makeIO, notifyClients = () => {}) {
   });
 
   // ── Get connections ───────────────────────────────────────────────────
-  router.get('/connections', (req, res) => {
-    const connections = makeIO(req.user.id).read('connections.json') || { plaid: [] };
-    res.json((connections.plaid || []).map(c => ({
-      item_id: c.item_id, institution_name: c.institution_name,
-      connectedAt: c.connectedAt, lastSync: c.lastSync
-    })));
+  router.get('/connections', async (req, res) => {
+    try {
+      const items = await plaidItems.listItems(req.user.id);
+      res.json(items.map(c => ({
+        item_id: c.item_id, institution_name: c.institution_name,
+        connectedAt: c.connectedAt, lastSync: c.lastSync
+      })));
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   // ── Manual sync ───────────────────────────────────────────────────────
@@ -255,9 +249,8 @@ module.exports = function(makeIO, notifyClients = () => {}) {
   // ── Sync full 2-year history ──────────────────────────────────────────
   router.post('/sync-history', async (req, res) => {
     if (!plaidClient) return res.status(400).json({ error: 'Plaid not configured' });
-    const io    = makeIO(req.user.id);
-    const conns = io.read('connections.json') || { plaid: [] };
-    if (!(conns.plaid || []).length) return res.status(400).json({ error: 'No Plaid connections found' });
+    const items = await plaidItems.listItems(req.user.id);
+    if (!items.length) return res.status(400).json({ error: 'No Plaid connections found' });
     res.json({ status: 'started' });
 
     const startDate = new Date(Date.now() - 730 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -271,15 +264,14 @@ module.exports = function(makeIO, notifyClients = () => {}) {
 
   // ── Remove connection ─────────────────────────────────────────────────
   router.delete('/connections/:itemId', async (req, res) => {
-    const io          = makeIO(req.user.id);
-    const connections = io.read('connections.json') || { plaid: [] };
-    const conn        = connections.plaid.find(c => c.item_id === req.params.itemId);
+    const io    = makeIO(req.user.id);
+    const items = await plaidItems.listItems(req.user.id);
+    const conn  = items.find(c => c.item_id === req.params.itemId);
     if (conn && plaidClient) {
       try { await plaidClient.itemRemove({ access_token: conn.access_token }); } catch(e) {}
     }
     const institutionName = conn?.institution_name;
-    connections.plaid = connections.plaid.filter(c => c.item_id !== req.params.itemId);
-    io.write('connections.json', connections);
+    await plaidItems.removeItem(req.user.id, req.params.itemId);
     // Clean up accounts and transactions for this institution
     if (institutionName) {
       const accounts = io.read('accounts.json') || [];
@@ -297,26 +289,19 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     console.log(`[Webhook] ${webhook_type} for item ${item_id}`);
     if (webhook_type !== 'TRANSACTIONS') return;
 
-    // Find which user owns this item_id
-    const usersDir = path.join(__dirname, '../data/users');
-    const userIds  = fs.existsSync(usersDir) ? fs.readdirSync(usersDir) : [];
-    for (const uid of userIds) {
-      const io    = makeIO(uid);
-      const conns = io.read('connections.json') || { plaid: [] };
-      const conn  = (conns.plaid || []).find(c => c.item_id === item_id);
-      if (!conn) continue;
-      syncItem(conn, io)
-        .then(r => {
-          console.log(`[Webhook] ${conn.institution_name} (user ${uid}): ${r.transactions} txs`);
-          const updated = io.read('connections.json') || { plaid: [] };
-          const idx = updated.plaid.findIndex(c => c.item_id === item_id);
-          if (idx >= 0) { updated.plaid[idx].lastSync = new Date().toISOString(); io.write('connections.json', updated); }
-          notifyClients();
-          try { verifyUser(uid, io); } catch (e) { console.error('[Verify] Error:', e.message); }
-        })
-        .catch(e => console.error(`[Webhook] Sync error:`, e.message));
-      break;
-    }
+    // Find which user owns this item_id (DB lookup — no filesystem scan)
+    const owner = await plaidItems.findOwner(item_id);
+    if (!owner) return;
+    const { userId: uid, item: conn } = owner;
+    const io = makeIO(uid);
+    syncItem(conn, io)
+      .then(async r => {
+        console.log(`[Webhook] ${conn.institution_name} (user ${uid}): ${r.transactions} txs`);
+        await plaidItems.touchSync(item_id);
+        notifyClients();
+        try { verifyUser(uid, io); } catch (e) { console.error('[Verify] Error:', e.message); }
+      })
+      .catch(e => console.error(`[Webhook] Sync error:`, e.message));
   });
 
   return { router, syncUser };
