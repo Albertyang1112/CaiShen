@@ -16,8 +16,8 @@
  */
 
 const express = require('express');
-const engine = require('./crypto-engine');
-const reports = require('./crypto-reports');
+const engine = require('./engine');
+const reports = require('./reports');
 
 const { TxKind, D } = engine;
 

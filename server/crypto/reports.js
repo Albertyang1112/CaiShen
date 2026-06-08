@@ -10,7 +10,7 @@
  * NOT tax advice — every summary carries a disclaimer for the user to confirm with a CPA.
  */
 
-const { utcParts, fmtQty } = require('./crypto-engine');
+const { utcParts, fmtQty } = require('./engine');
 
 // ── Formatting ───────────────────────────────────────────────────────
 // USD to 2dp, half-up away from zero. Blank for null/empty. The tiny epsilon counters

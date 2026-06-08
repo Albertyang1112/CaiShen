@@ -7,8 +7,8 @@
  * README yearly table and the $15,888 portfolio cost basis. Money is compared at cent precision.
  */
 
-const engine = require('../crypto-engine');
-const reports = require('../crypto-reports');
+const engine = require('../crypto/engine');
+const reports = require('../crypto/reports');
 
 const { TxKind, D, parseDt, isLongTerm, addYears, utcParts, LotPool, makeLot } = engine;
 
