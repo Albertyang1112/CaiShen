@@ -220,62 +220,11 @@ migrateAdminData();
 // ── Routes: Global data (no userId) ──────────────────────────────────
 app.get('/api/settings', (req, res) => res.json(readData('settings.json')));
 
-// ── Routes: User-scoped data ──────────────────────────────────────────
-app.get('/api/accounts',    (req, res) => res.json(readData('accounts.json', req.user?.id)));
-app.post('/api/accounts', (req, res) => {
-  const uid = req.user.id;
-  const accounts = readData('accounts.json', uid) || [];
-  const account = {
-    id:          `manual_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
-    name:        req.body.name        || 'Account',
-    institution: req.body.institution || req.body.name || 'Unknown',
-    type:        req.body.type        || 'depository',
-    subtype:     req.body.subtype     || 'checking',
-    balance:     Number(req.body.balance) || 0,
-    last4:       req.body.last4       || null,
-    source:      'manual',
-    lastUpdated: new Date().toISOString(),
-    createdAt:   new Date().toISOString(),
-  };
-  accounts.push(account);
-  writeData('accounts.json', accounts, uid);
-  res.json(account);
-});
-app.patch('/api/accounts/:id', (req, res) => {
-  const uid = req.user.id;
-  const accounts = readData('accounts.json', uid) || [];
-  const idx = accounts.findIndex(a => a.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  accounts[idx] = { ...accounts[idx], ...req.body, lastUpdated: new Date().toISOString() };
-  writeData('accounts.json', accounts, uid);
-  res.json(accounts[idx]);
-});
-app.delete('/api/accounts/:id', (req, res) => {
-  const uid = req.user.id;
-  const accounts = readData('accounts.json', uid) || [];
-  if (!accounts.find(a => a.id === req.params.id)) return res.status(404).json({ error: 'Not found' });
-  writeData('accounts.json', accounts.filter(a => a.id !== req.params.id), uid);
-  res.json({ success: true });
-});
-// Merge per-transaction user overrides (category / excluded / vendor / attachments)
-// onto the synced transactions. Overrides live in a separate store so a Plaid
-// re-sync (which replaces plaid txs) never wipes the user's edits.
-app.get('/api/transactions', (req, res) => {
-  const uid = req.user?.id;
-  const txs = readData('transactions.json', uid) || [];
-  const ov  = readData('tx_overrides.json', uid) || {};
-  res.json(txs.map(t => {
-    const o = ov[t.id];
-    if (!o) return t;
-    return {
-      ...t,
-      ...(o.category    !== undefined ? { category:    o.category }    : {}),
-      ...(o.excluded    !== undefined ? { excluded:    o.excluded }    : {}),
-      ...(o.vendor      !== undefined ? { vendor:      o.vendor }      : {}),
-      ...(o.attachments !== undefined ? { attachments: o.attachments } : {}),
-    };
-  }));
-});
+// ── Routes: Banking (accounts, transactions, overrides, categorization) ──
+// Extracted to banking/routes.js — see that file for the Banking page's API.
+app.use('/api', require('./banking/routes')({ readData, writeData }));
+
+// ── Routes: Properties (real estate) + tax-years read ─────────────────
 app.get('/api/properties',  (req, res) => res.json(readData('properties.json', req.user?.id)));
 app.get('/api/tax-years',   (req, res) => res.json(readData('tax_years.json', req.user?.id)));
 
@@ -300,101 +249,6 @@ app.delete('/api/properties/:id', (req, res) => {
   const uid = req.user.id;
   writeData('properties.json', (readData('properties.json', uid) || []).filter(p => p.id !== req.params.id), uid);
   res.json({ success: true });
-});
-
-// ── Routes: Transactions CRUD ─────────────────────────────────────────
-app.post('/api/transactions', (req, res) => {
-  const uid  = req.user.id;
-  const txs  = readData('transactions.json', uid) || [];
-  const newTx = { id: `manual_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, ...req.body, source: req.body.source || 'manual', createdAt: new Date().toISOString() };
-  txs.push(newTx);
-  writeData('transactions.json', txs, uid);
-  res.json(newTx);
-});
-app.patch('/api/transactions/:id', (req, res) => {
-  const uid = req.user.id;
-  const txs = readData('transactions.json', uid) || [];
-  const idx = txs.findIndex(t => t.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  txs[idx] = { ...txs[idx], ...req.body, updatedAt: new Date().toISOString() };
-  writeData('transactions.json', txs, uid);
-  res.json(txs[idx]);
-});
-app.delete('/api/transactions/:id', (req, res) => {
-  const uid = req.user.id;
-  const txs = readData('transactions.json', uid) || [];
-  if (!txs.find(t => t.id === req.params.id)) return res.status(404).json({ error: 'Not found' });
-  writeData('transactions.json', txs.filter(t => t.id !== req.params.id), uid);
-  res.json({ success: true });
-});
-
-// Per-transaction overrides (sync-safe; never wiped by Plaid re-sync).
-// Body may include: category, excluded, vendor, attachments (full array),
-// or addAttachment / removeAttachment (vault file id helpers).
-app.patch('/api/tx-overrides/:id', (req, res) => {
-  const uid = req.user.id;
-  const ov  = readData('tx_overrides.json', uid) || {};
-  const next = { ...(ov[req.params.id] || {}) };
-  const b = req.body || {};
-  if (b.category    !== undefined) next.category    = b.category;
-  if (b.excluded    !== undefined) next.excluded    = !!b.excluded;
-  if (b.vendor      !== undefined) next.vendor      = b.vendor;
-  if (b.attachments !== undefined) next.attachments = b.attachments;
-  if (b.addAttachment)    next.attachments = [...new Set([...(next.attachments || []), b.addAttachment])];
-  if (b.removeAttachment) next.attachments = (next.attachments || []).filter(x => x !== b.removeAttachment);
-  // Prune an override that no longer carries anything, to keep the store tidy.
-  if (next.category === undefined && !next.excluded && next.vendor === undefined && !(next.attachments && next.attachments.length)) {
-    delete ov[req.params.id];
-  } else {
-    ov[req.params.id] = next;
-  }
-  writeData('tx_overrides.json', ov, uid);
-  res.json({ id: req.params.id, override: ov[req.params.id] || null });
-});
-
-// ── Routes: Auto-categorization rules (description → Chart-of-Accounts) ─
-const { applyRules: applyCatRules, suggestKeyword: suggestCatKeyword } = require('./banking/categorize');
-app.get('/api/categorization-rules', (req, res) => {
-  res.json(readData('categorization_rules.json', req.user?.id) || []);
-});
-app.get('/api/categorization-rules/suggest', (req, res) => {
-  res.json({ keyword: suggestCatKeyword(req.query.desc || '') });
-});
-app.post('/api/categorization-rules', (req, res) => {
-  const uid = req.user.id;
-  const b = req.body || {};
-  if (!b.value || !b.coaId) return res.status(400).json({ error: 'value and coaId are required' });
-  const rules = readData('categorization_rules.json', uid) || [];
-  const rule = {
-    id: `rule_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    field: b.field || 'desc', op: b.op || 'contains',
-    value: b.value, coaId: b.coaId, enabled: b.enabled !== false,
-    createdAt: new Date().toISOString(),
-  };
-  rules.push(rule);
-  writeData('categorization_rules.json', rules, uid);
-  // Optionally back-fill existing uncategorized transactions right away.
-  let applied = 0;
-  if (b.applyNow) {
-    const txs = readData('transactions.json', uid) || [];
-    const r = applyCatRules(txs, [rule]);
-    if (r.count) { writeData('transactions.json', r.transactions, uid); applied = r.count; }
-  }
-  res.json({ rule, applied });
-});
-app.delete('/api/categorization-rules/:id', (req, res) => {
-  const uid = req.user.id;
-  const rules = readData('categorization_rules.json', uid) || [];
-  writeData('categorization_rules.json', rules.filter(r => r.id !== req.params.id), uid);
-  res.json({ success: true });
-});
-app.post('/api/categorization-rules/apply', (req, res) => {
-  const uid = req.user.id;
-  const txs   = readData('transactions.json', uid) || [];
-  const rules = readData('categorization_rules.json', uid) || [];
-  const r = applyCatRules(txs, rules, { overwrite: !!(req.body && req.body.overwrite) });
-  if (r.count) writeData('transactions.json', r.transactions, uid);
-  res.json({ count: r.count, byRule: r.byRule });
 });
 
 // ── Routes: Vault (per-user) ──────────────────────────────────────────
