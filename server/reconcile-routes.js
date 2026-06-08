@@ -40,25 +40,42 @@ module.exports = function makeReconcileRouter(makeIO) {
 
   // GET /txn-flags — lightweight map for inline transaction-row badges
   // Returns: { [plaid_txn_id]: 'matched' | 'conflict' | 'plaid_only' }
+  // • conflict  — amount/date matched a statement row but merchant names differ
+  // • matched   — fully verified against a statement row
+  // • plaid_only — in Plaid but never verified by any statement (untracked or unmatched)
   router.get('/txn-flags', async (req, res) => {
     try {
-      const r = await query(
+      const uid = req.user.id;
+
+      // 1. All match-table entries for this user
+      const matchRows = await query(
         `SELECT plaid_txn_id, status
            FROM statement_matches
           WHERE user_id = $1
-            AND plaid_txn_id IS NOT NULL
-          ORDER BY period_year DESC`,
-        [req.user.id]
+            AND plaid_txn_id IS NOT NULL`,
+        [uid]
       );
-      // One entry per Plaid txn — prefer conflict > plaid_only > matched if dupes
-      const priority = { conflict: 3, plaid_only: 2, matched: 1, stmt_only: 0 };
+
+      // Priority: conflict beats matched beats plaid_only
+      // (if ANY period matched it, show green; only amber when truly unmatched everywhere)
+      const priority = { conflict: 3, matched: 2, plaid_only: 1, stmt_only: 0 };
       const map = {};
-      for (const row of r.rows) {
+      for (const row of matchRows.rows) {
         const cur = map[row.plaid_txn_id];
         if (!cur || (priority[row.status] || 0) > (priority[cur] || 0)) {
           map[row.plaid_txn_id] = row.status;
         }
       }
+
+      // 2. Any Plaid transaction with NO entry at all → amber (unverified)
+      const allPlaid = await query(
+        `SELECT id FROM source_transactions WHERE user_id = $1 AND source = 'plaid'`,
+        [uid]
+      );
+      for (const row of allPlaid.rows) {
+        if (!map[row.id]) map[row.id] = 'plaid_only';
+      }
+
       res.json(map);
     } catch (e) {
       res.status(500).json({ error: e.message });

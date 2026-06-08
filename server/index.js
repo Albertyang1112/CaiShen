@@ -1,4 +1,45 @@
+// ── Silence dotenvx injection banner ─────────────────────────────────────
+// Filter stdout before dotenv loads so the "◇ injected env" line never prints
+const _origStdoutWrite = process.stdout.write.bind(process.stdout);
+process.stdout.write = function(data, ...rest) {
+  const s = typeof data === 'string' ? data : data.toString();
+  if (s.includes('injected env') || s.includes('dotenvx.com') || s.includes('tip:')) return true;
+  return _origStdoutWrite(data, ...rest);
+};
+process.env.DOTENV_QUIET = 'true';
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
+// Restore stdout (let the tee stream take over below)
+process.stdout.write = _origStdoutWrite;
+
+// ── Filter raw stderr to suppress the pg SSL-mode deprecation block ───────
+const _origStderrWrite = process.stderr.write.bind(process.stderr);
+let   _skipUntilBlank  = false;
+process.stderr.write = function(data, ...rest) {
+  const s = typeof data === 'string' ? data : data.toString();
+  if (s.includes('SSL modes') || s.includes('pg-connection-string') || s.includes('uselibpqcompat')) {
+    _skipUntilBlank = true; return true;
+  }
+  if (_skipUntilBlank) {
+    if (s.trim() === '') { _skipUntilBlank = false; } return true;
+  }
+  return _origStderrWrite(data, ...rest);
+};
+
+// ── Tee console output to server/logs/server.log ─────────────────────────
+const _path      = require('path');
+const _fs        = require('fs');
+const _logDir    = _path.join(__dirname, 'logs');
+_fs.mkdirSync(_logDir, { recursive: true });
+const _logStream = _fs.createWriteStream(_path.join(_logDir, 'server.log'), { flags: 'a' });
+const _ts        = () => new Date().toISOString().slice(0,19).replace('T',' ');
+const _write     = (...args) => _logStream.write(`[${_ts()}] ${args.join(' ')}\n`);
+const _origLog   = console.log.bind(console);
+const _origWarn  = console.warn.bind(console);
+const _origErr   = console.error.bind(console);
+console.log   = (...a) => { _origLog(...a);  _write(...a); };
+console.warn  = (...a) => { _origWarn(...a); _write('[WARN]', ...a); };
+console.error = (...a) => { _origErr(...a);  _write('[ERR]',  ...a); };
+
 const express = require('express');
 const cors    = require('cors');
 const path    = require('path');
