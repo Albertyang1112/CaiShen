@@ -26,7 +26,7 @@ const { classifyByCoa }   = require('./coa-map');
 const { buildTaxInput }   = require('./aggregator');
 const { calculate }       = require('../tax-engine');
 const { TAX_CATEGORIES }  = require('../tax-history');
-const { query }           = require('../db');
+const { query }           = require('../core/db');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

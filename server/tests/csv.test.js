@@ -1,4 +1,4 @@
-const csv = require('../csv');
+const csv = require('../core/csv');
 
 describe('csv round-trip', () => {
   test('handles commas, quotes, newlines, empties, and signed numbers', () => {

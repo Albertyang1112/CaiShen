@@ -197,11 +197,11 @@ migrateAdminData();
 // ── Async startup (DB init → auth → routes → listen) ─────────────────
 (async () => {
   // 1. Connect to database and create schema
-  const { initSchema } = require('./db');
+  const { initSchema } = require('./core/db');
   await initSchema();
 
   // 2. Auth (now backed by DB, not users.json)
-  const authMod = require('./auth');
+  const authMod = require('./core/auth');
   const { router: authRouter, verifyToken, requireAdmin } = authMod();
   await authMod.ensureDefaultAdmin(readData); // migrates users.json → DB on first run
   app.use('/api/auth', authRouter);
@@ -353,7 +353,7 @@ app.patch('/api/tx-overrides/:id', (req, res) => {
 });
 
 // ── Routes: Auto-categorization rules (description → Chart-of-Accounts) ─
-const { applyRules: applyCatRules, suggestKeyword: suggestCatKeyword } = require('./categorize');
+const { applyRules: applyCatRules, suggestKeyword: suggestCatKeyword } = require('./banking/categorize');
 app.get('/api/categorization-rules', (req, res) => {
   res.json(readData('categorization_rules.json', req.user?.id) || []);
 });
@@ -413,8 +413,8 @@ function localhostOnly(req, res, next) {
 // Guarded require: bank-scraper.js is an optional local-only module that may
 // not be present in every checkout. Skip-mount it when absent so the server
 // still boots; behavior is identical to before when the real file is present.
-if (fs.existsSync(path.join(__dirname, 'bank-scraper.js'))) {
-  app.use('/api/scraper', localhostOnly, require('./bank-scraper')(makeIO, VAULT_DIR));
+if (fs.existsSync(path.join(__dirname, 'scrapers', 'bank-scraper.js'))) {
+  app.use('/api/scraper', localhostOnly, require('./scrapers/bank-scraper')(makeIO, VAULT_DIR));
 } else {
   console.warn('[scraper] server/bank-scraper.js not found — /api/scraper disabled for this run.');
 }
@@ -422,7 +422,7 @@ if (fs.existsSync(path.join(__dirname, 'bank-scraper.js'))) {
 // ── Routes: Imported Python scrapers bridge (localhost only) ──────────
 // Guarded so the server still boots if the (gitignored) bridge file is absent.
 try {
-  app.use('/api/scrapers', localhostOnly, require('./scraper-bridge')(makeIO, VAULT_DIR));
+  app.use('/api/scrapers', localhostOnly, require('./scrapers/scraper-bridge')(makeIO, VAULT_DIR));
   console.log('✓ Scraper bridge loaded (chase, boa, amazon, mortgage)');
 } catch (e) {
   console.log('⚠ Scraper bridge not loaded:', e.message);
@@ -443,21 +443,21 @@ function notifyClients() {
 }
 
 // ── Routes: Plaid ─────────────────────────────────────────────────────
-const { router: plaidRouter, syncUser: plaidSyncUser } = require('./plaid')(makeIO, notifyClients);
+const { router: plaidRouter, syncUser: plaidSyncUser } = require('./banking/plaid')(makeIO, notifyClients);
 app.use('/api/plaid', plaidRouter);
 
 // ── Routes: Statements ───────────────────────────────────────────────
-const { router: stmtRouter, generateForUser } = require('./statements')(makeIO, VAULT_DIR);
+const { router: stmtRouter, generateForUser } = require('./banking/statements')(makeIO, VAULT_DIR);
 app.use('/api/statements', stmtRouter);
 
 // ── Routes: Reconciliation (Phase 3) ─────────────────────────────────
-app.use('/api/reconcile', require('./reconcile-routes')(makeIO));
+app.use('/api/reconcile', require('./banking/reconcile-routes')(makeIO));
 
 // ── Routes: Receipts / OCR (Phase 4) ─────────────────────────────────
-app.use('/api/receipts', require('./receipt-routes')(makeIO, DATA_DIR));
+app.use('/api/receipts', require('./banking/receipt-routes')(makeIO, DATA_DIR));
 
 // ── Routes: QuickBooks ────────────────────────────────────────────────
-const { authRouter: qbAuth, apiRouter: qbApi } = require('./quickbooks')(makeIO);
+const { authRouter: qbAuth, apiRouter: qbApi } = require('./accounting/quickbooks')(makeIO);
 app.use('/auth/quickbooks', qbAuth);
 app.use('/api/quickbooks', qbApi);
 
@@ -470,7 +470,7 @@ const { router: accountingRouter } = require('./accounting')(makeIO);
 app.use('/api/accounting', accountingRouter);
 
 // ── Routes: Memory ────────────────────────────────────────────────────
-const { router: memoryRouter } = require('./memory')(makeIO);
+const { router: memoryRouter } = require('./core/memory')(makeIO);
 app.use('/api/memory', memoryRouter);
 
 // ── Routes: Tax Center ────────────────────────────────────────────────
@@ -930,7 +930,7 @@ app.get('/{*path}', (req, res) => {
 });
 
   // ── Auto-sync scheduler (syncs all users with Plaid connections) ────
-  const { query: dbQuery } = require('./db');
+  const { query: dbQuery } = require('./core/db');
   const intervalMinutes = parseInt(process.env.AUTO_SYNC_INTERVAL) || 5;
   cron.schedule(`*/${intervalMinutes} * * * *`, async () => {
     const ts = new Date().toLocaleTimeString();
@@ -961,7 +961,7 @@ app.get('/{*path}', (req, res) => {
     try { require('open')(`http://localhost:${PORT}`); } catch(e) {}
 
     // Run startup verification for all existing users
-    const { verifyUser } = require('./verify');
+    const { verifyUser } = require('./core/verify');
     try {
       const users = fs.existsSync(USERS_DIR) ? fs.readdirSync(USERS_DIR) : [];
       for (const uid of users) {

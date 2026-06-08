@@ -16,7 +16,7 @@ const crypto = require('crypto');
 const { chunkText, estimateTokens } = require('./chunker');
 const { embedBatch, EMBED_DIM }     = require('./embeddings');
 const { ensureCollection, upsertPoints, deleteBySource } = require('./vectorStore');
-const { query } = require('../db');
+const { query } = require('../core/db');
 
 /**
  * @typedef {object} TaxDocInput

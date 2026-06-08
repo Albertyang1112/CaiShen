@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const { parsePDFTransactions } = require('./pdf-parser');
+const { parsePDFTransactions } = require('../core/pdf-parser');
 const fs = require('fs');
 
 const [, , origPath, newPath, year, month] = process.argv;

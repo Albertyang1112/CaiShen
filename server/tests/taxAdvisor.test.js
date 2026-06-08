@@ -35,7 +35,7 @@ jest.mock('../rag/embeddings',  () => ({ isAvailable: jest.fn(async () => true),
 jest.mock('../rag/vectorStore', () => ({ isAvailable: jest.fn(async () => true), search: jest.fn(), stats: jest.fn(async () => ({ pointsCount: 0 })), COLLECTION: 'tax_sources', QDRANT_URL: 'http://localhost:6333' }));
 
 // DB — no-op
-jest.mock('../db', () => ({ query: jest.fn(async () => ({ rows: [] })), initSchema: jest.fn() }));
+jest.mock('../core/db', () => ({ query: jest.fn(async () => ({ rows: [] })), initSchema: jest.fn() }));
 
 // ── Imports ─────────────────────────────────────────────────────────────────────
 const guardrails = require('../tax-advisor/guardrails');

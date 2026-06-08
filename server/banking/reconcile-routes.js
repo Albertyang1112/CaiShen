@@ -14,7 +14,7 @@
  */
 
 const express = require('express');
-const { query } = require('./db');
+const { query } = require('../core/db');
 const { reconcileUser, getStatus, getFlagged } = require('./reconciler');
 
 module.exports = function makeReconcileRouter(makeIO) {

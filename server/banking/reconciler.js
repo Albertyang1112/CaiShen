@@ -20,7 +20,7 @@
  */
 
 const crypto = require('crypto');
-const { parsePDFTransactions } = require('./pdf-parser');
+const { parsePDFTransactions } = require('../core/pdf-parser');
 
 // ── Text normalisation for name similarity ────────────────────────────────────
 const norm = s => String(s || '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();

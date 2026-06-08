@@ -1,4 +1,4 @@
-const { ruleMatches, applyRules, suggestKeyword } = require('../categorize');
+const { ruleMatches, applyRules, suggestKeyword } = require('../banking/categorize');
 
 describe('ruleMatches', () => {
   const tx = { desc: 'SHELL OIL 12345 LA', vendor: 'Shell', plaidCategory: 'TRANSPORTATION' };

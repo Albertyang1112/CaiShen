@@ -2,9 +2,9 @@ const { PlaidApi, PlaidEnvironments, Configuration } = require('plaid');
 const express = require('express');
 const path    = require('path');
 const fs      = require('fs');
-const csv     = require('./csv');
+const csv     = require('../core/csv');
 const { applyRules } = require('./categorize');
-const { verifyUser } = require('./verify');
+const { verifyUser } = require('../core/verify');
 
 const PLAID_CAT_MAP = {
   FOOD_AND_DRINK:           'Dining',
@@ -183,7 +183,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     try { const _n = await require('./notifier').notifyNew(io, process.env.DISCORD_WEBHOOK_URL); if (_n) console.log(`[notify] user ${userId}: ${_n} Discord alert(s) sent`); } catch (e) { console.error('[notify] error', e.message); }
     // Auto-reconcile: re-match Plaid rows against any previously uploaded statement data
     try {
-      const { query } = require('./db');
+      const { query } = require('../core/db');
       const cnt = await query(`SELECT COUNT(*)::int AS c FROM source_transactions WHERE user_id=$1 AND source='statement'`, [userId]);
       if (cnt.rows[0].c > 0) {
         const r = await require('./reconciler').reconcileUser(query, userId, io);

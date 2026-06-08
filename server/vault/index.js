@@ -349,7 +349,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
   //   consolidate — skip organizing, only backfill last4 and merge duplicate folders
   router.post('/auto-organize', async (req, res) => {
     try {
-      const { extractStatementMeta, guessAccountTypeSubtype } = require('./pdf-parser');
+      const { extractStatementMeta, guessAccountTypeSubtype } = require('../core/pdf-parser');
       const userId   = req.user.id;
       const io       = makeIO(userId);
       const vaultDir = getUserVaultDir(userId);
@@ -926,7 +926,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
   // in the file's tags so the vault list can show them without a manual click.
   router.post('/extract-stats', async (req, res) => {
     try {
-      const { parsePDFTransactions } = require('./pdf-parser');
+      const { parsePDFTransactions } = require('../core/pdf-parser');
       const userId   = req.user.id;
       const vaultDir = getUserVaultDir(userId);
       let   meta     = readMeta(userId);
@@ -1037,7 +1037,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
 
       // ── Text similarity check (opt-in, requires fileIds) ─────────────────
       if (includeTextSimilarity && targetIds) {
-        const { extractRawText } = require('./pdf-parser');
+        const { extractRawText } = require('../core/pdf-parser');
         const targets    = allTagged.filter(f => targetIds.has(f.id));
         const textCache  = new Map();
 
@@ -1094,7 +1094,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
   // auto-organize vault file → tag file → return everything
   router.post('/parse-statement-local/:id', async (req, res) => {
     try {
-      const { parsePDFTransactions, extractStatementMeta, guessAccountTypeSubtype } = require('./pdf-parser');
+      const { parsePDFTransactions, extractStatementMeta, guessAccountTypeSubtype } = require('../core/pdf-parser');
       const userId   = req.user.id;
       const io       = makeIO(userId);
       const vaultDir = getUserVaultDir(userId);
@@ -1270,7 +1270,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
   // On repeat calls the cached result is returned without re-calling the API.
   router.post('/parse-tax-form/:id', async (req, res) => {
     try {
-      const { extractTaxFormData, detectFormTypeFromFilename } = require('./tax-form-parser');
+      const { extractTaxFormData, detectFormTypeFromFilename } = require('../tax-form-parser');
       const userId   = req.user.id;
       const vaultDir = getUserVaultDir(userId);
       let   meta     = readMeta(userId);

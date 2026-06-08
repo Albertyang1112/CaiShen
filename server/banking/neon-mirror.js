@@ -2,7 +2,7 @@
 // source_transactions audit table (Phase 0). Idempotent upsert by id, so
 // re-syncs never duplicate. Best-effort: callers wrap in try/catch so a DB
 // hiccup never breaks a sync.
-const { query } = require('./db');
+const { query } = require('../core/db');
 
 async function mirrorPlaid(userId, txs) {
   const rows = (txs || []).filter(t => t.source === 'plaid');

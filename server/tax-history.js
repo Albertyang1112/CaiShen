@@ -12,7 +12,7 @@
 
 const express = require('express');
 const crypto  = require('crypto');
-const { query } = require('./db');
+const { query } = require('./core/db');
 
 // ─── Tax category definitions ─────────────────────────────────────────────────
 const TAX_CATEGORIES = {

@@ -4,11 +4,11 @@
  *
  * Database is mocked via jest.mock() with a self-contained implementation.
  * All helpers and state live inside the factory (Jest rule: no outer scope refs).
- * Tests control seeded data via require('../db').__state.rows[table] = [...].
+ * Tests control seeded data via require('../core/db').__state.rows[table] = [...].
  */
 
 // ── DB mock: must be entirely self-contained ──────────────────────────────────
-jest.mock('../db', () => {
+jest.mock('../core/db', () => {
   // Shared in-memory state — exposed as __state for test access
   const state = { rows: {}, calls: [] };
 
@@ -80,7 +80,7 @@ const {
   TAX_CATEGORIES,
 } = require('../tax-history');
 
-const db = require('../db');  // the mocked version
+const db = require('../core/db');  // the mocked version
 
 // ── App builder ───────────────────────────────────────────────────────────────
 

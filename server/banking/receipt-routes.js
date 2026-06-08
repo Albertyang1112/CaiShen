@@ -14,7 +14,7 @@ const multer   = require('multer');
 const path     = require('path');
 const fs       = require('fs');
 const crypto   = require('crypto');
-const { query } = require('./db');
+const { query } = require('../core/db');
 const { ocrReceipt, compareToTxn } = require('./receipt-ocr');
 
 const SUPPORTED = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];

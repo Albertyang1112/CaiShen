@@ -43,7 +43,7 @@ function buildApp(overrideHostname) {
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caishen-scraper-test-'));
-  const scraperRouter = require('../bank-scraper')(makeMockIO(), tmpDir);
+  const scraperRouter = require('../scrapers/bank-scraper')(makeMockIO(), tmpDir);
 
   app.use('/api/scraper', localhostOnly, scraperRouter);
 

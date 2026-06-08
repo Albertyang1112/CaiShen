@@ -1,4 +1,4 @@
-const { stageAndImport, PLAID_CSV } = require('../plaid');
+const { stageAndImport, PLAID_CSV } = require('../banking/plaid');
 
 // In-memory stand-in for the per-user raw-text I/O (makeIO's readText/writeText).
 function fakeTextIO() {

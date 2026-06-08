@@ -24,8 +24,8 @@ const {
   extractStatementMeta,
   guessAccountTypeSubtype,
   extractRawText,
-} = require('../pdf-parser');
-const { buildStatementPDF } = require('../statements');
+} = require('../core/pdf-parser');
+const { buildStatementPDF } = require('../banking/statements');
 
 // ── Known error patterns from pdf2json on pdfkit PDFs ─────────────────────────
 const isKnownParserError = (e) =>

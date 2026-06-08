@@ -5,7 +5,7 @@
  */
 
 // DB mock (self-contained) for the orchestration tests
-jest.mock('../db', () => {
+jest.mock('../core/db', () => {
   const state = { rows: {}, calls: [] };
   const query = jest.fn(async (sql, params = []) => {
     state.calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
@@ -29,7 +29,7 @@ const { classifyTransaction, classifyBatch } = require('../tax-normalize/rules')
 const { buildTaxInput } = require('../tax-normalize/aggregator');
 const norm = require('../tax-normalize');
 const { calculate } = require('../tax-engine');
-const db = require('../db');
+const db = require('../core/db');
 
 // ════════════════════════════════════════════════════════════════════════════════
 // RULES

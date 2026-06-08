@@ -30,7 +30,7 @@ const { buildTaxInputForYear, buildDataSummary } = require('../tax-normalize');
 const { retrieve, formatForPrompt } = require('../rag/retriever');
 const ragEmbeddings  = require('../rag/embeddings');
 const ragVectorStore = require('../rag/vectorStore');
-const { query } = require('../db');
+const { query } = require('../core/db');
 
 const MAX_TOOL_ROUNDS = 3;
 
