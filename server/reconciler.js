@@ -100,6 +100,58 @@ function parseCSV(text) {
   return rows;
 }
 
+// ── pdftotext fallback — for PDFs with XRef issues that pdf2json can't handle ─
+async function parsePDFWithPdftotext(buffer, year) {
+  const { execFile } = require('child_process');
+  const os   = require('os');
+  const fs2  = require('fs');
+  const tmp  = require('path').join(os.tmpdir(), `caishen_stmt_${Date.now()}.pdf`);
+  fs2.writeFileSync(tmp, buffer);
+  try {
+    const text = await new Promise((resolve, reject) => {
+      execFile('pdftotext', ['-layout', tmp, '-'], { timeout: 20000, maxBuffer: 10 * 1024 * 1024 },
+        (err, stdout) => { err ? reject(err) : resolve(stdout); });
+    });
+    return parsePdftotextLines(text, year);
+  } finally {
+    try { fs2.unlinkSync(tmp); } catch {}
+  }
+}
+
+function parsePdftotextLines(text, year) {
+  const rows = [];
+  // Both CaiShen-generated and real Chase PDFs use MM/DD/YY or MM/DD/YYYY at line start.
+  // Format: DATE  DESCRIPTION   [CATEGORY]   AMOUNT   [TYPE]
+  // Columns are separated by 2+ spaces in -layout mode.
+  const DATE_RE = /^(\d{1,2}\/\d{1,2}\/\d{2,4})\s{2,}/;
+
+  for (const line of text.split('\n')) {
+    const dm = line.match(DATE_RE);
+    if (!dm) continue;
+
+    // Parse date — supports MM/DD/YY and MM/DD/YYYY
+    const [rawM, rawD, rawY] = dm[1].split('/');
+    const fullYear = rawY.length === 2 ? '20' + rawY : rawY;
+    const dateStr  = `${fullYear}-${rawM.padStart(2,'0')}-${rawD.padStart(2,'0')}`;
+
+    // Find the first dollar amount in the rest of the line
+    const rest     = line.slice(dm[0].length);
+    const amtMatch = rest.match(/(-?\$[\d,]+\.?\d*)/);
+    if (!amtMatch) continue;
+    const amtRaw   = amtMatch[1].replace(/[$,]/g, '');
+    const amount   = Math.abs(parseFloat(amtRaw));  // always positive; reconciler uses Math.abs anyway
+    if (isNaN(amount) || amount === 0) continue;
+
+    // Description = text right after the date, up to first 2+-space gap (where category starts)
+    const descMatch = rest.match(/^(.+?)(?:\s{2,}|\s*$)/);
+    const desc      = (descMatch ? descMatch[1] : rest).trim();
+    if (!desc) continue;
+
+    rows.push({ date: dateStr, desc, amount });
+  }
+  return rows;
+}
+
 // ── Main parse dispatcher ─────────────────────────────────────────────────────
 async function parseStatement(buffer, filename) {
   const ext = (filename || '').toLowerCase().split('.').pop();
@@ -109,11 +161,28 @@ async function parseStatement(buffer, filename) {
   const yearMatch = (filename || '').match(/20\d{2}/);
   const year = yearMatch ? yearMatch[0] : String(new Date().getFullYear());
   try {
-    return await parsePDFTransactions(buffer, { year });
+    const rows = await parsePDFTransactions(buffer, { year });
+    if (rows.length > 0) return rows;
+    throw new Error('pdf2json returned 0 rows');
   } catch (e) {
-    console.error('[reconciler] PDF parse failed:', e.message);
-    return [];
+    // Fallback: use pdftotext (handles pdfkit XRef variants pdf2json can't parse)
+    console.warn('[reconciler] pdf2json failed, trying pdftotext fallback:', e.message || String(e));
+    try {
+      return await parsePDFWithPdftotext(buffer, year);
+    } catch (e2) {
+      console.error('[reconciler] pdftotext fallback also failed:', e2.message);
+      return [];
+    }
   }
+}
+
+// ── Strip PDF column-noise from Chase/BofA statement descriptions ─────────────
+// Chase PDFs concatenate merchant + category + type into one string, e.g.:
+//   "Dave's Hot Chicken Dining Debit"  →  "Dave's Hot Chicken"
+//   "REMOTE ONLINE DEPOSIT # 1 Income Credit"  →  "REMOTE ONLINE DEPOSIT # 1"
+const STMT_SUFFIX_RE = /\s+(Dining|Shopping|Entertainment|Health|Travel|Other|Income|Transfer|ATM)\s+(Debit|Credit|Withdrawal|Deposit)$/i;
+function cleanStmtDesc(desc) {
+  return (desc || '').replace(STMT_SUFFIX_RE, '').trim();
 }
 
 // ── Mirror statement rows into source_transactions ────────────────────────────
@@ -121,9 +190,10 @@ async function mirrorStatement(query, userId, rows, sourceFile) {
   const year = parseInt((sourceFile || '').match(/20\d{2}/)?.[0] || new Date().getFullYear());
   let inserted = 0;
   for (const row of rows) {
+    const cleanDesc = cleanStmtDesc(row.desc);
     // Deterministic ID so re-uploading the same file is idempotent
     const id = 'stmt_' + crypto.createHash('sha1')
-      .update(`${userId}|${sourceFile}|${row.date}|${row.amount}|${row.desc}`)
+      .update(`${userId}|${sourceFile}|${row.date}|${row.amount}|${cleanDesc}`)
       .digest('hex').slice(0, 20);
 
     await query(
@@ -131,7 +201,7 @@ async function mirrorStatement(query, userId, rows, sourceFile) {
          (id, user_id, source, source_file, period_year, txn_date, description, amount, raw)
        VALUES ($1,$2,'statement',$3,$4,$5,$6,$7,$8)
        ON CONFLICT (id) DO NOTHING`,
-      [id, userId, sourceFile, year, row.date, row.desc, row.amount, JSON.stringify(row)]
+      [id, userId, sourceFile, year, row.date, cleanDesc, row.amount, JSON.stringify(row)]
     );
     inserted++;
   }
