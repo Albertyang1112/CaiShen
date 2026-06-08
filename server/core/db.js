@@ -198,6 +198,7 @@ async function initSchema() {
 
   console.log('✓ Database connected and schema ready');
   await require('./db-banking-schema').init(query);
+  await require('./db-accounts-schema').init(query);
 }
 
 module.exports = { query, initSchema };
