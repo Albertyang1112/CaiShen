@@ -5,7 +5,7 @@
  */
 
 // ── Mock embeddings + vectorStore BEFORE requiring retriever ──────────────────
-jest.mock('../rag/embeddings', () => ({
+jest.mock('../tax/rag/embeddings', () => ({
   embed: jest.fn(async (text) => {
     // Deterministic fake vector based on text length (3 dims, enough for tests)
     const n = text.length;
@@ -18,7 +18,7 @@ jest.mock('../rag/embeddings', () => ({
   OLLAMA_URL: 'http://localhost:11434',
 }));
 
-jest.mock('../rag/vectorStore', () => ({
+jest.mock('../tax/rag/vectorStore', () => ({
   search: jest.fn(async () => []),
   isAvailable: jest.fn(async () => true),
   stats: jest.fn(async () => ({ exists: true, pointsCount: 0 })),
@@ -26,9 +26,9 @@ jest.mock('../rag/vectorStore', () => ({
   QDRANT_URL: 'http://localhost:6333',
 }));
 
-const { chunkText, estimateTokens } = require('../rag/chunker');
-const { buildFilter, retrieve, formatForPrompt } = require('../rag/retriever');
-const vectorStore = require('../rag/vectorStore');
+const { chunkText, estimateTokens } = require('../tax/rag/chunker');
+const { buildFilter, retrieve, formatForPrompt } = require('../tax/rag/retriever');
+const vectorStore = require('../tax/rag/vectorStore');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Chunker — pure logic
@@ -203,7 +203,7 @@ describe('formatForPrompt', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('seed corpus', () => {
-  const { SEED_DOCUMENTS } = require('../rag/seed-data');
+  const { SEED_DOCUMENTS } = require('../tax/rag/seed-data');
 
   test('every document has required fields', () => {
     for (const d of SEED_DOCUMENTS) {

@@ -25,12 +25,12 @@ const crypto  = require('crypto');
 const { getProvider, configuredProviders } = require('./providers');
 const { buildSystemPrompt, buildCalculationBlock } = require('./prompt');
 const guardrails = require('./guardrails');
-const { calculate } = require('../tax-engine');
-const { buildTaxInputForYear, buildDataSummary } = require('../tax-normalize');
+const { calculate } = require('../engine');
+const { buildTaxInputForYear, buildDataSummary } = require('../normalize');
 const { retrieve, formatForPrompt } = require('../rag/retriever');
 const ragEmbeddings  = require('../rag/embeddings');
 const ragVectorStore = require('../rag/vectorStore');
-const { query } = require('../core/db');
+const { query } = require('../../core/db');
 
 const MAX_TOOL_ROUNDS = 3;
 

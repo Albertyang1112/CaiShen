@@ -1270,7 +1270,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
   // On repeat calls the cached result is returned without re-calling the API.
   router.post('/parse-tax-form/:id', async (req, res) => {
     try {
-      const { extractTaxFormData, detectFormTypeFromFilename } = require('../tax-form-parser');
+      const { extractTaxFormData, detectFormTypeFromFilename } = require('../tax/form-parser');
       const userId   = req.user.id;
       const vaultDir = getUserVaultDir(userId);
       let   meta     = readMeta(userId);

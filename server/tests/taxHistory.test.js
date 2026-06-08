@@ -78,7 +78,7 @@ const {
   makeTransactionsRouter,
   makeAISessionsRouter,
   TAX_CATEGORIES,
-} = require('../tax-history');
+} = require('../tax/history');
 
 const db = require('../core/db');  // the mocked version
 

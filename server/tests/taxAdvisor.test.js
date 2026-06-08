@@ -10,8 +10,8 @@
 // ── Mocks (must precede requires) ───────────────────────────────────────────────
 
 // LLM provider — scriptable per test via providers.__complete
-jest.mock('../tax-advisor/providers', () => {
-  const actual = jest.requireActual('../tax-advisor/providers');
+jest.mock('../tax/advisor/providers', () => {
+  const actual = jest.requireActual('../tax/advisor/providers');
   const complete = jest.fn();
   return {
     ...actual, // keep real toOpenAITools / toAnthropicTools
@@ -25,25 +25,25 @@ jest.mock('../tax-advisor/providers', () => {
 });
 
 // RAG retriever — mock retrieve(), keep formatForPrompt/buildFilter real
-jest.mock('../rag/retriever', () => {
-  const actual = jest.requireActual('../rag/retriever');
+jest.mock('../tax/rag/retriever', () => {
+  const actual = jest.requireActual('../tax/rag/retriever');
   return { ...actual, retrieve: jest.fn(async () => []) };
 });
 
 // RAG infra (only used by /status) — stub
-jest.mock('../rag/embeddings',  () => ({ isAvailable: jest.fn(async () => true),  embed: jest.fn(), EMBED_MODEL: 'nomic-embed-text', OLLAMA_URL: 'http://localhost:11434' }));
-jest.mock('../rag/vectorStore', () => ({ isAvailable: jest.fn(async () => true), search: jest.fn(), stats: jest.fn(async () => ({ pointsCount: 0 })), COLLECTION: 'tax_sources', QDRANT_URL: 'http://localhost:6333' }));
+jest.mock('../tax/rag/embeddings',  () => ({ isAvailable: jest.fn(async () => true),  embed: jest.fn(), EMBED_MODEL: 'nomic-embed-text', OLLAMA_URL: 'http://localhost:11434' }));
+jest.mock('../tax/rag/vectorStore', () => ({ isAvailable: jest.fn(async () => true), search: jest.fn(), stats: jest.fn(async () => ({ pointsCount: 0 })), COLLECTION: 'tax_sources', QDRANT_URL: 'http://localhost:6333' }));
 
 // DB — no-op
 jest.mock('../core/db', () => ({ query: jest.fn(async () => ({ rows: [] })), initSchema: jest.fn() }));
 
 // ── Imports ─────────────────────────────────────────────────────────────────────
-const guardrails = require('../tax-advisor/guardrails');
-const { buildSystemPrompt, buildCalculationBlock, CORE_RULES } = require('../tax-advisor/prompt');
-const { toOpenAITools, toAnthropicTools } = require('../tax-advisor/providers');
-const { runAdvisorTurn } = require('../tax-advisor');
-const providers = require('../tax-advisor/providers');
-const retriever = require('../rag/retriever');
+const guardrails = require('../tax/advisor/guardrails');
+const { buildSystemPrompt, buildCalculationBlock, CORE_RULES } = require('../tax/advisor/prompt');
+const { toOpenAITools, toAnthropicTools } = require('../tax/advisor/providers');
+const { runAdvisorTurn } = require('../tax/advisor');
+const providers = require('../tax/advisor/providers');
+const retriever = require('../tax/rag/retriever');
 
 const mockComplete = providers.__complete;
 

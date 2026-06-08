@@ -24,9 +24,9 @@ const crypto  = require('crypto');
 const { classifyBatch }   = require('./rules');
 const { classifyByCoa }   = require('./coa-map');
 const { buildTaxInput }   = require('./aggregator');
-const { calculate }       = require('../tax-engine');
-const { TAX_CATEGORIES }  = require('../tax-history');
-const { query }           = require('../core/db');
+const { calculate }       = require('../engine');
+const { TAX_CATEGORIES }  = require('../history');
+const { query }           = require('../../core/db');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -298,7 +298,7 @@ function makeRouter(makeIO) {
       const coa          = io.read('chart_of_accounts.json') || [];
       let provider = null;
       if (useAI) {
-        try { provider = require('../tax-advisor/providers').getProvider(providerName); }
+        try { provider = require('../advisor/providers').getProvider(providerName); }
         catch (_) { /* no provider configured — leftovers stay needs_review */ }
       }
       const summary = await normalizeYear({ userId: req.user.id, year, transactions, coa, useAI, provider });

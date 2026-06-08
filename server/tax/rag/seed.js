@@ -20,7 +20,7 @@ const { SEED_DOCUMENTS } = require('./seed-data');
 const { ingestDocument } = require('./ingest');
 const embeddings  = require('./embeddings');
 const vectorStore = require('./vectorStore');
-const { initSchema } = require('../core/db');
+const { initSchema } = require('../../core/db');
 
 async function main() {
   console.log('CaiShen — tax-law RAG seed\n');

@@ -25,10 +25,10 @@ jest.mock('../core/db', () => {
   return { query, initSchema: jest.fn(), __state: state };
 });
 
-const { classifyTransaction, classifyBatch } = require('../tax-normalize/rules');
-const { buildTaxInput } = require('../tax-normalize/aggregator');
-const norm = require('../tax-normalize');
-const { calculate } = require('../tax-engine');
+const { classifyTransaction, classifyBatch } = require('../tax/normalize/rules');
+const { buildTaxInput } = require('../tax/normalize/aggregator');
+const norm = require('../tax/normalize');
+const { calculate } = require('../tax/engine');
 const db = require('../core/db');
 
 // ════════════════════════════════════════════════════════════════════════════════

@@ -9,7 +9,7 @@
  *         IRS Publication 334 (Self-Employment)
  */
 
-const { calculate } = require('../tax-engine/calculator');
+const { calculate } = require('../tax/engine/calculator');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

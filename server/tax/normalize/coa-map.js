@@ -11,7 +11,7 @@
  * Returns a rules-engine-compatible classification, or null when the account
  * doesn't imply a tax treatment (so the description rules get a chance instead).
  */
-const { TAX_CATEGORIES } = require('../tax-history');
+const { TAX_CATEGORIES } = require('../history');
 
 function make(taxCategory, deductibilityPct) {
   const meta = TAX_CATEGORIES[taxCategory] || {};

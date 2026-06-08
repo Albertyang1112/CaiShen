@@ -22,7 +22,7 @@ const { retrieve, formatForPrompt } = require('./retriever');
 const { ingestDocument, supersedeSource } = require('./ingest');
 const embeddings  = require('./embeddings');
 const vectorStore = require('./vectorStore');
-const { query }   = require('../core/db');
+const { query }   = require('../../core/db');
 
 function requireAdmin(req, res, next) {
   if (req.user?.role !== 'admin') {

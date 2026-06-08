@@ -1,4 +1,4 @@
-const { classifyByCoa } = require('../tax-normalize/coa-map');
+const { classifyByCoa } = require('../tax/normalize/coa-map');
 
 describe('classifyByCoa — COA account → tax classification', () => {
   test('income accounts map to income tax categories', () => {
