@@ -21,7 +21,7 @@ server/scraper-fixtures/
 
 # Bank scraper — automation code for live/record/replay bank sessions; keep local only
 extension/
-client/src/BankScraper.jsx
+client/src/pages/BankScraper/
 
 # Imported Python scrapers (chase/boa/amazon/mortgage) — credential-handling
 # automation + scraped financial data (PDFs, SQLite, session profiles). Each is
@@ -30,7 +30,7 @@ client/src/BankScraper.jsx
 # Server-side scraper automation (bank-scraper, scraper-bridge, scraper-import) —
 # local-only, same posture as the Python scrapers. The whole folder stays out of git.
 server/scrapers/
-client/src/Scrapers.jsx
+client/src/pages/Scrapers/
 
 # Log files
 *.log
