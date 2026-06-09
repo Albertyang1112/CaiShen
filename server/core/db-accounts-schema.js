@@ -78,6 +78,34 @@ module.exports.init = async (query) => {
   await query(`CREATE INDEX IF NOT EXISTS idx_documents_account ON documents(account_id)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_documents_sha     ON documents(user_id, sha256)`);
 
+  // ── transactions: the high-volume entity, structured for scale. ──────────────
+  // Hot columns are extracted + indexed for targeted queries (by account, month,
+  // date); the full original object is kept in `data` JSONB for lossless reads and
+  // user-owned fields (coaId, note, approved, splits). At large volume this is the
+  // table you partition by month/year. User edits (tx_overrides) stay in user_kv.
+  await query(`
+    CREATE TABLE IF NOT EXISTS transactions (
+      id             TEXT        PRIMARY KEY,
+      user_id        TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      account        TEXT,
+      txn_date       DATE,
+      month          TEXT,
+      description    TEXT,
+      amount         DECIMAL(14,2),
+      category       TEXT,
+      plaid_category TEXT,
+      institution    TEXT,
+      pending        BOOLEAN,
+      source         TEXT,
+      data           JSONB,
+      created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS idx_txns_user_date ON transactions(user_id, txn_date DESC)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_txns_user_acct ON transactions(user_id, account, txn_date DESC)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_txns_user_mon  ON transactions(user_id, month)`);
+
   // ── user_kv: generic per-user store for the long-tail JSON/CSV "files" that ──
   // don't warrant their own structured table (chart_of_accounts, properties,
   // wallets, settings, insights, staged CSVs, …). The DB-backed data layer
