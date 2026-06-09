@@ -111,7 +111,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     return all;
   }
 
-  async function syncItem(connection, io, startDate = null) {
+  async function syncItem(connection, io, userId, startDate = null) {
     const { access_token, institution_name } = connection;
     const { read, write, readText, writeText } = io;
 
@@ -141,6 +141,9 @@ module.exports = function(makeIO, notifyClients = () => {}) {
       // stageAndImport preserves user-owned fields (categorization, notes, splits)
       // by Plaid id, so a re-sync never wipes them.
       write('transactions.json', stageAndImport({ existing, plaidTxs, readText, writeText }));
+      // Persist the raw Plaid pull CSV into the DB (auditable extracted-data snapshot).
+      try { await require('../core/csv-store').saveCsv(userId, PLAID_CSV, readText(PLAID_CSV) || ''); }
+      catch (e) { console.error('[csv-store] plaid:', e.message); }
       txCount = plaidTxs.length;
     } catch (e) {
       if (e.response?.data?.error_code === 'PRODUCT_NOT_READY') {
@@ -160,7 +163,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     const results = [];
     for (const conn of items) {
       try {
-        results.push({ institution: conn.institution_name, ...await syncItem(conn, io, startDate) });
+        results.push({ institution: conn.institution_name, ...await syncItem(conn, io, userId, startDate) });
       } catch (e) {
         console.error(`Sync error [${conn.institution_name}]:`, e.response?.data || e.message);
         results.push({ institution: conn.institution_name, error: e.message });
@@ -221,7 +224,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
       await plaidItems.saveItem(req.user.id, { item_id, access_token, institution_name: institution_name || 'Unknown Bank' });
       const connection = { item_id, access_token, institution_name: institution_name || 'Unknown Bank' };
       res.json({ success: true, institution: institution_name });
-      syncItem(connection, io).catch(e => console.error('Initial sync error:', e.response?.data || e.message));
+      syncItem(connection, io, req.user.id).catch(e => console.error('Initial sync error:', e.response?.data || e.message));
     } catch (e) {
       console.error('Token exchange error:', e.response?.data || e.message);
       res.status(500).json({ error: e.response?.data?.error_message || e.message });
@@ -294,7 +297,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     if (!owner) return;
     const { userId: uid, item: conn } = owner;
     const io = makeIO(uid);
-    syncItem(conn, io)
+    syncItem(conn, io, uid)
       .then(async r => {
         console.log(`[Webhook] ${conn.institution_name} (user ${uid}): ${r.transactions} txs`);
         await plaidItems.touchSync(item_id);

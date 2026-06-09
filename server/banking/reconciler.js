@@ -21,6 +21,7 @@
 
 const crypto = require('crypto');
 const { parsePDFTransactions } = require('../core/pdf-parser');
+const { stageStatementCsv } = require('./statement-csv');
 
 // ── Text normalisation for name similarity ────────────────────────────────────
 const norm = s => String(s || '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -242,6 +243,10 @@ async function reconcileUser(query, userId, io, year) {
   );
   const stmtRows = stmtRes.rows;
 
+  // Stage the exact statement rows used for matching to a per-user CSV — the
+  // audit/validation source for the dev reconciliation dashboard.
+  stageStatementCsv(io, stmtRows);
+
   if (!stmtRows.length) return { matched: 0, stmtOnly: 0, plaidOnly: 0, conflicts: 0 };
 
   // Wipe and re-run (idempotent on re-upload)
@@ -307,6 +312,10 @@ async function reconcileUser(query, userId, io, year) {
       );
     }
   }
+
+  // Keep the auditable statements.csv in the DB current (extracted statement data).
+  try { await require('../core/csv-store').refreshStatementsCsv(query, userId); }
+  catch (e) { console.error('[csv-store] statements.csv:', e.message); }
 
   return { matched, stmtOnly: stmtRows.length - matched, plaidOnly, conflicts };
 }
