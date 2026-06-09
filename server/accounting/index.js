@@ -296,8 +296,8 @@ module.exports = function(makeIO) {
   });
 
   // ── Balance Sheet ─────────────────────────────────────────────────────
-  router.get('/balance-sheet', (req, res) => {
-    const accounts   = req.read('accounts.json')   || [];
+  router.get('/balance-sheet', async (req, res) => {
+    const accounts   = await require('../core/banking-store').listAccounts(req.user.id) || [];
     const properties = req.read('properties.json') || [];
 
     const bankAccounts    = accounts.filter(a => a.balance > 0 && ['bank','checking','savings','depository'].includes(a.type?.toLowerCase()));
