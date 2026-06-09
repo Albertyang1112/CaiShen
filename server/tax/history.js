@@ -128,7 +128,7 @@ function makeCalculationsRouter() {
     const uid = req.user.id;
     try {
       const { rows } = await query(
-        'SELECT * FROM tax_calculations WHERE id=$1', [req.params.id]
+        'SELECT * FROM tax_calculations WHERE id=$1 AND user_id=$2', [req.params.id, uid]
       );
       if (!rows.length || !owned(rows[0], uid))
         return res.status(404).json({ error: 'Not found' });
@@ -177,7 +177,7 @@ function makeCalculationsRouter() {
       );
       if (!rows.length || !owned(rows[0], uid))
         return res.status(404).json({ error: 'Not found' });
-      await query('UPDATE tax_calculations SET label=$1 WHERE id=$2', [label, req.params.id]);
+      await query('UPDATE tax_calculations SET label=$1 WHERE id=$2 AND user_id=$3', [label, req.params.id, uid]);
       res.json({ updated: true });
     } catch (e) {
       res.status(500).json({ error: 'Failed to rename' });
@@ -193,7 +193,7 @@ function makeCalculationsRouter() {
       );
       if (!rows.length || !owned(rows[0], uid))
         return res.status(404).json({ error: 'Not found' });
-      await query('DELETE FROM tax_calculations WHERE id=$1', [req.params.id]);
+      await query('DELETE FROM tax_calculations WHERE id=$1 AND user_id=$2', [req.params.id, uid]);
       res.json({ deleted: true });
     } catch (e) {
       res.status(500).json({ error: 'Failed to delete' });
@@ -367,8 +367,10 @@ function makeTransactionsRouter() {
       if (!updates.length)
         return res.status(400).json({ error: 'No fields to update' });
       p.push(req.params.id);
+      const idIdx = p.length;
+      p.push(uid);
       await query(
-        `UPDATE tax_transactions SET ${updates.join(',')},updated_at=NOW() WHERE id=$${p.length}`,
+        `UPDATE tax_transactions SET ${updates.join(',')},updated_at=NOW() WHERE id=$${idIdx} AND user_id=$${p.length}`,
         p
       );
       res.json({ updated: true });
@@ -386,7 +388,7 @@ function makeTransactionsRouter() {
       );
       if (!rows.length || !owned(rows[0], uid))
         return res.status(404).json({ error: 'Not found' });
-      await query('DELETE FROM tax_transactions WHERE id=$1', [req.params.id]);
+      await query('DELETE FROM tax_transactions WHERE id=$1 AND user_id=$2', [req.params.id, uid]);
       res.json({ deleted: true });
     } catch (e) {
       res.status(500).json({ error: 'Failed to delete' });
@@ -431,7 +433,7 @@ function makeAISessionsRouter() {
     const uid = req.user.id;
     try {
       const { rows } = await query(
-        'SELECT * FROM ai_tax_sessions WHERE id=$1', [req.params.id]
+        'SELECT * FROM ai_tax_sessions WHERE id=$1 AND user_id=$2', [req.params.id, uid]
       );
       if (!rows.length || !owned(rows[0], uid))
         return res.status(404).json({ error: 'Not found' });
