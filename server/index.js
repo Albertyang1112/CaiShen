@@ -111,50 +111,36 @@ function ensureUserDataDir(userId) {
   });
 }
 
-/** Read a file — userId=null reads from global DATA_DIR */
+const dataStore = require('./core/store');   // DB-backed per-user data layer (cache + persist)
+
+/** Read per-user data from the DB store (cache); global (no userId) config from file. */
 function readData(file, userId = null) {
-  const dir = userId ? path.join(USERS_DIR, userId) : DATA_DIR;
-  try { return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8')); }
+  if (userId) return dataStore.read(file, userId);
+  try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), 'utf8')); }
   catch (e) { return null; }
 }
 
-/** Write a file with auto-backup */
+/** Write per-user data to the DB (no local file); global config to file. */
 function writeData(file, data, userId = null) {
-  const dir    = userId ? path.join(USERS_DIR, userId) : DATA_DIR;
-  const bakDir = userId ? path.join(BACKUP_DIR, 'users', userId) : BACKUP_DIR;
-  try {
-    fs.mkdirSync(dir,    { recursive: true });
-    fs.mkdirSync(bakDir, { recursive: true });
-    const src = path.join(dir, file);
-    if (fs.existsSync(src)) {
-      const ts  = new Date().toISOString().replace(/[:.]/g, '-');
-      const bak = path.join(bakDir, `${file}.${ts}.bak`);
-      fs.copyFileSync(src, bak);
-      const baks = fs.readdirSync(bakDir).filter(f => f.startsWith(file)).sort();
-      if (baks.length > 30) baks.slice(0, baks.length - 30).forEach(f => fs.unlinkSync(path.join(bakDir, f)));
-    }
-    fs.writeFileSync(src, JSON.stringify(data, null, 2));
-    // Write-through mirror: keep the structured accounts/transactions tables current
-    // for the DB-backed read endpoints, regardless of which caller wrote the JSON.
-    if (userId && (file === 'accounts.json' || file === 'transactions.json')) {
-      const store = require('./core/banking-store');
-      const mirror = file === 'accounts.json' ? store.mirrorAccounts : store.mirrorTransactions;
-      mirror(userId, data).catch(e => console.error(`[mirror] ${file}:`, e.message));
-    }
-    return true;
-  } catch (e) { console.error(`Error writing ${file}:`, e.message); return false; }
+  if (userId) return dataStore.write(file, data, userId);
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(path.join(DATA_DIR, file), JSON.stringify(data, null, 2)); return true; }
+  catch (e) { console.error(`Error writing ${file}:`, e.message); return false; }
 }
 
-/** Returns user-scoped read/write helpers */
+/** User-scoped read/write helpers. `dir` is kept for genuine file artifacts
+ *  (receipts/vault PDFs) until those move to R2; JSON/CSV go through the DB store. */
 function makeIO(userId) {
   const dir = userId ? path.join(USERS_DIR, userId) : DATA_DIR;
   return {
     read:  (file) => readData(file, userId),
     write: (file, data) => writeData(file, data, userId),
     dir,
-    // Raw-text helpers for non-JSON artifacts (e.g. CSV staging files).
-    readText:  (file) => { try { return fs.readFileSync(path.join(dir, file), 'utf8'); } catch (e) { return null; } },
-    writeText: (file, text) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, file), text); },
+    readText:  (file) => userId
+      ? dataStore.readText(file, userId)
+      : (() => { try { return fs.readFileSync(path.join(dir, file), 'utf8'); } catch (e) { return null; } })(),
+    writeText: (file, text) => userId
+      ? dataStore.writeText(file, text, userId)
+      : (fs.mkdirSync(dir, { recursive: true }), fs.writeFileSync(path.join(dir, file), text), true),
   };
 }
 
@@ -206,6 +192,9 @@ migrateAdminData();
   // 1. Connect to database and create schema
   const { initSchema } = require('./core/db');
   await initSchema();
+
+  // 1b. Warm the DB-backed per-user data layer (cache) before serving requests.
+  await dataStore.preloadAll();
 
   // 2. Auth (now backed by DB, not users.json)
   const authMod = require('./core/auth');
@@ -841,3 +830,11 @@ app.get('/{*path}', (req, res) => {
   console.error('\n✗ Fatal startup error:', e.message);
   process.exit(1);
 });
+
+// Drain any in-flight DB writes on graceful shutdown so no buffered write is lost.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, async () => {
+    try { await dataStore.flush(); } catch (e) { /* best effort */ }
+    process.exit(0);
+  });
+}
