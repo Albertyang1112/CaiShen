@@ -78,5 +78,20 @@ module.exports.init = async (query) => {
   await query(`CREATE INDEX IF NOT EXISTS idx_documents_account ON documents(account_id)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_documents_sha     ON documents(user_id, sha256)`);
 
-  console.log('✓ Accounts/documents schema ready (plaid_items, accounts, documents; users.phone)');
+  // ── user_kv: generic per-user store for the long-tail JSON/CSV "files" that ──
+  // don't warrant their own structured table (chart_of_accounts, properties,
+  // wallets, settings, insights, staged CSVs, …). The DB-backed data layer
+  // (core/store.js) reads/writes this; accounts + transactions get real tables.
+  await query(`
+    CREATE TABLE IF NOT EXISTS user_kv (
+      user_id    TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      doc_key    TEXT        NOT NULL,         -- 'transactions.json' | 'properties.json' | 'plaid_transactions.csv' | ...
+      data       JSONB,                        -- populated for .json keys
+      text_data  TEXT,                         -- populated for .csv / raw-text keys
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, doc_key)
+    )
+  `);
+
+  console.log('✓ Accounts/documents schema ready (plaid_items, accounts, documents, user_kv; users.phone)');
 };
