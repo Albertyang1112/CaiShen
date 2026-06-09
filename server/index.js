@@ -134,6 +134,13 @@ function writeData(file, data, userId = null) {
       if (baks.length > 30) baks.slice(0, baks.length - 30).forEach(f => fs.unlinkSync(path.join(bakDir, f)));
     }
     fs.writeFileSync(src, JSON.stringify(data, null, 2));
+    // Write-through mirror: keep the structured accounts/transactions tables current
+    // for the DB-backed read endpoints, regardless of which caller wrote the JSON.
+    if (userId && (file === 'accounts.json' || file === 'transactions.json')) {
+      const store = require('./core/banking-store');
+      const mirror = file === 'accounts.json' ? store.mirrorAccounts : store.mirrorTransactions;
+      mirror(userId, data).catch(e => console.error(`[mirror] ${file}:`, e.message));
+    }
     return true;
   } catch (e) { console.error(`Error writing ${file}:`, e.message); return false; }
 }

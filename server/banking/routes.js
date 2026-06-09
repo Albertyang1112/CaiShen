@@ -17,12 +17,18 @@
  */
 const express = require('express');
 const { applyRules: applyCatRules, suggestKeyword: suggestCatKeyword } = require('./categorize');
+const store = require('../core/banking-store');   // DB-backed reads for accounts/transactions
 
 module.exports = function makeBankingRouter({ readData, writeData }) {
   const router = express.Router();
 
   // ── Accounts ──────────────────────────────────────────────────────────
-  router.get('/accounts', (req, res) => res.json(readData('accounts.json', req.user?.id)));
+  // Read straight from the structured accounts table (indexed, scalable) — the
+  // table is kept current by writeData's write-through mirror.
+  router.get('/accounts', async (req, res) => {
+    try { res.json(await store.listAccounts(req.user?.id)); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
 
   router.post('/accounts', (req, res) => {
     const uid = req.user.id;
@@ -66,21 +72,23 @@ module.exports = function makeBankingRouter({ readData, writeData }) {
   // GET merges per-transaction user overrides onto the synced transactions.
   // Overrides live in a separate store so a Plaid re-sync (which replaces plaid
   // txs) never wipes the user's edits.
-  router.get('/transactions', (req, res) => {
-    const uid = req.user?.id;
-    const txs = readData('transactions.json', uid) || [];
-    const ov  = readData('tx_overrides.json', uid) || {};
-    res.json(txs.map(t => {
-      const o = ov[t.id];
-      if (!o) return t;
-      return {
-        ...t,
-        ...(o.category    !== undefined ? { category:    o.category }    : {}),
-        ...(o.excluded    !== undefined ? { excluded:    o.excluded }    : {}),
-        ...(o.vendor      !== undefined ? { vendor:      o.vendor }      : {}),
-        ...(o.attachments !== undefined ? { attachments: o.attachments } : {}),
-      };
-    }));
+  router.get('/transactions', async (req, res) => {
+    try {
+      const uid = req.user?.id;
+      const txs = await store.listTransactions(uid);          // from the transactions table
+      const ov  = readData('tx_overrides.json', uid) || {};   // user edits stay in the kv store
+      res.json(txs.map(t => {
+        const o = ov[t.id];
+        if (!o) return t;
+        return {
+          ...t,
+          ...(o.category    !== undefined ? { category:    o.category }    : {}),
+          ...(o.excluded    !== undefined ? { excluded:    o.excluded }    : {}),
+          ...(o.vendor      !== undefined ? { vendor:      o.vendor }      : {}),
+          ...(o.attachments !== undefined ? { attachments: o.attachments } : {}),
+        };
+      }));
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   router.post('/transactions', (req, res) => {
