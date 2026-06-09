@@ -143,15 +143,21 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
   });
 
   // ── GET /api/vault/file/:id ───────────────────────────────────────────
-  router.get('/file/:id', (req, res) => {
+  router.get('/file/:id', async (req, res) => {
     const userId = req.user.id;
     const meta   = readMeta(userId);
     const file   = meta.files.find(f => f.id === req.params.id);
     if (!file) return res.status(404).json({ error: 'File not found' });
-    const filePath = path.join(getUserVaultDir(userId), file.folderPath, file.name);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File missing from disk' });
     res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
     res.setHeader('Content-Disposition', `inline; filename="${file.name}"`);
+    // Serve from R2 (bytes are off-machine); fall back to local disk for anything
+    // not yet migrated. R2 access stays behind this route's auth (no public URL).
+    try {
+      const bytes = await require('../core/documents').getDocumentBytes(userId, req.params.id);
+      if (bytes) return res.send(bytes);
+    } catch (e) { /* fall through to disk */ }
+    const filePath = path.join(getUserVaultDir(userId), file.folderPath, file.name);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File missing from disk' });
     res.sendFile(filePath);
   });
 
