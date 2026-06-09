@@ -313,6 +313,8 @@ app.use('/api/statements', stmtRouter);
 
 // ── Routes: Reconciliation (Phase 3) ─────────────────────────────────
 app.use('/api/reconcile', require('./banking/reconcile-routes')(makeIO));
+// DEV-ONLY reconciliation verification (localhost only; delete this line + banking/dev-verify.js to remove).
+app.use('/api/dev-verify', localhostOnly, require('./banking/dev-verify')(makeIO));
 
 // ── Routes: Receipts / OCR (Phase 4) ─────────────────────────────────
 app.use('/api/receipts', require('./banking/receipt-routes')(makeIO, DATA_DIR));
@@ -502,7 +504,9 @@ app.get('/api/tax-estimate', (req, res) => {
   const w2Total = Math.round(w2Txs.reduce((s, t) => s + t.amount, 0) * 100) / 100;
 
   // ── Schedule E: vault property statement stats (property-tagged folders) ─
-  const PROP_IDS = ['haas','kobe','bayhill','bay hill','muirfield','alcita'];
+  const properties = readData('properties.json', uid) || [];
+  const propNames  = properties.map(p => String(p.name || '').toLowerCase()).filter(Boolean);
+  const PROP_IDS   = [...properties.map(p => String(p.id)), ...propNames];
   const propFiles = (vault.files || []).filter(f =>
     f.tags?.year === targetYear &&
     f.tags?.income !== undefined &&
@@ -515,7 +519,7 @@ app.get('/api/tax-estimate', (req, res) => {
   // ── Schedule E fallback: rent deposits in Plaid transactions ─────
   // Catches rent checks deposited to checking when no property-folder PDFs exist.
   // Excludes anything that also looks like a payroll deposit (already counted above).
-  const RENTAL_KW  = ['rent','rental','lease',...PROP_IDS,'4500','7800','3210','6540']; // known addresses (1693 removed — it's a Chase branch address, not a property)
+  const RENTAL_KW  = ['rent','rental','lease',...propNames]; // real property names only — no hardcoded demo ids/addresses
   const rentalTxs  = incomeTxs.filter(t =>
     !w2Txs.includes(t) &&
     RENTAL_KW.some(kw => (t.desc || '').toLowerCase().includes(kw))
@@ -814,7 +818,7 @@ app.get('/{*path}', (req, res) => {
 
   // ── Start ───────────────────────────────────────────────────────────
   const PORT = process.env.PORT || 3001;
-  app.listen(PORT, () => {
+  app.listen(PORT, async () => {
     console.log(`\n✓ CaiShen server running at http://localhost:${PORT}`);
     console.log(`✓ Data directory: ${DATA_DIR}`);
     console.log(`✓ Auto-sync every ${intervalMinutes} minutes`);
@@ -827,8 +831,8 @@ app.get('/{*path}', (req, res) => {
       const users = fs.existsSync(USERS_DIR) ? fs.readdirSync(USERS_DIR) : [];
       for (const uid of users) {
         const io = makeIO(uid);
-        const accts = io.read('accounts.json') || [];
-        if (accts.length > 0) verifyUser(uid, io);
+        const accts = await require('./core/banking-store').listAccounts(uid) || [];
+        if (accts.length > 0) await verifyUser(uid, io);
       }
     } catch (e) { console.error('[Verify] Startup check error:', e.message); }
   });

@@ -191,7 +191,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     } catch (e) { console.error('[Reconcile] error:', e.message); }
     notifyClients();
     // Run verification checks and print report to server terminal
-    try { verifyUser(userId, io); } catch (e) { console.error('[Verify] Error:', e.message); }
+    try { await verifyUser(userId, io); } catch (e) { console.error('[Verify] Error:', e.message); }
     return { synced: results.length, results };
   }
 
@@ -302,7 +302,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
         console.log(`[Webhook] ${conn.institution_name} (user ${uid}): ${r.transactions} txs`);
         await plaidItems.touchSync(item_id);
         notifyClients();
-        try { verifyUser(uid, io); } catch (e) { console.error('[Verify] Error:', e.message); }
+        try { await verifyUser(uid, io); } catch (e) { console.error('[Verify] Error:', e.message); }
       })
       .catch(e => console.error(`[Webhook] Sync error:`, e.message));
   });

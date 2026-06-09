@@ -228,8 +228,8 @@ function matchOne(s, plaid, used) {
 
 // ── Core reconciliation run ───────────────────────────────────────────────────
 async function reconcileUser(query, userId, io, year) {
-  // Load Plaid transactions from local per-user JSON
-  const allTxns = io.read('transactions.json') || [];
+  // Load Plaid transactions from the DB (transactions table via banking-store)
+  const allTxns = await require('../core/banking-store').listTransactions(userId) || [];
   const plaid = allTxns.filter(t => !t.source || t.source === 'plaid');
 
   // Load statement rows from Neon for this user

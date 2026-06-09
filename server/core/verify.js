@@ -13,9 +13,10 @@
 
 const fmt  = n => (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 
-function verifyUser(userId, io) {
-  const accounts = io.read('accounts.json')    || [];
-  const allTxs   = io.read('transactions.json') || [];
+async function verifyUser(userId, io) {
+  const store = require('./banking-store');
+  const accounts = await store.listAccounts(userId)     || [];
+  const allTxs   = await store.listTransactions(userId) || [];
 
   if (!accounts.length) return;
 
