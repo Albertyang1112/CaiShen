@@ -1,5 +1,7 @@
 const { PlaidApi, PlaidEnvironments, Configuration } = require('plaid');
 const express = require('express');
+const jwt     = require('jsonwebtoken');
+const crypto  = require('crypto');
 const csv     = require('../core/csv');
 const { applyRules } = require('./categorize');
 const { verifyUser } = require('../core/verify');
@@ -286,7 +288,40 @@ module.exports = function(makeIO, notifyClients = () => {}) {
   });
 
   // ── Webhook (no user context — Plaid calls this directly) ────────────
+  // ── Plaid webhook signature verification ───────────────────────────────────
+  // Plaid signs every webhook (a JWS in the `Plaid-Verification` header). We verify
+  // the signature against Plaid's published key and check the request-body SHA-256,
+  // so only genuine Plaid calls can trigger a sync (the endpoint is unauthenticated
+  // by necessity — Plaid has no user session).
+  const _webhookKeys = new Map();   // kid -> PEM (Plaid rotates keys; cache by kid)
+  async function plaidWebhookKey(kid) {
+    if (_webhookKeys.has(kid)) return _webhookKeys.get(kid);
+    const resp = await plaidClient.webhookVerificationKeyGet({ key_id: kid });
+    const pem  = crypto.createPublicKey({ key: resp.data.key, format: 'jwk' }).export({ type: 'spki', format: 'pem' });
+    _webhookKeys.set(kid, pem);
+    return pem;
+  }
+  async function verifyPlaidWebhook(req) {
+    try {
+      if (!plaidClient) return false;
+      const token = req.headers['plaid-verification'];
+      if (!token || !req.rawBody) return false;
+      const decoded = jwt.decode(token, { complete: true });
+      if (!decoded || decoded.header.alg !== 'ES256' || !decoded.header.kid) return false;
+      const pem     = await plaidWebhookKey(decoded.header.kid);
+      const payload = jwt.verify(token, pem, { algorithms: ['ES256'], maxAge: '5m' }); // bounds replay
+      const want = Buffer.from(payload.request_body_sha256 || '', 'hex');
+      const got  = crypto.createHash('sha256').update(req.rawBody).digest();
+      return want.length === got.length && crypto.timingSafeEqual(want, got);
+    } catch (e) {
+      console.warn('[Webhook] signature verification failed:', e.message);
+      return false;
+    }
+  }
+
   router.post('/webhook', async (req, res) => {
+    // Reject anything not provably from Plaid before doing any work.
+    if (!(await verifyPlaidWebhook(req))) return res.status(401).json({ error: 'Invalid webhook signature' });
     res.json({ received: true });
     const { webhook_type, item_id } = req.body;
     console.log(`[Webhook] ${webhook_type} for item ${item_id}`);

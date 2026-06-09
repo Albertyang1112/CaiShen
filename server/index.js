@@ -50,7 +50,8 @@ const upload  = multer({ storage: multer.memoryStorage() });
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+// Capture the raw body too — the Plaid webhook signature is checked against its SHA-256.
+app.use(express.json({ limit: '10mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 
 // ── Static client files ───────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, '../client-dist')));

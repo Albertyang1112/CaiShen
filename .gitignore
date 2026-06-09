@@ -47,3 +47,5 @@ excludelist.txt
 
 # Personal working doc — feature roadmap (local only, do not commit)
 ROADMAP.md
+# Dev-only Banking verification dashboard — local/dev mode, not for the public repo
+server/banking/dev-verify.js
