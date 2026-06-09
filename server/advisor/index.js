@@ -15,10 +15,11 @@ module.exports = function(makeIO) {
     console.log('⚠ AI Advisor not configured — add ANTHROPIC_API_KEY to .env');
   }
 
-  function buildContext(read) {
-    const accounts     = read('accounts.json')     || [];
-    const transactions = read('transactions.json') || [];
-    const properties   = read('properties.json')   || [];
+  async function buildContext(userId) {
+    const store = require('../core/banking-store');
+    const accounts     = await store.listAccounts(userId)     || [];
+    const transactions = await store.listTransactions(userId) || [];
+    const properties   = makeIO(userId).read('properties.json') || [];
 
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const recentTxs     = [...transactions].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 150);
@@ -80,10 +81,10 @@ ${recentTxs.map(t => `${t.date}: ${t.desc}  ${t.amount > 0 ? '+' : ''}$${(t.amou
     res.flushHeaders();
 
     try {
-      const { read } = makeIO(req.user.id);
+      const ctx = await buildContext(req.user.id);
       const stream = client.messages.stream({
         model: 'claude-opus-4-7', max_tokens: 2048, thinking: { type: 'adaptive' },
-        system: [{ type: 'text', text: buildContext(read), cache_control: { type: 'ephemeral' } }],
+        system: [{ type: 'text', text: ctx, cache_control: { type: 'ephemeral' } }],
         messages
       });
       stream.on('text', text => res.write(`data: ${JSON.stringify({ text })}\n\n`));
@@ -103,14 +104,14 @@ ${recentTxs.map(t => `${t.date}: ${t.desc}  ${t.amount > 0 ? '+' : ''}$${(t.amou
 
   router.post('/generate-insights', (req, res) => {
     if (!client) return res.status(400).json({ error: 'AI Advisor not configured' });
-    const { read, write } = makeIO(req.user.id);
+    const { write } = makeIO(req.user.id);
     res.json({ status: 'generating' });
 
     (async () => {
       try {
         const response = await client.messages.create({
           model: 'claude-opus-4-7', max_tokens: 1500, thinking: { type: 'adaptive' },
-          system: [{ type: 'text', text: buildContext(read), cache_control: { type: 'ephemeral' } }],
+          system: [{ type: 'text', text: await buildContext(req.user.id), cache_control: { type: 'ephemeral' } }],
           messages: [{ role: 'user', content: 'Generate 5 proactive financial insights based on my current data. Cover: spending patterns, cash flow, tax planning, real estate performance, and any notable opportunities or concerns. Return ONLY a JSON array with objects: { "title": string, "insight": string, "priority": "high"|"medium"|"low", "category": "Spending"|"Cash Flow"|"Tax"|"Real Estate"|"Portfolio" }. No markdown, no explanation, just the raw JSON array.' }]
         });
         const text     = response.content.find(b => b.type === 'text')?.text || '[]';

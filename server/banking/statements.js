@@ -152,8 +152,9 @@ function buildStatementPDF(account, txList, year, month) {
 async function generateForUser(userId, makeIO, BASE_VAULT_DIR) {
   const io        = makeIO(userId);
   const vaultDir  = path.join(BASE_VAULT_DIR, 'users', userId);
-  const accounts  = io.read('accounts.json')      || [];
-  const allTxs    = io.read('transactions.json')   || [];
+  const store     = require('../core/banking-store');
+  const accounts  = await store.listAccounts(userId)     || [];
+  const allTxs    = await store.listTransactions(userId) || [];
   const plaidAccts = accounts.filter(a => a.source === 'plaid');
   if (!plaidAccts.length) return { generated: 0, skipped: 0 };
 
@@ -283,10 +284,11 @@ module.exports = function(makeIO, BASE_VAULT_DIR) {
   });
 
   // ── GET /months — available months per account with statement existence ─
-  router.get('/months', (req, res) => {
+  router.get('/months', async (req, res) => {
     const io       = makeIO(req.user.id);
-    const accounts = io.read('accounts.json')    || [];
-    const allTxs   = io.read('transactions.json') || [];
+    const store    = require('../core/banking-store');
+    const accounts = await store.listAccounts(req.user.id)     || [];
+    const allTxs   = await store.listTransactions(req.user.id) || [];
     const meta     = io.read('vault.json')        || { folders: [], files: [] };
 
     const plaidAccts = accounts.filter(a => a.source === 'plaid');
@@ -327,8 +329,9 @@ module.exports = function(makeIO, BASE_VAULT_DIR) {
 
     const io       = makeIO(req.user.id);
     const vaultDir = path.join(BASE_VAULT_DIR, 'users', req.user.id);
-    const accounts = io.read('accounts.json')    || [];
-    const allTxs   = io.read('transactions.json') || [];
+    const store    = require('../core/banking-store');
+    const accounts = await store.listAccounts(req.user.id)     || [];
+    const allTxs   = await store.listTransactions(req.user.id) || [];
     const meta     = io.read('vault.json')        || { folders: [], files: [] };
 
     const acct = accounts.find(a => a.id === accountId);
