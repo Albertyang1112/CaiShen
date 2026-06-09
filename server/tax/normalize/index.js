@@ -294,7 +294,7 @@ function makeRouter(makeIO) {
     const { useAI = false, provider: providerName } = req.body || {};
     try {
       const io = makeIO(req.user.id);
-      const transactions = io.read('transactions.json') || [];
+      const transactions = await require('../../core/banking-store').listTransactions(req.user.id) || [];
       const coa          = io.read('chart_of_accounts.json') || [];
       let provider = null;
       if (useAI) {
