@@ -42,15 +42,20 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
   });
 
   // ── POST /api/vault/upload ────────────────────────────────────────────
-  router.post('/upload', upload.array('files'), (req, res) => {
+  // Bytes go to R2 (core/documents); metadata to the documents table + vault.json.
+  // NOTHING touches local disk. A file whose month+year already exists in the same
+  // folder is NOT auto-replaced — it's returned as a `conflict` for the user to resolve
+  // (send conflictResolution: { "<key>": "replace" | "keep" } on the retry).
+  router.post('/upload', upload.array('files'), async (req, res) => {
     try {
       const userId     = req.user.id;
-      const vaultDir   = getUserVaultDir(userId);
       const meta       = readMeta(userId);
       const folderPath = req.body.folderPath || 'Uploads';
-      const mergeMode  = req.body.mergeMode  || 'merge';
+      const documents  = require('../core/documents');
+      let resolutions  = {};
+      try { resolutions = req.body.conflictResolution ? JSON.parse(req.body.conflictResolution) : {}; } catch (e) {}
 
-      // ── Validate every file before touching disk ──────────────────────
+      // ── Validate every file first ─────────────────────────────────────
       const rejections = [];
       for (const file of req.files || []) {
         const err = validateUploadFile(file.originalname, file.mimetype);
@@ -58,19 +63,17 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
       }
       if (rejections.length > 0) {
         return res.status(400).json({
-          error: 'One or more files were rejected.',
-          rejected: rejections,
-          hint: 'The vault only accepts financial documents: PDF, CSV, Excel, images (JPG/PNG), and Word docs. '
-            + 'Code files, project folders, and config files are not allowed.',
+          error: 'One or more files were rejected.', rejected: rejections,
+          hint: 'The vault only accepts financial documents: PDF, CSV, Excel, images (JPG/PNG), and Word docs.',
         });
       }
 
+      // ── Ensure the folder tree exists in metadata (no disk) ───────────
       const parts = folderPath.split('/').filter(Boolean);
       let parentId = null, currentFolderId = null;
       for (let i = 0; i < parts.length; i++) {
-        const name     = parts[i];
-        const fullPath = parts.slice(0, i + 1).join('/');
-        let folder     = meta.folders.find(f => f.path === fullPath);
+        const name = parts[i], fullPath = parts.slice(0, i + 1).join('/');
+        let folder = meta.folders.find(f => f.path === fullPath);
         if (!folder) {
           folder = { id: `folder_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, name, path: fullPath, parentId, createdAt: new Date().toISOString(), tags: autoTag(fullPath) };
           meta.folders.push(folder);
@@ -78,50 +81,52 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
         parentId = folder.id; currentFolderId = folder.id;
       }
 
-      const physicalPath = path.join(vaultDir, folderPath);
-      fs.mkdirSync(physicalPath, { recursive: true });
-
-      const uploaded = [];
+      const uploaded = [], conflicts = [];
       for (const file of req.files || []) {
-        const existingFile = meta.files.find(f => f.folderId === currentFolderId && f.name === file.originalname);
-        if (existingFile) {
-          if (mergeMode === 'keep') continue;
-          if (mergeMode === 'replace' || mergeMode === 'merge') {
-            const archivePath = path.join(physicalPath, '_archive');
-            fs.mkdirSync(archivePath, { recursive: true });
-            const oldPhysical = path.join(physicalPath, existingFile.name);
-            if (fs.existsSync(oldPhysical)) {
-              const archiveName = `${path.basename(existingFile.name, path.extname(existingFile.name))}_${Date.now()}${path.extname(existingFile.name)}`;
-              fs.renameSync(oldPhysical, path.join(archivePath, archiveName));
-            }
-            existingFile.size = file.size; existingFile.updatedAt = new Date().toISOString(); existingFile.version = (existingFile.version || 1) + 1;
-            fs.writeFileSync(path.join(physicalPath, file.originalname), file.buffer);
-            uploaded.push(existingFile); continue;
+        // Year/month from the filename (e.g. "2026-03 …", "20260331-…").
+        const d1 = file.originalname.match(/^(\d{4})[-._\s](\d{2})\b/);
+        const d2 = !d1 && file.originalname.match(/^(\d{4})(\d{2})\d{2}[-_.]/);
+        const ym = d1 ? { year: d1[1], month: d1[2] } : d2 ? { year: d2[1], month: d2[2] } : {};
+        const tags = { ...autoTag(folderPath), ...ym, ...detectTaxFormTags(file.originalname) };
+
+        // Conflict = same month+year already in this folder (preferred), else same filename.
+        const existing = (ym.year && ym.month)
+          ? meta.files.find(f => f.folderPath === folderPath && f.tags && f.tags.year === ym.year && f.tags.month === ym.month)
+          : meta.files.find(f => f.folderId === currentFolderId && f.name === file.originalname);
+        const key = (ym.year && ym.month) ? `${ym.year}-${ym.month}|${folderPath}` : `name|${folderPath}|${file.originalname}`;
+
+        if (existing) {
+          const choice = resolutions[key];
+          if (!choice) {
+            conflicts.push({
+              key,
+              incoming: { name: file.originalname, size: file.size, year: ym.year || null, month: ym.month || null },
+              existing: { id: existing.id, name: existing.name, size: existing.size, createdAt: existing.createdAt },
+            });
+            continue; // hold this file until the user decides which to keep
           }
-          if (mergeMode === 'new') {
-            const base = path.basename(file.originalname, path.extname(file.originalname));
-            const ext  = path.extname(file.originalname);
-            file.originalname = `${base}_v${Date.now()}${ext}`;
+          if (choice === 'keep') continue;            // keep existing, drop the upload
+          if (choice === 'replace') {                 // remove existing (R2 + row + meta), then store the new
+            try { await documents.deleteDocument(userId, existing.id); } catch (e) {}
+            meta.files = meta.files.filter(f => f.id !== existing.id);
           }
         }
-        fs.writeFileSync(path.join(physicalPath, file.originalname), file.buffer);
-        // Auto-parse year/month from filenames like "2026-02 TOTAL CHECKING Statement.pdf"
-        // or YYYYMMDD format like "20190116-statements-9092-.pdf"
-        const fnDate1 = file.originalname.match(/^(\d{4})[-._\s](\d{2})\b/);
-        const fnDate2 = !fnDate1 && file.originalname.match(/^(\d{4})(\d{2})\d{2}[-_.]/);
-        const fnDateTags = fnDate1 ? { year: fnDate1[1], month: fnDate1[2] } :
-                           fnDate2 ? { year: fnDate2[1], month: fnDate2[2] } : {};
+
+        // Store: bytes → R2, metadata row → documents table.
+        const fileId = `file_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
+        await documents.saveDocument({
+          id: fileId, userId, name: file.originalname, mimeType: file.mimetype, bytes: file.buffer,
+          folderPath, tags, periodYear: ym.year ? parseInt(ym.year) : null, periodMonth: ym.month ? parseInt(ym.month) : null,
+        });
         const newFile = {
-          id: `file_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, name: file.originalname,
-          folderId: currentFolderId, folderPath, size: file.size,
+          id: fileId, name: file.originalname, folderId: currentFolderId, folderPath, size: file.size,
           type: getFileType(file.originalname), mimeType: file.mimetype,
-          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), version: 1,
-          tags: { ...autoTag(folderPath), ...fnDateTags, ...detectTaxFormTags(file.originalname) },
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), version: 1, tags,
         };
         meta.files.push(newFile); uploaded.push(newFile);
       }
       writeMeta(meta, userId);
-      res.json({ success: true, uploaded: uploaded.length, files: uploaded });
+      res.json({ success: true, uploaded: uploaded.length, files: uploaded, conflicts });
     } catch (e) { console.error('Vault upload error:', e); res.status(500).json({ error: e.message }); }
   });
 
@@ -162,31 +167,18 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
   });
 
   // ── DELETE /api/vault/file/:id ────────────────────────────────────────
-  router.delete('/file/:id', (req, res) => {
+  router.delete('/file/:id', async (req, res) => {
     try {
       const userId = req.user.id;
-      const io     = makeIO(userId);
       const meta   = readMeta(userId);
       const file   = meta.files.find(f => f.id === req.params.id);
       if (!file) return res.status(404).json({ error: 'Not found' });
-      const filePath = path.join(getUserVaultDir(userId), file.folderPath, file.name);
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      // Delete the bytes from R2 + the documents row (no disk). A statement is now a
+      // plain document — deleting it no longer wipes transactions (those are Plaid data).
+      try { await require('../core/documents').deleteDocument(userId, req.params.id); }
+      catch (e) { console.error('[vault] R2 delete:', e.message); }
       meta.files = meta.files.filter(f => f.id !== req.params.id);
       writeMeta(meta, userId);
-
-      // Remove ALL transactions matching this statement's account+month (both plaid and csv_import)
-      const { year, month, account: acctName } = file.tags || {};
-      if (year && month && acctName) {
-        const monthStr = `${year}-${String(month).padStart(2, '0')}`;
-        const accounts = io.read('accounts.json') || [];
-        const acct     = accounts.find(a => a.name === acctName);
-        const txs      = io.read('transactions.json') || [];
-        const filtered = txs.filter(t =>
-          !(t.month === monthStr && (acct ? t.account === acct.id : true))
-        );
-        if (filtered.length !== txs.length) io.write('transactions.json', filtered);
-      }
-
       res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });

@@ -802,7 +802,7 @@ app.get('/{*path}', (req, res) => {
           if (r.error) console.log(`[${ts}] ${user.username}/${r.institution}: error — ${r.error}`);
           else console.log(`[${ts}] ${user.username}/${r.institution}: ${r.accounts} accounts, ${r.transactions} txs`);
         }
-        await generateForUser(user.id).catch(e => console.error(`[${ts}] Statements error:`, e.message));
+        // Statements are upload-only — never auto-generated. (was: generateForUser)
       } catch (e) { console.error(`[${ts}] Cron error for ${user.username}:`, e.message); }
     }
   });

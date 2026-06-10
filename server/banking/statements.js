@@ -273,15 +273,9 @@ async function generateForUser(userId, makeIO, BASE_VAULT_DIR) {
 module.exports = function(makeIO, BASE_VAULT_DIR) {
   const router = express.Router();
 
-  router.post('/generate', async (req, res) => {
-    try {
-      const result = await generateForUser(req.user.id, makeIO, BASE_VAULT_DIR);
-      res.json(result);
-    } catch (e) {
-      console.error('[Statements] Error:', e.message);
-      res.status(500).json({ error: e.message });
-    }
-  });
+  // Statement generation is DISABLED — statements are upload-only (never auto-generated).
+  router.post('/generate', (req, res) =>
+    res.status(410).json({ error: 'Statement generation is disabled. Statements are upload-only — upload your bank statement instead.' }));
 
   // ── GET /months — available months per account with statement existence ─
   router.get('/months', async (req, res) => {
@@ -322,62 +316,9 @@ module.exports = function(makeIO, BASE_VAULT_DIR) {
     res.json(result);
   });
 
-  // ── POST /generate-single — generate one month's statement ─────────────
-  router.post('/generate-single', async (req, res) => {
-    const { accountId, month } = req.body;
-    if (!accountId || !month) return res.status(400).json({ error: 'accountId and month required' });
-
-    const io       = makeIO(req.user.id);
-    const vaultDir = path.join(BASE_VAULT_DIR, 'users', req.user.id);
-    const store    = require('../core/banking-store');
-    const accounts = await store.listAccounts(req.user.id)     || [];
-    const allTxs   = await store.listTransactions(req.user.id) || [];
-    const meta     = io.read('vault.json')        || { folders: [], files: [] };
-
-    const acct = accounts.find(a => a.id === accountId);
-    if (!acct) return res.status(404).json({ error: 'Account not found' });
-
-    const [year, monthNum] = month.split('-');
-    const txs = allTxs.filter(t => t.account === accountId && t.month === month && !t.pending);
-    if (!txs.length) return res.status(400).json({ error: 'No transactions for this month' });
-
-    const acctFolder = (acct.name || acct.subtype || 'Account')
-      .replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, ' ').trim() || 'Account';
-    const folderPath = `Bank Statements/${acct.institution || 'Unknown'}/${acctFolder}/${year}`;
-    const fileName   = `${year}-${monthNum} ${acct.name} Statement.pdf`;
-
-    try {
-      const pdfBuf      = await buildStatementPDF(acct, txs, year, monthNum);
-      const folderId    = ensureVaultFolder(meta, folderPath, vaultDir);
-      const physPath    = path.join(vaultDir, folderPath);
-      fs.mkdirSync(physPath, { recursive: true });
-      fs.writeFileSync(path.join(physPath, fileName), pdfBuf);
-      // Remove stale entry if any, then insert fresh
-      const existingFolder = meta.folders.find(f => f.path === folderPath);
-      if (existingFolder) {
-        const old = meta.files.find(f => f.folderId === existingFolder.id && f.name === fileName);
-        if (old) meta.files = meta.files.filter(f => f.id !== old.id);
-      }
-      const deps = txs.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-      const wds  = txs.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0);
-      meta.files.push({
-        id: mkFileId(), name: fileName, folderId, folderPath,
-        size: pdfBuf.length, type: 'pdf', mimeType: 'application/pdf',
-        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-        version: 1, tags: {
-          institution: acct.institution, year, month: monthNum, account: acct.name,
-          income: +deps.toFixed(2), spending: +wds.toFixed(2),
-          net: +(deps + wds).toFixed(2), txCount: txs.length,
-        },
-      });
-      io.write('vault.json', meta);
-      console.log(`[Statements] Generated ${folderPath}/${fileName} (user ${req.user.id})`);
-      res.json({ generated: 1, fileName });
-    } catch (e) {
-      console.error('[Statements] generate-single error:', e.message);
-      res.status(500).json({ error: e.message });
-    }
-  });
+  // Single-month statement generation is DISABLED — statements are upload-only.
+  router.post('/generate-single', (req, res) =>
+    res.status(410).json({ error: 'Statement generation is disabled. Statements are upload-only — upload your bank statement instead.' }));
 
   return { router, generateForUser: (userId) => generateForUser(userId, makeIO, BASE_VAULT_DIR) };
 };
