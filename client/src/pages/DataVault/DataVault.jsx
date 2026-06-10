@@ -16,11 +16,12 @@ const FILE_ICONS = {
   other: { icon:'ti-file',             color:'var(--text-secondary)' },
 }
 
-const TAG_COLORS = {
-  haas:'var(--blue)', kobe:'var(--teal)', bayhill:'var(--purple)',
-  muirfield:'var(--amber)', alcita:'var(--coral)',
-  tax:'var(--pink)', personal:'var(--green)', business:'var(--blue)'
-}
+// Folder-tag colors. Type tags get fixed colors; property tags (keyed by the
+// user's real property id) get a stable hashed color — no hardcoded properties.
+const TAG_TYPE_COLORS = { tax:'var(--pink)', personal:'var(--green)', business:'var(--blue)' }
+const TAG_PALETTE = ['var(--blue)','var(--teal)','var(--purple)','var(--amber)','var(--coral)','var(--pink)','var(--green)']
+const tagColor = (tag) => TAG_TYPE_COLORS[tag] ||
+  TAG_PALETTE[[...String(tag||'')].reduce((h,c)=>h+c.charCodeAt(0),0) % TAG_PALETTE.length]
 
 // Sort folders: 4-digit year names → descending (newest first); others → alphabetical
 const sortFoldersByDate = (arr) => [...arr].sort((a, b) => {
@@ -860,7 +861,7 @@ function FolderNode({ folder, folders, files, selectedId, onSelect, depth=0 }) {
           : <span style={{ width:12, flexShrink:0 }}/>}
         <i className={`ti ${open&&fileCount>0?'ti-folder-open':'ti-folder'}`} style={{ fontSize:14, color:selectedId===folder.id?'var(--blue)':'var(--amber)', flexShrink:0 }} aria-hidden="true"/>
         <span style={{ fontSize:13, flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', color:selectedId===folder.id?'var(--blue)':'var(--text-primary)', fontWeight:selectedId===folder.id?500:400 }}>{folder.name}</span>
-        {tag && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:3, background:'var(--bg-card)', color:TAG_COLORS[tag]||'var(--text-muted)', flexShrink:0, textTransform:'capitalize' }}>{tag}</span>}
+        {tag && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:3, background:'var(--bg-card)', color:tagColor(tag), flexShrink:0, textTransform:'capitalize' }}>{tag}</span>}
         {fileCount>0 && <span style={{ fontSize:10, color:'var(--text-muted)', flexShrink:0 }}>{fileCount}</span>}
       </div>
       {open && sortFoldersByDate(children).map(child=>(
@@ -1303,10 +1304,37 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
         files.forEach(f => fd.append('files', f))
         const res = await axios.post(`${API}/upload`, fd, { headers:{ 'Content-Type':'multipart/form-data' } })
         total += res.data.uploaded || 0
-        // Collect folder IDs that received PDF uploads for auto-sorting
-        const pdfsIn = (res.data.files || []).filter(f => f.type === 'pdf')
-        pdfsIn.forEach(f => { if (f.folderId) pdfFolderIds.add(f.folderId) })
-        pdfsIn.forEach(f => newPdfFileIds.push(f.id))
+        const collectPdfs = (data) => {
+          const pdfsIn = (data.files || []).filter(f => f.type === 'pdf')
+          pdfsIn.forEach(f => { if (f.folderId) pdfFolderIds.add(f.folderId) })
+          pdfsIn.forEach(f => newPdfFileIds.push(f.id))
+        }
+        collectPdfs(res.data)
+
+        // Same month+year already exists → ask which to keep, then re-upload the chosen ones.
+        if (res.data.conflicts && res.data.conflicts.length) {
+          const resolutions = {}, retry = []
+          for (const c of res.data.conflicts) {
+            const when = c.incoming.year && c.incoming.month ? `${c.incoming.month}/${c.incoming.year}` : 'this period'
+            const replace = window.confirm(
+              `A statement for ${when} already exists in this folder:\n\n` +
+              `  • existing: ${c.existing.name}\n  • new: ${c.incoming.name}\n\n` +
+              `OK = replace with the new file   ·   Cancel = keep the existing one`
+            )
+            resolutions[c.key] = replace ? 'replace' : 'keep'
+            const f = files.find(ff => ff.name === c.incoming.name)
+            if (replace && f) retry.push(f)
+          }
+          if (retry.length) {
+            const fd2 = new FormData()
+            fd2.append('folderPath', folderPath)
+            fd2.append('conflictResolution', JSON.stringify(resolutions))
+            retry.forEach(f => fd2.append('files', f))
+            const res2 = await axios.post(`${API}/upload`, fd2, { headers:{ 'Content-Type':'multipart/form-data' } })
+            total += res2.data.uploaded || 0
+            collectPdfs(res2.data)
+          }
+        }
       }
       await load()
 

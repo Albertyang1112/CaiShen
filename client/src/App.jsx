@@ -1,14 +1,13 @@
-import { useState, useEffect, useRef, createContext, useContext } from 'react'
+import { useState, useEffect, useRef, createContext, useContext, Component } from 'react'
 import axios from 'axios'
+// Projections + PersonalSpending are hidden from the nav (Phase 1) but kept wired
+// so they can be restored by re-adding a sidebar/NAV_TOOLS entry.
 import Projections from './pages/Projections/Projections'
 import PersonalSpending from './pages/PersonalSpending/PersonalSpending'
-import TransactionTransfer from './pages/TransactionTransfer/TransactionTransfer'
 import DataVault from './pages/DataVault/DataVault'
-import TaxCenter from './pages/TaxCenter/TaxCenter'
-import Advisor from './pages/Advisor/Advisor'
-import TaxAdvisor from './pages/TaxAdvisor/TaxAdvisor'
 import Accounting from './pages/Accounting/Accounting'
 import Crypto from './pages/Crypto/Crypto'
+import Scrapers from './pages/Scrapers/Scrapers'
 import Banking, { classifyAccount } from './pages/Banking/Banking'
 import Login from './pages/Login/Login'
 import { usePlaidLink } from 'react-plaid-link'
@@ -37,14 +36,30 @@ const API = '/api'
 const fd = (n, d=0) => (n<0?'-$':'$')+Math.abs(n).toLocaleString('en-US', { minimumFractionDigits:d, maximumFractionDigits:d })
 const fp = n => (n>=0?'+':'')+n.toFixed(1)+'%'
 
-// ── Static demo data (replaced by API data once connected) ───────────
-const DEMO_PROPS = [
-  {id:'haas',name:'Haas',addr:'123 Haas Ave, LA',value:1250000,mortgage:780000,rate:3.875,rent:6500,exp:2800,sqft:2400,yr:2005,color:'var(--blue)'},
-  {id:'kobe',name:'Kobe',addr:'456 Kobe Blvd, LA',value:980000,mortgage:610000,rate:4.125,rent:5200,exp:2100,sqft:1950,yr:2010,color:'var(--teal)'},
-  {id:'bayhill',name:'Bay Hill',addr:'789 Bay Hill Dr, SF',value:1680000,mortgage:1050000,rate:3.5,rent:8800,exp:3500,sqft:3100,yr:1998,color:'var(--purple)'},
-  {id:'muirfield',name:'Muirfield',addr:'321 Muirfield Ln, SD',value:2100000,mortgage:1320000,rate:3.25,rent:10500,exp:4200,sqft:3800,yr:2015,color:'var(--amber)'},
-  {id:'alcita',name:'Alcita',addr:'654 Alcita Ct, OC',value:875000,mortgage:540000,rate:4.25,rent:4800,exp:1900,sqft:1700,yr:2008,color:'var(--coral)'},
-]
+// Catches render-time errors in a page so one broken component doesn't blank the
+// whole app — and surfaces the message on-screen for quick diagnosis.
+class ErrorBoundary extends Component {
+  constructor(props){ super(props); this.state = { error: null } }
+  static getDerivedStateFromError(error){ return { error } }
+  componentDidCatch(error, info){ console.error('Page render error:', error, info) }
+  render(){
+    if (this.state.error) {
+      return (
+        <div style={{padding:'20px',border:'1px solid var(--coral)',borderRadius:'var(--radius-md)',background:'var(--coral-light)'}}>
+          <p style={{color:'var(--coral)',fontWeight:600,margin:'0 0 8px',fontSize:14}}>⚠ This page hit an error</p>
+          <pre style={{whiteSpace:'pre-wrap',wordBreak:'break-word',fontSize:12,color:'var(--text-secondary)',margin:0,fontFamily:'monospace'}}>
+            {String(this.state.error?.stack || this.state.error?.message || this.state.error)}
+          </pre>
+          <button onClick={()=>this.setState({error:null})} style={{marginTop:12,fontSize:12}}>Dismiss</button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+// Real-estate portfolio is loaded per-user from GET /api/properties (see the
+// `properties` state below). No demo data — an account with no properties shows none.
 const DEMO_ACCOUNTS = [
   {id:'chase',name:'Chase Checking',type:'bank',balance:48250,institution:'Chase',last4:'4821'},
   {id:'schwab',name:'Schwab Brokerage',type:'brokerage',balance:342800,institution:'Charles Schwab',last4:'9912'},
@@ -91,14 +106,8 @@ const IS_LOCALHOST =
 const NAV_TOOLS = [
   {id:'connections',   label:'Connections',   icon:'ti-plug',             adminOnly:false, localhostOnly:false},
   {id:'data',          label:'Data Vault',    icon:'ti-database',         adminOnly:false, localhostOnly:false},
-  {id:'taxes',         label:'Tax Center',    icon:'ti-receipt-tax',      adminOnly:false, localhostOnly:false},
-  {id:'projections',   label:'Projections',   icon:'ti-trending-up',      adminOnly:false, localhostOnly:false},
-  {id:'transactions',  label:'Transactions',  icon:'ti-arrows-exchange',  adminOnly:false, localhostOnly:false},
   {id:'accounting',    label:'Report',        icon:'ti-building-bank',    adminOnly:false, localhostOnly:false},
-  {id:'advisor',       label:'AI Advisor',    icon:'ti-brain',            adminOnly:false, localhostOnly:true },
-  {id:'tax-advisor',   label:'Tax Advisor',   icon:'ti-message-chatbot',  adminOnly:false, localhostOnly:true },
-  {id:'scraper',       label:'Bank Scraper',  icon:'ti-spider',           adminOnly:false, localhostOnly:true },
-  {id:'importers',     label:'Importers',     icon:'ti-file-import',      adminOnly:false, localhostOnly:true },
+  {id:'scrapers',      label:'Scrapers',      icon:'ti-cloud-download',   adminOnly:false, localhostOnly:true},
   {id:'settings',      label:'Settings',      icon:'ti-settings',         adminOnly:false, localhostOnly:false},
 ]
 
@@ -243,11 +252,8 @@ function MainDashboard({onDrill, accounts, transactions=[], properties, onConnec
     {id:'equity',    label:'Equities',         icon:'ti-chart-candle',     color:'var(--purple)', val: equityVal>0?fd(equityVal):null,   sub: null},
     {id:'retirement',label:'Retirement',       icon:'ti-briefcase',        color:'var(--teal)',   val: retirementVal>0?fd(retirementVal):null, sub: null},
     {id:'crypto',    label:'Crypto',           icon:'ti-currency-bitcoin', color:'var(--amber)',  val: cryptoVal>0?fd(cryptoVal):null,   sub: null},
-    {id:'personal',  label:'Personal Spending',icon:'ti-receipt',          color:'var(--pink)',   val: null, sub: 'view spending breakdown'},
   ]
-  const dashModules = ALL_MODULES.filter(m =>
-    (m.id === 'personal' && hasTransactions) || enabledClasses.includes(m.id)
-  )
+  const dashModules = ALL_MODULES.filter(m => enabledClasses.includes(m.id))
 
   const noAccounts = accounts.length === 0
 
@@ -364,7 +370,7 @@ function PropertyForm({initial, onSave, onDelete, onClose, saving}) {
           <button onClick={onClose} style={{background:'none',border:'none',color:'var(--text-muted)',fontSize:18,cursor:'pointer',padding:0}}>✕</button>
         </div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
-          <div style={{gridColumn:'1/-1'}}>{field('Property name','name','text','e.g. Haas')}</div>
+          <div style={{gridColumn:'1/-1'}}>{field('Property name','name','text','e.g. Maple St Duplex')}</div>
           <div style={{gridColumn:'1/-1'}}>{field('Address','addr','text','123 Main St, Los Angeles CA')}</div>
           {field('Market value ($)','value','number','1250000')}
           {field('Mortgage balance ($)','mortgage','number','780000')}
@@ -899,12 +905,9 @@ function ConnectionsScreen({status, accounts, onSync}) {
       // SSE will also push data-updated when the sync finishes on the server.
       setTimeout(async () => {
         try {
-          const [connsRes, stmtRes] = await Promise.all([
-            axios.get(`${API}/plaid/connections`),
-            axios.post(`${API}/statements/generate`)
-          ])
+          // Statements are upload-only now — no auto-generation after a history pull.
+          const connsRes = await axios.get(`${API}/plaid/connections`)
           setPlaidConns(Array.isArray(connsRes.data) ? connsRes.data : [])
-          setStmtResult(stmtRes.data)
           onSync?.()
         } catch {}
         setHistoryRunning(false)
@@ -1096,8 +1099,7 @@ function ConnectionsScreen({status, accounts, onSync}) {
 
       </div>
 
-      {/* Statement Generation Panel */}
-      <StatementsPanel />
+      {/* Statement generation removed — statements are upload-only (Data Vault). */}
 
     </div>
   )
@@ -1446,17 +1448,14 @@ function MainApp({ auth, onLogout }) {
     if(nav==='re') return <RealEstateDash onProp={(id,name)=>drill('prop_'+id,name)} properties={properties} onRefresh={refreshProps}/>
     if(nav.startsWith('prop_')) return <PropertyDetail propId={nav.replace('prop_','')} properties={properties} onRefresh={refreshProps}/>
     if(nav==='personal') return <PersonalSpending transactions={transactions} onUpdate={setTransactions}/>
-    if(nav==='transactions') return <TransactionTransfer transactions={transactions} onUpdate={setTransactions}/>
     if(nav==='connections') return <ConnectionsScreen status={status} accounts={accounts} onSync={()=>{ axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])); axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])) }}/>
     if(nav==='equity' && IS_LOCALHOST) return <PlaceholderScreen label="Equities"/>
     if(nav==='retirement' && IS_LOCALHOST) return <PlaceholderScreen label="Retirement"/>
     if(nav==='crypto') return <Crypto/>
     if(nav==='cash') return <Banking accounts={accounts} transactions={transactions} onUpdate={setTransactions}/>
-    if(nav==='taxes') return <TaxCenter/>
     if(nav==='projections') return <Projections/>
-    if(nav==='advisor' && IS_LOCALHOST)    return <Advisor/>
-    if(nav==='tax-advisor' && IS_LOCALHOST) return <TaxAdvisor/>
     if(nav==='accounting') return <Accounting/>
+    if(nav==='scrapers' && IS_LOCALHOST) return <Scrapers/>
     if(nav==='data')       return <DataVault accounts={accounts} transactions={transactions} onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])} onTransactionsChanged={()=>{ axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])).catch(()=>{}); axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])).catch(()=>{}) }}/>
     if(nav==='settings')   return <SettingsScreen auth={auth}/>
     return null
@@ -1514,10 +1513,6 @@ function MainApp({ auth, onLogout }) {
                   onClick={()=>{ setNav(a.id); setTrail([{id:'dashboard',label:'Dashboard'},{id:a.id,label:a.label}]) }}/>
               )
             })}
-            {transactions.length > 0 && (
-              <NavBtn id="personal" label="Personal Spending" icon="ti-receipt" active={nav==='personal'} collapsed={collapsed} color="var(--pink)" onClick={()=>go('personal','Personal Spending')}/>
-            )}
-
             {!collapsed && <p style={{fontSize:10,fontWeight:500,color:'var(--text-muted)',margin:'12px 14px 4px',textTransform:'uppercase',letterSpacing:'0.8px'}}>Tools</p>}
             {NAV_TOOLS.filter(t => (!t.adminOnly || isAdmin) && (!t.localhostOnly || IS_LOCALHOST)).map(t=>(
               <NavBtn key={t.id} id={t.id} label={t.label} icon={t.icon} active={nav===t.id} collapsed={collapsed} color="var(--blue)"
@@ -1551,12 +1546,9 @@ function MainApp({ auth, onLogout }) {
               <button onClick={()=>go('connections','Connections')} style={{fontSize:12,background:'var(--teal-light)',color:'var(--teal)',borderColor:'var(--teal)'}}>
                 <Icon name="ti-plus" size={14}/> Add Account
               </button>
-              <button onClick={()=>go('advisor','AI Advisor')} style={{background:'var(--purple-light)',color:'var(--purple)',borderColor:'var(--purple)',fontSize:12}}>
-                <Icon name="ti-brain" size={14}/> AI Advisor
-              </button>
             </div>
           </div>
-          {renderContent()}
+          <ErrorBoundary key={nav}>{renderContent()}</ErrorBoundary>
         </main>
       </div>
 
