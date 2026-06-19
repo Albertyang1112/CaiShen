@@ -1102,6 +1102,14 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
   const [verifying, setVerifying]   = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
   const [showWipeConfirm, setShowWipeConfirm] = useState(false)
+  const [conflictModal, setConflictModal] = useState(null)   // { conflicts, resolve } | null — same month/year prompt
+  const [conflictChoices, setConflictChoices] = useState({}) // { [key]: 'keep' | 'replace' }
+  const [dupModal, setDupModal]     = useState(null)         // { pairs, resolve } | null — auto-organize duplicate prompt
+  const [dupChoices, setDupChoices] = useState({})           // { [pairKey]: fileIdToKeep }
+  const [reviewing, setReviewing]       = useState(false)
+  const [reviewModal, setReviewModal]   = useState(null)     // { proposals } | null — AI vault-review proposals
+  const [reviewPicks, setReviewPicks]   = useState({})       // { [proposalId]: true } — approved
+  const [applyingReview, setApplyingReview] = useState(false)
   const folderRef  = useRef()
   const fileRef    = useRef()
   const dividerDrag = useRef(null)
@@ -1173,40 +1181,51 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
       if (!vaultData) return
       ;(async () => {
         setOrganizing(true)
-        let orgOrg = 0, consolidated = 0, renamed = 0, dupeRemoved = 0, orgFudge = 0
+        let orgOrg = 0, consolidated = 0, renamed = 0, dupeRemoved = 0, orgFudge = 0, dupesKept = 0
         const deletedFolders = []
 
-        // 1. Backfill last4 + consolidate duplicate account folders + auto-remove
-        //    period-exact duplicates + rename to canonical format.
-        //    This is always cheap if there's nothing to do.
+        // 1. Backfill last4 + consolidate duplicate account folders + resolve
+        //    period-exact duplicates (user picks which copy to keep) + rename to
+        //    canonical format. This is always cheap if there's nothing to do.
         try {
-          const cr = await axios.post(`${API}/auto-organize`, { consolidate: true }, { timeout: 300000 })
-          consolidated = cr.data.consolidated        || 0
-          renamed      = cr.data.renamed             || 0
-          dupeRemoved  = cr.data.duplicatesRemoved   || 0
+          const cr = await organizeWithDupPrompt({ consolidate: true })
+          consolidated = cr.consolidated        || 0
+          renamed      = cr.renamed             || 0
+          dupeRemoved  = cr.duplicatesRemoved   || 0
+          dupesKept   += cr.duplicatesKept      || 0
+          // Mortgage re-heal stripped organize tags server-side — refresh the file
+          // list so the per-folder pass below picks up the requeued PDFs now.
+          if (cr.mortgageHealed > 0) {
+            const fresh = await load()
+            if (fresh) vaultData = fresh
+          }
         } catch {}
 
-        // 2. Organize any folders that have PDFs not yet tagged with an institution
+        // 2. Organize any folders with PDFs not yet sorted (no institution tag, and
+        //    not already attempted by the AI sorter — aiSorted marks "other" files the
+        //    AI couldn't classify, so we don't re-call Groq on every load; the manual
+        //    Sort button still retries them).
         const unsortedFolderIds = [
           ...new Set(
             (vaultData.files || [])
-              .filter(f => f.type === 'pdf' && !f.tags?.institution)
+              .filter(f => f.type === 'pdf' && !f.tags?.institution && !f.tags?.aiSorted)
               .map(f => f.folderId)
               .filter(Boolean)
           )
         ]
         for (const fid of unsortedFolderIds) {
           try {
-            const r = await axios.post(`${API}/auto-organize`, { folderId: fid }, { timeout: 300000 })
-            orgOrg      += r.data.organized         || 0
-            renamed     += r.data.renamed           || 0
-            dupeRemoved += r.data.duplicatesRemoved || 0
-            orgFudge    += r.data.fudgedCount       || 0
-            if (r.data.sourceFolderDeleted) deletedFolders.push(r.data.sourceFolderName)
+            const r = await organizeWithDupPrompt({ folderId: fid })
+            orgOrg      += r.organized         || 0
+            renamed     += r.renamed           || 0
+            dupeRemoved += r.duplicatesRemoved || 0
+            orgFudge    += r.fudgedCount       || 0
+            dupesKept   += r.duplicatesKept    || 0
+            if (r.sourceFolderDeleted) deletedFolders.push(r.sourceFolderName)
           } catch {}
         }
 
-        if (orgOrg > 0 || consolidated > 0 || renamed > 0 || dupeRemoved > 0 || orgFudge > 0) {
+        if (orgOrg > 0 || consolidated > 0 || renamed > 0 || dupeRemoved > 0 || orgFudge > 0 || dupesKept > 0) {
           await load()
           onTransactionsChanged?.()
           if (deletedFolders.length) setSelectedFolderId(null)
@@ -1214,7 +1233,8 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
             orgOrg       > 0 ? `${orgOrg} PDF${orgOrg !== 1 ? 's' : ''} sorted` : null,
             consolidated > 0 ? `${consolidated} file${consolidated !== 1 ? 's' : ''} merged into correct account` : null,
             renamed      > 0 ? `${renamed} file${renamed !== 1 ? 's' : ''} renamed` : null,
-            dupeRemoved  > 0 ? `${dupeRemoved} duplicate${dupeRemoved !== 1 ? 's' : ''} removed` : null,
+            dupeRemoved  > 0 ? `${dupeRemoved} duplicate${dupeRemoved !== 1 ? 's' : ''} resolved` : null,
+            dupesKept    > 0 ? `${dupesKept} duplicate pair${dupesKept !== 1 ? 's' : ''} kept (both copies)` : null,
             orgFudge     > 0 ? `⚠ ${orgFudge} potentially tampered statement${orgFudge !== 1 ? 's' : ''} flagged` : null,
           ].filter(Boolean)
           setUploadSuccess(`✓ ${parts.join(' · ')} automatically`)
@@ -1263,25 +1283,115 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
     setVerifying(false)
   }
 
+  // AI vault review — (1) re-validate every statement's income/spending and auto-correct
+  // any stale/wrong figures (non-destructive), then (2) fetch proposed cleanups for
+  // duplicates/empty/redundant folders (nothing destructive happens until you approve).
+  const runReview = async () => {
+    setReviewing(true); setUploadError(null)
+    try {
+      // (1) retroactive financial-stats correction
+      let corrected = 0
+      try {
+        const sr = await axios.post(`${API}/extract-stats`, { revalidate: true }, { timeout: 300000 })
+        corrected = sr.data?.corrected || 0
+        if (corrected > 0) await load()
+      } catch {}
+
+      // (2) cleanup proposals
+      const r = await axios.post(`${API}/review`, {}, { timeout: 120000 })
+      const proposals = r.data.proposals || []
+      const fixedMsg = corrected > 0 ? `Corrected ${corrected} financial figure${corrected !== 1 ? 's' : ''}. ` : ''
+      if (!proposals.length) {
+        setUploadSuccess(`✓ ${fixedMsg}AI reviewed your vault — no duplicate files, empty folders, or redundant folders found.`)
+      } else {
+        if (fixedMsg) setUploadSuccess('✓ ' + fixedMsg)
+        setReviewPicks(Object.fromEntries(proposals.map(p => [p.id, true]))) // pre-check all
+        setReviewModal({ proposals })
+      }
+    } catch (e) {
+      setUploadError('Review failed: ' + (e.response?.data?.error || e.message))
+    }
+    setReviewing(false)
+  }
+
+  const applyReview = async () => {
+    if (!reviewModal) return
+    const approved = reviewModal.proposals.filter(p => reviewPicks[p.id])
+    if (!approved.length) { setReviewModal(null); return }
+    setApplyingReview(true)
+    try {
+      const r = await axios.post(`${API}/review/apply`, { proposals: approved }, { timeout: 120000 })
+      setReviewModal(null)
+      await load()
+      onTransactionsChanged?.()
+      const failed = (r.data.results || []).filter(x => !x.ok).length
+      setUploadSuccess(`✓ Applied ${r.data.applied} change${r.data.applied !== 1 ? 's' : ''}${failed ? ` · ${failed} skipped` : ''}`)
+    } catch (e) {
+      setUploadError('Apply failed: ' + (e.response?.data?.error || e.message))
+    }
+    setApplyingReview(false)
+  }
+
   const organizeFolder = async (folderId) => {
     setOrganizing(true); setUploadError(null)
     try {
-      const res = await axios.post(`${API}/auto-organize`, { folderId }, { timeout: 300000 })
+      const res = await organizeWithDupPrompt({ folderId })
       await load()
       onTransactionsChanged?.()   // refresh accounts if any were auto-created
       const parts = [
-        res.data.organized > 0 ? `${res.data.organized} PDF${res.data.organized !== 1 ? 's' : ''} sorted` : null,
-        res.data.skipped   > 0 ? `${res.data.skipped} couldn't be matched` : null,
-        res.data.failed    > 0 ? `${res.data.failed} failed` : null,
-        res.data.sourceFolderDeleted ? `"${res.data.sourceFolderName}" folder cleaned up` : null,
+        res.organized         > 0 ? `${res.organized} PDF${res.organized !== 1 ? 's' : ''} sorted` : null,
+        res.duplicatesRemoved > 0 ? `${res.duplicatesRemoved} duplicate${res.duplicatesRemoved !== 1 ? 's' : ''} resolved` : null,
+        res.duplicatesKept    > 0 ? `${res.duplicatesKept} duplicate pair${res.duplicatesKept !== 1 ? 's' : ''} kept (both copies)` : null,
+        res.skipped           > 0 ? `${res.skipped} couldn't be matched` : null,
+        res.failed            > 0 ? `${res.failed} failed` : null,
+        res.sourceFolderDeleted ? `"${res.sourceFolderName}" folder cleaned up` : null,
       ].filter(Boolean)
       setUploadSuccess('✓ ' + (parts.length ? parts.join(' · ') : 'Nothing to sort'))
-      if (res.data.sourceFolderDeleted) setSelectedFolderId(null)
+      if (res.sourceFolderDeleted) setSelectedFolderId(null)
     } catch (e) {
       setUploadError('Sort failed: ' + (e.response?.data?.error || e.message))
     }
     setOrganizing(false)
   }
+
+  // Open the same-month/year modal and resolve with the user's per-period choices.
+  // Defaults every conflict to 'replace' (the common case: a real statement over a placeholder).
+  const askConflicts = useCallback((conflicts) => new Promise((resolve) => {
+    setConflictChoices(Object.fromEntries(conflicts.map(c => [c.key, 'replace'])))
+    setConflictModal({ conflicts, resolve })
+  }), [])
+
+  // Open the duplicate-statement modal and resolve with { [pairKey]: fileIdToKeep },
+  // or null if the user dismisses (keep both copies for now). Defaults to the existing copy.
+  const askDuplicates = useCallback((pairs) => new Promise((resolve) => {
+    setDupChoices(Object.fromEntries(pairs.map(p => [p.key, p.existing.id])))
+    setDupModal({ pairs, resolve })
+  }), [])
+
+  // Run auto-organize; if the server reports duplicate pairs, ask the user which copy
+  // to keep and retry the same request with those decisions. Returns merged result data
+  // (plus `duplicatesKept` — pairs the user chose to leave unresolved).
+  const organizeWithDupPrompt = useCallback(async (body) => {
+    const r = await axios.post(`${API}/auto-organize`, body, { timeout: 300000 })
+    const d = r.data
+    if (!d.duplicates?.length) return { ...d, duplicatesKept: 0 }
+    const resolutions = await askDuplicates(d.duplicates)
+    if (!resolutions) return { ...d, duplicatesKept: d.duplicates.length }
+    const r2 = await axios.post(`${API}/auto-organize`, { ...body, duplicateResolutions: resolutions }, { timeout: 300000 })
+    return {
+      ...r2.data,
+      organized:           (d.organized         || 0) + (r2.data.organized         || 0),
+      renamed:             (d.renamed           || 0) + (r2.data.renamed           || 0),
+      consolidated:        (d.consolidated      || 0) + (r2.data.consolidated      || 0),
+      failed:              (d.failed            || 0) + (r2.data.failed            || 0),
+      fudgedCount:         (d.fudgedCount       || 0) + (r2.data.fudgedCount       || 0),
+      duplicatesRemoved:   (d.duplicatesRemoved || 0) + (r2.data.duplicatesRemoved || 0),
+      skipped:             (d.skipped           || 0),  // retry re-runs only the resolved files
+      sourceFolderDeleted: d.sourceFolderDeleted || r2.data.sourceFolderDeleted,
+      sourceFolderName:    r2.data.sourceFolderName || d.sourceFolderName,
+      duplicatesKept:      (r2.data.duplicates || []).length,
+    }
+  }, [askDuplicates])
 
   const doUpload = useCallback(async (fileList, mergeMode='merge') => {
     setUploading(true); setUploadError(null); setUploadSuccess(null)
@@ -1313,18 +1423,11 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
 
         // Same month+year already exists → ask which to keep, then re-upload the chosen ones.
         if (res.data.conflicts && res.data.conflicts.length) {
-          const resolutions = {}, retry = []
-          for (const c of res.data.conflicts) {
-            const when = c.incoming.year && c.incoming.month ? `${c.incoming.month}/${c.incoming.year}` : 'this period'
-            const replace = window.confirm(
-              `A statement for ${when} already exists in this folder:\n\n` +
-              `  • existing: ${c.existing.name}\n  • new: ${c.incoming.name}\n\n` +
-              `OK = replace with the new file   ·   Cancel = keep the existing one`
-            )
-            resolutions[c.key] = replace ? 'replace' : 'keep'
-            const f = files.find(ff => ff.name === c.incoming.name)
-            if (replace && f) retry.push(f)
-          }
+          const resolutions = await askConflicts(res.data.conflicts)   // { [key]: 'keep'|'replace' }
+          const retry = res.data.conflicts
+            .filter(c => resolutions[c.key] === 'replace')
+            .map(c => files.find(ff => ff.name === c.incoming.name))
+            .filter(Boolean)
           if (retry.length) {
             const fd2 = new FormData()
             fd2.append('folderPath', folderPath)
@@ -1342,28 +1445,30 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
       if (pdfFolderIds.size > 0) {
         setOrganizing(true)
         setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded — sorting PDFs into account folders…`)
-        let orgOrg = 0, orgSkip = 0, orgFail = 0, orgDupe = 0, orgFudge = 0
+        let orgOrg = 0, orgSkip = 0, orgFail = 0, orgDupe = 0, orgFudge = 0, orgDupeKept = 0
         const deletedFolders = []
         for (const fid of pdfFolderIds) {
           try {
-            const r = await axios.post(`${API}/auto-organize`, { folderId: fid }, { timeout: 300000 })
-            orgOrg   += r.data.organized          || 0
-            orgSkip  += r.data.skipped            || 0
-            orgFail  += r.data.failed             || 0
-            orgDupe  += r.data.duplicatesRemoved  || 0
-            orgFudge += r.data.fudgedCount        || 0
-            if (r.data.sourceFolderDeleted) deletedFolders.push(r.data.sourceFolderName)
+            const r = await organizeWithDupPrompt({ folderId: fid })
+            orgOrg      += r.organized          || 0
+            orgSkip     += r.skipped            || 0
+            orgFail     += r.failed             || 0
+            orgDupe     += r.duplicatesRemoved  || 0
+            orgFudge    += r.fudgedCount        || 0
+            orgDupeKept += r.duplicatesKept     || 0
+            if (r.sourceFolderDeleted) deletedFolders.push(r.sourceFolderName)
           } catch {}
         }
         await load()
         onTransactionsChanged?.()
         if (deletedFolders.length) setSelectedFolderId(null)
         const parts = [
-          orgOrg   > 0 ? `${orgOrg} PDF${orgOrg !== 1 ? 's' : ''} sorted into account folders` : null,
-          orgDupe  > 0 ? `${orgDupe} duplicate${orgDupe !== 1 ? 's' : ''} removed` : null,
-          orgFudge > 0 ? `⚠ ${orgFudge} potentially tampered statement${orgFudge !== 1 ? 's' : ''} flagged` : null,
-          orgSkip  > 0 ? `${orgSkip} couldn't be matched` : null,
-          orgFail  > 0 ? `${orgFail} failed` : null,
+          orgOrg      > 0 ? `${orgOrg} PDF${orgOrg !== 1 ? 's' : ''} sorted into account folders` : null,
+          orgDupe     > 0 ? `${orgDupe} duplicate${orgDupe !== 1 ? 's' : ''} resolved` : null,
+          orgDupeKept > 0 ? `${orgDupeKept} duplicate pair${orgDupeKept !== 1 ? 's' : ''} kept (both copies)` : null,
+          orgFudge    > 0 ? `⚠ ${orgFudge} potentially tampered statement${orgFudge !== 1 ? 's' : ''} flagged` : null,
+          orgSkip     > 0 ? `${orgSkip} couldn't be matched` : null,
+          orgFail     > 0 ? `${orgFail} failed` : null,
           deletedFolders.length ? `"${deletedFolders.join('", "')}" cleaned up` : null,
         ].filter(Boolean)
         setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded · ${parts.join(' · ')} — extracting financial stats…`)
@@ -1371,6 +1476,12 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
         try {
           const sr = await axios.post(`${API}/extract-stats`, {}, { timeout: 600000 })
           if (sr.data.processed > 0) await load()
+        } catch {}
+        // Mirror the uploaded statements into the DB and reconcile against Plaid so
+        // they flow through to the Banking tab.
+        try {
+          const ir = await axios.post(`${API}/index-statements`, { fileIds: newPdfFileIds }, { timeout: 600000 })
+          if (ir.data?.statements > 0) onTransactionsChanged?.()
         } catch {}
         setOrganizing(false)
         setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded · ${parts.join(' · ')}`)
@@ -1382,7 +1493,7 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
       setUploadError('Upload failed: ' + (e.response?.data?.error || e.message))
     }
     setUploading(false); setPendingUpload(null); setMergeInfo(null)
-  }, [selectedFolderId, meta.folders])
+  }, [selectedFolderId, meta.folders, askConflicts, organizeWithDupPrompt])
 
   // ── Allowed financial document extensions ──────────────────────────────
   const VAULT_ALLOWED_EXTS = new Set([
@@ -1583,6 +1694,12 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
         </select>
         <span style={{ fontSize:11, color:'var(--text-secondary)' }}>{meta.files.length} files · {formatSize(totalSize)}</span>
         <div style={{ marginLeft:'auto', display:'flex', gap:6 }}>
+          <button onClick={runReview} disabled={reviewing}
+            title="Let AI review the vault for duplicate files, empty folders, and redundant folders — you approve any changes"
+            style={{ fontSize:12, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
+            <i className={`ti ${reviewing ? 'ti-loader-2 spin' : 'ti-sparkles'}`} aria-hidden="true"/>
+            {' '}{reviewing ? 'Reviewing…' : 'Review vault'}
+          </button>
           <button onClick={verifyStatements} disabled={verifying}
             title="Compare PDF statement transactions against Plaid data to verify authenticity"
             style={{ fontSize:12, background:'var(--blue-light)', color:'var(--blue)', borderColor:'var(--blue)' }}>
@@ -1833,8 +1950,6 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
           onClose={() => setShowImportModal(false)}
           onImported={async () => {
             setShowImportModal(false)
-            // Auto-generate statement PDFs from newly imported data
-            try { await axios.post('/api/statements/generate') } catch {}
             await load()              // refresh vault file list
             onTransactionsChanged?.() // refresh transactions in app
           }}
@@ -1844,6 +1959,223 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
       {mergeInfo && pendingUpload && (
         <MergeModal info={mergeInfo} onSelect={mode=>doUpload(pendingUpload,mode)} onClose={()=>{ setMergeInfo(null); setPendingUpload(null) }}/>
       )}
+
+      {conflictModal && (() => {
+        const keepAll = () => { conflictModal.resolve(Object.fromEntries(conflictModal.conflicts.map(c => [c.key, 'keep']))); setConflictModal(null) }
+        const apply   = () => { conflictModal.resolve({ ...conflictChoices }); setConflictModal(null) }
+        const n = conflictModal.conflicts.length
+        return (
+          <div onClick={keepAll}
+            style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:1100, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+            <div className="card" onClick={e=>e.stopPropagation()}
+              style={{ width:'min(560px, 94vw)', maxHeight:'84vh', overflowY:'auto', padding:24 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:6 }}>
+                <i className="ti ti-versions" style={{ fontSize:22, color:'var(--amber)' }} aria-hidden="true"/>
+                <p style={{ fontSize:16, fontWeight:600, margin:0 }}>
+                  {n === 1 ? 'A statement already exists for this period' : `${n} periods already have a statement`}
+                </p>
+              </div>
+              <p style={{ fontSize:12.5, color:'var(--text-secondary)', lineHeight:1.6, margin:'0 0 18px' }}>
+                Pick which file to keep for each. <strong>Replacing permanently removes the existing file</strong> and stores your new upload in its place.
+              </p>
+
+              {conflictModal.conflicts.map(c => {
+                const choice = conflictChoices[c.key] || 'replace'
+                const m = c.incoming.month
+                const mLabel = /^\d+$/.test(String(m)) ? (['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(m,10)-1] || m) : m
+                const period = (c.incoming.year || m) ? [mLabel, c.incoming.year].filter(Boolean).join(' ') : 'Same filename'
+                const opts = [
+                  { id:'keep',    label:'Keep existing', file:c.existing, sub: c.existing.createdAt ? `uploaded ${new Date(c.existing.createdAt).toLocaleDateString()}` : 'already in vault' },
+                  { id:'replace', label:'Use new file',  file:c.incoming, sub:'just selected' },
+                ]
+                return (
+                  <div key={c.key} style={{ border:'0.5px solid var(--border)', borderRadius:'var(--radius-md)', padding:12, marginBottom:10 }}>
+                    <p style={{ fontSize:12, fontWeight:600, margin:'0 0 9px', color:'var(--text-secondary)', letterSpacing:0.2 }}>{period}</p>
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+                      {opts.map(opt => {
+                        const active = choice === opt.id
+                        return (
+                          <button key={opt.id} type="button"
+                            onClick={() => setConflictChoices(p => ({ ...p, [c.key]: opt.id }))}
+                            style={{
+                              textAlign:'left', padding:'9px 11px', borderRadius:'var(--radius-sm)', cursor:'pointer',
+                              border:`1px solid ${active ? 'var(--teal)' : 'var(--border)'}`,
+                              background: active ? 'var(--teal-light)' : 'var(--bg-secondary)',
+                              display:'flex', flexDirection:'column', gap:3, minWidth:0,
+                            }}>
+                            <span style={{ display:'flex', alignItems:'center', gap:6 }}>
+                              <i className={`ti ${active ? 'ti-circle-check-filled' : 'ti-circle'}`} style={{ fontSize:15, color: active ? 'var(--teal)' : 'var(--text-muted)' }} aria-hidden="true"/>
+                              <span style={{ fontSize:12, fontWeight:600, color: active ? 'var(--teal)' : 'var(--text-primary)' }}>{opt.label}</span>
+                            </span>
+                            <span style={{ fontSize:11, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={opt.file.name}>{opt.file.name}</span>
+                            <span style={{ fontSize:10.5, color:'var(--text-muted)' }}>{formatSize(opt.file.size)}{opt.sub ? ` · ${opt.sub}` : ''}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+
+              <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:14 }}>
+                <button onClick={keepAll}
+                  style={{ background:'var(--bg-secondary)', color:'var(--text-secondary)', borderColor:'var(--border)' }}>
+                  Cancel · keep all existing
+                </button>
+                <button onClick={apply}
+                  style={{ background:'var(--teal)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', padding:'9px 16px', fontWeight:500, cursor:'pointer', fontSize:13 }}>
+                  <i className="ti ti-check" aria-hidden="true"/> Apply
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {dupModal && (() => {
+        const decideLater = () => { dupModal.resolve(null); setDupModal(null) }
+        const apply       = () => { dupModal.resolve({ ...dupChoices }); setDupModal(null) }
+        const n = dupModal.pairs.length
+        const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+        return (
+          <div onClick={decideLater}
+            style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:1100, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+            <div className="card" onClick={e=>e.stopPropagation()}
+              style={{ width:'min(620px, 94vw)', maxHeight:'84vh', overflowY:'auto', padding:24 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:6 }}>
+                <i className="ti ti-copy" style={{ fontSize:22, color:'var(--amber)' }} aria-hidden="true"/>
+                <p style={{ fontSize:16, fontWeight:600, margin:0 }}>
+                  {n === 1 ? 'Duplicate statement found' : `${n} duplicate statements found`}
+                </p>
+              </div>
+              <p style={{ fontSize:12.5, color:'var(--text-secondary)', lineHeight:1.6, margin:'0 0 18px' }}>
+                Two copies of the same statement period exist. Pick which copy to keep —
+                <strong> the other copy is permanently removed</strong>. Or decide later to keep both for now.
+              </p>
+
+              {dupModal.pairs.map(pr => {
+                const chosen = dupChoices[pr.key] || pr.existing.id
+                const mNum   = parseInt(pr.period?.month, 10)
+                const mLabel = MONTHS[mNum - 1] || pr.period?.month
+                const fmtD   = (s) => { const d = new Date(s + 'T00:00:00'); return isNaN(d) ? s : d.toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' }) }
+                const range  = (pr.period?.periodStart && pr.period?.periodEnd) ? `${fmtD(pr.period.periodStart)} – ${fmtD(pr.period.periodEnd)}` : null
+                const heading = [
+                  pr.period?.last4 ? `Account ····${pr.period.last4}` : (pr.period?.street || null),
+                  range || [mLabel, pr.period?.year].filter(Boolean).join(' '),
+                ].filter(Boolean).join(' · ') || 'Same statement period'
+                const opts = [
+                  { file: pr.existing, label: 'Keep existing copy', sub: pr.existing.createdAt ? `uploaded ${new Date(pr.existing.createdAt).toLocaleDateString()}` : 'already in vault' },
+                  { file: pr.incoming, label: 'Keep other copy',    sub: pr.incoming.createdAt ? `uploaded ${new Date(pr.incoming.createdAt).toLocaleDateString()}` : null },
+                ]
+                return (
+                  <div key={pr.key} style={{ border:'0.5px solid var(--border)', borderRadius:'var(--radius-md)', padding:12, marginBottom:10 }}>
+                    <p style={{ fontSize:12, fontWeight:600, margin:'0 0 9px', color:'var(--text-secondary)', letterSpacing:0.2 }}>{heading}</p>
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+                      {opts.map(opt => {
+                        const active = chosen === opt.file.id
+                        return (
+                          <button key={opt.file.id} type="button"
+                            onClick={() => setDupChoices(p => ({ ...p, [pr.key]: opt.file.id }))}
+                            style={{
+                              textAlign:'left', padding:'9px 11px', borderRadius:'var(--radius-sm)', cursor:'pointer',
+                              border:`1px solid ${active ? 'var(--teal)' : 'var(--border)'}`,
+                              background: active ? 'var(--teal-light)' : 'var(--bg-secondary)',
+                              display:'flex', flexDirection:'column', gap:3, minWidth:0,
+                            }}>
+                            <span style={{ display:'flex', alignItems:'center', gap:6 }}>
+                              <i className={`ti ${active ? 'ti-circle-check-filled' : 'ti-circle'}`} style={{ fontSize:15, color: active ? 'var(--teal)' : 'var(--text-muted)' }} aria-hidden="true"/>
+                              <span style={{ fontSize:12, fontWeight:600, color: active ? 'var(--teal)' : 'var(--text-primary)' }}>{opt.label}</span>
+                            </span>
+                            <span style={{ fontSize:11, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={opt.file.name}>{opt.file.name}</span>
+                            <span style={{ fontSize:10.5, color:'var(--text-muted)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={opt.file.folderPath}>
+                              <i className="ti ti-folder" style={{ fontSize:10 }} aria-hidden="true"/> {opt.file.folderPath}
+                            </span>
+                            <span style={{ fontSize:10.5, color:'var(--text-muted)' }}>
+                              {formatSize(opt.file.size)}
+                              {opt.file.txCount != null ? ` · ${opt.file.txCount} txn${opt.file.txCount !== 1 ? 's' : ''}` : ''}
+                              {opt.sub ? ` · ${opt.sub}` : ''}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+
+              <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:14 }}>
+                <button onClick={decideLater}
+                  style={{ background:'var(--bg-secondary)', color:'var(--text-secondary)', borderColor:'var(--border)' }}>
+                  Decide later · keep both
+                </button>
+                <button onClick={apply}
+                  style={{ background:'var(--teal)', color:'#fff', border:'none', borderRadius:'var(--radius-md)', padding:'9px 16px', fontWeight:500, cursor:'pointer', fontSize:13 }}>
+                  <i className="ti ti-check" aria-hidden="true"/> Apply
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {reviewModal && (() => {
+        const TYPE = {
+          delete_file:   { label: 'Delete duplicate file', icon: 'ti-file-x',   color: 'var(--coral)' },
+          delete_folder: { label: 'Delete empty folder',   icon: 'ti-folder-x', color: 'var(--coral)' },
+          merge_folder:  { label: 'Merge folders',         icon: 'ti-arrow-merge', color: 'var(--amber)' },
+        }
+        const picks = reviewModal.proposals.filter(p => reviewPicks[p.id]).length
+        const toggle = (id) => setReviewPicks(s => ({ ...s, [id]: !s[id] }))
+        return (
+          <div onClick={() => !applyingReview && setReviewModal(null)}
+            style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:1100, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+            <div className="card" onClick={e=>e.stopPropagation()}
+              style={{ width:'min(640px, 95vw)', maxHeight:'86vh', overflowY:'auto', padding:24 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:6 }}>
+                <i className="ti ti-sparkles" style={{ fontSize:22, color:'var(--purple)' }} aria-hidden="true"/>
+                <p style={{ fontSize:16, fontWeight:600, margin:0 }}>AI found {reviewModal.proposals.length} suggested cleanup{reviewModal.proposals.length!==1?'s':''}</p>
+              </div>
+              <p style={{ fontSize:12.5, color:'var(--text-secondary)', lineHeight:1.6, margin:'0 0 16px' }}>
+                Review each one and uncheck anything you want to keep. <strong>Only the checked items are applied</strong>, and these actions delete or move files.
+              </p>
+
+              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                {reviewModal.proposals.map(p => {
+                  const t = TYPE[p.type] || { label: p.type, icon: 'ti-question-mark', color: 'var(--text-muted)' }
+                  const on = !!reviewPicks[p.id]
+                  const target = p.type === 'merge_folder'
+                    ? <span><code style={{ fontSize:11 }}>{p.fromPath}</code> → <code style={{ fontSize:11 }}>{p.intoPath}</code> <span style={{ color:'var(--text-muted)' }}>({p.fileCount} file{p.fileCount!==1?'s':''})</span></span>
+                    : <code style={{ fontSize:11 }}>{p.folderPath || `${p.folderPath||''}/${p.fileName||''}`.replace(/^\//,'') || p.fileName}</code>
+                  return (
+                    <label key={p.id} style={{ display:'flex', gap:10, alignItems:'flex-start', padding:11, borderRadius:'var(--radius-sm)',
+                      border:`1px solid ${on ? t.color : 'var(--border)'}`, background: on ? 'var(--bg-secondary)' : 'transparent', cursor:'pointer' }}>
+                      <input type="checkbox" checked={on} onChange={() => toggle(p.id)} style={{ marginTop:2, accentColor:t.color }}/>
+                      <div style={{ minWidth:0, flex:1 }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:3 }}>
+                          <i className={`ti ${t.icon}`} style={{ fontSize:14, color:t.color }} aria-hidden="true"/>
+                          <span style={{ fontSize:12.5, fontWeight:600, color:t.color }}>{t.label}</span>
+                        </div>
+                        <div style={{ fontSize:12, color:'var(--text-primary)', marginBottom:3, wordBreak:'break-all' }}>{target}</div>
+                        <div style={{ fontSize:11.5, color:'var(--text-muted)', lineHeight:1.5 }}>{p.reason}</div>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+
+              <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:16 }}>
+                <button onClick={() => setReviewModal(null)} disabled={applyingReview}
+                  style={{ background:'var(--bg-secondary)', color:'var(--text-secondary)', borderColor:'var(--border)' }}>Cancel</button>
+                <button onClick={applyReview} disabled={applyingReview || !picks}
+                  style={{ background: picks ? 'var(--purple)' : 'var(--bg-hover)', color: picks ? '#fff' : 'var(--text-muted)',
+                    border:'none', borderRadius:'var(--radius-md)', padding:'9px 16px', fontWeight:500, cursor: picks ? 'pointer' : 'default', fontSize:13 }}>
+                  <i className={`ti ${applyingReview ? 'ti-loader-2 spin' : 'ti-check'}`} aria-hidden="true"/> {applyingReview ? 'Applying…' : `Apply ${picks} change${picks!==1?'s':''}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {showNewFolder && <NewFolderModal onConfirm={createFolder} onClose={()=>setShowNewFolder(false)}/>}
 

@@ -59,4 +59,19 @@ async function deleteDocument(userId, docId) {
   await query(`DELETE FROM documents WHERE id=$1 AND user_id=$2`, [docId, userId]);
 }
 
-module.exports = { saveDocument, getDocumentBytes, signedUrl, listDocuments, deleteDocument, classify };
+/**
+ * Rename a document's display name (metadata only). The R2 object is addressed by
+ * the stored `storage_key` (which embeds the id), so the bytes never move — only
+ * `original_name` changes. Used by vault auto-organize to canonicalise filenames.
+ */
+async function renameDocument(userId, docId, newName) {
+  await query(`UPDATE documents SET original_name=$1 WHERE id=$2 AND user_id=$3`, [newName, docId, userId]);
+}
+
+/** Cheap existence check (no R2 round-trip) — does a documents row exist for this id? */
+async function documentExists(userId, docId) {
+  const r = await query(`SELECT 1 FROM documents WHERE id=$1 AND user_id=$2`, [docId, userId]);
+  return r.rows.length > 0;
+}
+
+module.exports = { saveDocument, getDocumentBytes, signedUrl, listDocuments, deleteDocument, renameDocument, documentExists, classify };

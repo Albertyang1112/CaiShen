@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import axios from 'axios'
+import TransactionsTable from './TransactionsTable'
+import ReconcileVerify from './ReconcileVerify'
+import { fd, fmtFull, TYPE_LABELS, TYPE_COLORS } from './bankingFormat'
 
 const API = '/api'
-const fmt = (n, d=0) => { if(Math.abs(n)>=1e6) return (n/1e6).toFixed(1)+'M'; if(Math.abs(n)>=1e3) return (n/1e3).toFixed(d)+'K'; return String(Math.abs(n).toFixed(d)) }
-const fd  = (n, d=0) => (n<0?'-$':'$')+fmt(Math.abs(n),d)
-const fmtFull = n => (n<0?'-$':'$')+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
+const IS_LOCALHOST = typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
 
 // ── Account classification ────────────────────────────────────────────────────
 // Covers all documented Plaid subtypes + institution-name heuristics
@@ -227,20 +229,12 @@ export const isRetirementAccount= acc => classifyAccount(acc) === 'retirement'
 export const isCryptoAccount    = acc => classifyAccount(acc) === 'crypto'
 
 // ── Category colors ───────────────────────────────────────────────────────────
-const CAT_COLOR = {
-  Dining:'var(--coral)',Shopping:'var(--amber)',Transport:'var(--blue)',Travel:'var(--blue)',
-  Groceries:'var(--green)',Entertainment:'var(--purple)',Fitness:'var(--teal)',
-  Health:'var(--teal)',Subscriptions:'var(--purple)',Coffee:'var(--amber)',
-  Tech:'var(--blue)',Utilities:'var(--text-secondary)',Income:'var(--green)',
-  Transfer:'var(--text-secondary)',Other:'var(--text-muted)',
-}
+// CAT_COLOR → moved to ./bankingFormat
 
 // ── Chart of Accounts types (mirrors Accounting.jsx) ──────────────────────────
 // The "Account Type" — the QuickBooks-style top-level classification of a GL
 // account. Determines which financial statement it lands on (Balance Sheet vs P&L).
-const TYPE_ORDER  = ['asset','liability','equity','income','expense']
-const TYPE_LABELS = { asset:'Assets', liability:'Liabilities', equity:'Equity', income:'Income', expense:'Expenses' }
-const TYPE_COLORS = { asset:'var(--blue)', liability:'var(--coral)', equity:'var(--teal)', income:'var(--green)', expense:'var(--amber)' }
+// TYPE_ORDER / TYPE_LABELS / TYPE_COLORS → moved to ./bankingFormat
 
 // ── Reusable modal + field (mirrors Accounting.jsx) ───────────────────────────
 function Modal({ title, onClose, children }) {
@@ -280,7 +274,7 @@ function MetricCard({ label, value, sub, subColor, icon, iconColor }) {
   )
 }
 
-function AccountCard({ acc, selected, onClick }) {
+function AccountCard({ acc, selected, onClick, setting, properties = [], onSaveSetting }) {
   // availableBalance = what the bank shows / what you can spend; balance = posted.
   const available = acc.availableBalance ?? acc.balance ?? 0
   const posted    = acc.balance ?? 0
@@ -289,6 +283,8 @@ function AccountCard({ acc, selected, onClick }) {
     ? acc.subtype.replace(/-/g,' ').replace(/\b\w/g, c => c.toUpperCase())
     : (acc.type || 'Account').replace(/\b\w/g, c => c.toUpperCase())
   const sourceLabel = acc.source === 'plaid' ? 'Live' : acc.source === 'csv_import' ? 'CSV' : 'Manual'
+  const business   = !!setting?.business
+  const propertyId = setting?.propertyId || ''
 
   return (
     <div onClick={onClick} title="Click to show only this account's transactions"
@@ -325,6 +321,30 @@ function AccountCard({ acc, selected, onClick }) {
         )}
       </div>
 
+      {/* Business / property tag — purchases on a business account auto-categorize as business */}
+      {onSaveSetting && (
+        <div onClick={e=>e.stopPropagation()} onMouseDown={e=>e.stopPropagation()}
+          style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+          <button onClick={()=>onSaveSetting(acc.id,{ business: !business })}
+            title="Mark this account's purchases as business — they auto-categorize as business expenses, and big equipment/furniture buys become fixed assets"
+            style={{fontSize:10,fontWeight:600,padding:'2px 8px',borderRadius:99,cursor:'pointer',display:'inline-flex',alignItems:'center',gap:3,
+              border:`1px solid ${business?'var(--amber)':'var(--border)'}`,
+              background: business?'var(--amber-light)':'transparent',
+              color: business?'var(--amber)':'var(--text-muted)'}}>
+            <i className={`ti ${business?'ti-briefcase':'ti-user'}`} style={{fontSize:11}} aria-hidden="true"/>
+            {business?'Business':'Personal'}
+          </button>
+          {business && properties.length>0 && (
+            <select value={propertyId} onChange={e=>onSaveSetting(acc.id,{ propertyId: e.target.value })}
+              style={{fontSize:10,padding:'2px 4px',borderRadius:6,maxWidth:118,
+                background:'var(--bg-secondary)',color:'var(--text-secondary)',border:'0.5px solid var(--border)'}}>
+              <option value="">Tag property…</option>
+              {properties.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          )}
+        </div>
+      )}
+
       {/* Footer */}
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <span style={{fontSize:10,padding:'1px 6px',borderRadius:99,
@@ -339,10 +359,10 @@ function AccountCard({ acc, selected, onClick }) {
   )
 }
 
-function StmtCard({ f }) {
+function StmtCard({ f, onOpen }) {
   return (
-    <a href={`/api/vault/file/${f.id}`} target="_blank" rel="noreferrer"
-      style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',border:'0.5px solid var(--border)',borderRadius:'var(--radius-sm)',textDecoration:'none',color:'var(--text-primary)',background:'var(--bg-card)',transition:'border-color 0.15s'}}
+    <div onClick={()=>onOpen(f)}
+      style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',border:'0.5px solid var(--border)',borderRadius:'var(--radius-sm)',color:'var(--text-primary)',background:'var(--bg-card)',cursor:'pointer',transition:'border-color 0.15s'}}
       onMouseEnter={e=>e.currentTarget.style.borderColor='var(--green)'}
       onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>
       <i className="ti ti-file-type-pdf" style={{fontSize:20,color:'var(--coral)',flexShrink:0}} aria-hidden="true"/>
@@ -350,122 +370,50 @@ function StmtCard({ f }) {
         <p style={{fontSize:12,fontWeight:500,margin:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{f.name}</p>
         <p style={{fontSize:10,color:'var(--text-muted)',margin:'2px 0 0'}}>{(f.size/1024).toFixed(0)} KB</p>
       </div>
-      <i className="ti ti-external-link" style={{fontSize:12,color:'var(--text-muted)',flexShrink:0}} aria-hidden="true"/>
-    </a>
-  )
-}
-
-// ── Transactions table (QuickBooks-style columns) ──────────────────────────────
-function TxTable({ txs, bankAccounts, showAccount, sortDir, onToggleSort, onRowClick, coaById, reconcileFlags = {} }) {
-  if (!txs.length) {
-    return <p style={{color:'var(--text-muted)',fontSize:13,padding:'2rem',textAlign:'center'}}>No transactions match the current filters.</p>
-  }
-  const th = (label, opts={}) => (
-    <th onClick={opts.onClick} style={{
-      textAlign:opts.align||'left', padding:'8px 12px', fontSize:10, fontWeight:600,
-      textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-muted)',
-      borderBottom:'0.5px solid var(--border)', whiteSpace:'nowrap',
-      cursor:opts.onClick?'pointer':'default', userSelect:'none',
-    }}>
-      {label}
-      {opts.sortable && <i className={`ti ti-arrow-${sortDir==='desc'?'down':'up'}`} style={{fontSize:11,marginLeft:4,verticalAlign:'middle',color:'var(--text-secondary)'}} aria-hidden="true"/>}
-    </th>
-  )
-  return (
-    <div style={{border:'0.5px solid var(--border)',borderRadius:'var(--radius-sm)',overflow:'hidden'}}>
-      <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
-        <thead>
-          <tr style={{background:'var(--bg-secondary)'}}>
-            {th('Date', {onClick:onToggleSort, sortable:true})}
-            {th('Description')}
-            {showAccount && th('Account')}
-            {th('Category')}
-            {th('Spent', {align:'right'})}
-            {th('Received', {align:'right'})}
-          </tr>
-        </thead>
-        <tbody>
-          {txs.map(tx => {
-            const acct = bankAccounts.find(a => a.id === tx.account)
-            const catColor = CAT_COLOR[tx.category] || 'var(--text-muted)'
-            const glAcct = coaById?.get(tx.coaId)            // assigned chart-of-accounts entry, if any
-            const debit = tx.amount < 0
-            const rcFlag = reconcileFlags[tx.id]
-            return (
-              <tr key={tx.id} onClick={()=>onRowClick?.(tx)} style={{borderBottom:'0.5px solid var(--border)',cursor:onRowClick?'pointer':'default'}}
-                onMouseEnter={e=>e.currentTarget.style.background='var(--bg-hover)'}
-                onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-                <td style={{padding:'9px 12px',color:'var(--text-secondary)',whiteSpace:'nowrap'}}>
-                  {tx.date}
-                  {tx.pending && <span style={{marginLeft:6,fontSize:9,padding:'1px 5px',borderRadius:4,background:'var(--amber-light)',color:'var(--amber)',textTransform:'uppercase',letterSpacing:'0.3px'}}>Pending</span>}
-                  {rcFlag === 'conflict'   && <span title="Reconcile: conflict — amount/date matched a statement row but merchant names differ" style={{marginLeft:5,fontSize:10,color:'var(--coral)'}}>⚠</span>}
-                  {rcFlag === 'plaid_only' && <span title="Reconcile: transaction appears in Plaid but not in your bank statement" style={{marginLeft:5,fontSize:10,color:'var(--amber)'}}>◈</span>}
-                  {rcFlag === 'matched'    && <span title="Reconcile: matched to bank statement ✓" style={{marginLeft:5,fontSize:10,color:'var(--teal)'}}>✓</span>}
-                </td>
-                <td style={{padding:'9px 12px',maxWidth:340}}>
-                  <span style={{display:'block',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={tx.desc||''}>{tx.desc||'—'}</span>
-                </td>
-                {showAccount && <td style={{padding:'9px 12px',color:'var(--text-secondary)',whiteSpace:'nowrap'}}>{acct?.name||'—'}</td>}
-                <td style={{padding:'9px 12px'}}>
-                  {glAcct ? (
-                    <span style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,whiteSpace:'nowrap'}}
-                      title={`${TYPE_LABELS[glAcct.type]||glAcct.type}${glAcct.subtype?' · '+glAcct.subtype:''}`}>
-                      <span style={{width:7,height:7,borderRadius:2,background:TYPE_COLORS[glAcct.type]||'var(--text-muted)',flexShrink:0}}/>
-                      {glAcct.name}
-                    </span>
-                  ) : tx.category ? (
-                    <span style={{fontSize:11,padding:'2px 8px',borderRadius:99,background:catColor+'22',color:catColor,whiteSpace:'nowrap'}}>{tx.category}</span>
-                  ) : null}
-                </td>
-                <td style={{padding:'9px 12px',textAlign:'right',color:'var(--coral)',whiteSpace:'nowrap',fontVariantNumeric:'tabular-nums'}}>
-                  {debit ? fmtFull(Math.abs(tx.amount)) : ''}
-                </td>
-                <td style={{padding:'9px 12px',textAlign:'right',color:'var(--teal)',whiteSpace:'nowrap',fontVariantNumeric:'tabular-nums'}}>
-                  {!debit ? fmtFull(tx.amount) : ''}
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
+      <i className="ti ti-eye" style={{fontSize:13,color:'var(--text-muted)',flexShrink:0}} aria-hidden="true"/>
     </div>
   )
 }
 
-// ── Spending breakdown by category ────────────────────────────────────────────
-function SpendingBreakdown({ txs }) {
-  const expenses = txs.filter(t => t.amount < 0 && t.category !== 'Transfer')
-  const byCat = {}
-  for (const t of expenses) {
-    byCat[t.category] = (byCat[t.category] || 0) + Math.abs(t.amount)
-  }
-  const sorted = Object.entries(byCat).sort((a,b) => b[1]-a[1]).slice(0, 7)
-  const total = sorted.reduce((s,[,v]) => s+v, 0)
-  if (!sorted.length) return null
-
+// In-app PDF preview popup for a statement — fetched WITH auth (token → blob →
+// iframe) so it mirrors the Data Vault preview instead of opening the raw API
+// URL in a new tab (which 401s because a plain navigation carries no token).
+function StmtPreviewModal({ f, onClose }) {
+  const [url, setUrl] = useState(null)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    let objUrl, alive = true
+    const token = localStorage.getItem('caishen_token') || ''
+    fetch(`/api/vault/file/${f.id}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => { if (!r.ok) throw new Error(`Couldn't load file (HTTP ${r.status})`); return r.blob() })
+      .then(blob => { if (alive) { objUrl = URL.createObjectURL(blob); setUrl(objUrl) } })
+      .catch(e => alive && setErr(e.message))
+    return () => { alive = false; if (objUrl) URL.revokeObjectURL(objUrl) }
+  }, [f.id])
   return (
-    <div>
-      <p style={{fontSize:11,fontWeight:500,color:'var(--text-secondary)',margin:'0 0 12px',textTransform:'uppercase',letterSpacing:'0.5px'}}>Spending by Category</p>
-      <div style={{display:'flex',flexDirection:'column',gap:8}}>
-        {sorted.map(([cat, amt]) => {
-          const pct = total > 0 ? (amt / total) * 100 : 0
-          const col = CAT_COLOR[cat] || 'var(--text-muted)'
-          return (
-            <div key={cat}>
-              <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}>
-                <span style={{color:'var(--text-secondary)'}}>{cat}</span>
-                <span style={{fontWeight:500}}>{fd(amt)}</span>
-              </div>
-              <div style={{height:3,background:'var(--bg-secondary)',borderRadius:2}}>
-                <div style={{height:3,width:pct+'%',background:col,borderRadius:2}}/>
-              </div>
-            </div>
-          )
-        })}
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}
+      onClick={e=>e.target===e.currentTarget && onClose()}>
+      <div style={{background:'var(--bg-card)',borderRadius:'var(--radius-lg)',width:'min(900px,94vw)',height:'90vh',display:'flex',flexDirection:'column',overflow:'hidden',border:'0.5px solid var(--border)'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'10px 14px',borderBottom:'0.5px solid var(--border)'}}>
+          <span style={{fontSize:13,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.name}</span>
+          <div style={{display:'flex',gap:14,alignItems:'center',flexShrink:0}}>
+            {url && <a href={url} download={f.name} style={{fontSize:12,color:'var(--blue)',textDecoration:'none',display:'inline-flex',alignItems:'center',gap:4}}><i className="ti ti-download" aria-hidden="true"/>Download</a>}
+            <button onClick={onClose} style={{background:'none',border:'none',color:'var(--text-muted)',fontSize:16,cursor:'pointer'}} aria-label="Close">✕</button>
+          </div>
+        </div>
+        <div style={{flex:1,background:'#222',minHeight:0}}>
+          {err   ? <p style={{color:'var(--coral)',padding:20,fontSize:13}}>{err}</p>
+           : url ? <iframe src={url} title={f.name} style={{width:'100%',height:'100%',border:'none'}}/>
+           :       <p style={{color:'var(--text-muted)',padding:20,fontSize:13}}>Loading…</p>}
+        </div>
       </div>
     </div>
   )
 }
+
+// ── Transactions table (QuickBooks-style columns) ──────────────────────────────
+// TxTable → extracted to ./TransactionsTable.jsx (now includes row selection,
+// bulk actions, pagination, and CSV export / print).
 
 // ── Main export ───────────────────────────────────────────────────────────────
 // ── Horizontal account strip — overflow scroll + paging arrows + drag-to-pan ────
@@ -483,7 +431,7 @@ function ArrowBtn({ dir, onClick }) {
   )
 }
 
-function AccountStrip({ bankAccounts, selectedAcct, setSelectedAcct }) {
+function AccountStrip({ bankAccounts, selectedAcct, setSelectedAcct, settings = {}, properties = [], onSaveSetting }) {
   const ref  = useRef(null)
   const drag = useRef({ active:false, startX:0, startScroll:0, moved:false })
   const [arrows, setArrows] = useState({ left:false, right:false })
@@ -551,7 +499,7 @@ function AccountStrip({ bankAccounts, selectedAcct, setSelectedAcct }) {
         style={{ display:'flex', gap:10, overflowX:'auto', cursor:'grab', userSelect:'none', paddingBottom:2 }}>
         {bankAccounts.map(a => (
           <div key={a.id} style={{ flex:'0 0 240px' }}>
-            <AccountCard acc={a} selected={selectedAcct===a.id} onClick={()=>clickCard(a.id)}/>
+            <AccountCard acc={a} selected={selectedAcct===a.id} onClick={()=>clickCard(a.id)} setting={settings[a.id]} properties={properties} onSaveSetting={onSaveSetting}/>
           </div>
         ))}
       </div>
@@ -561,75 +509,183 @@ function AccountStrip({ bankAccounts, selectedAcct, setSelectedAcct }) {
 
 // ── Phase 4: Receipt attachment + OCR panel ───────────────────────────────────
 const MATCH_STYLE = {
-  matched:    { color: 'var(--teal)',   icon: 'ti-circle-check', label: 'Matched' },
-  partial:    { color: 'var(--amber)',  icon: 'ti-alert-circle',  label: 'Partial match' },
-  mismatch:   { color: 'var(--coral)',  icon: 'ti-alert-triangle',label: 'Mismatch' },
-  unreviewed: { color: 'var(--text-muted)', icon: 'ti-clock',    label: 'Pending OCR' },
+  matched:    { color: 'var(--teal)',   icon: 'ti ti-circle-check',  label: 'Matched' },
+  partial:    { color: 'var(--amber)',  icon: 'ti ti-alert-circle',  label: 'Partial match' },
+  mismatch:   { color: 'var(--coral)',  icon: 'ti ti-alert-triangle',label: 'Mismatch' },
+  unreviewed: { color: 'var(--text-muted)', icon: 'ti ti-clock',     label: 'Pending OCR' },
 }
 
-function ReceiptPanel({ txId, txAmount, txDate, txDesc }) {
+// Full-size receipt viewer — fetched WITH auth (token → blob → img/iframe), same
+// pattern as StmtPreviewModal. zIndex sits above the transaction detail modal.
+function ReceiptViewModal({ receipt, onClose }) {
+  const [url, setUrl] = useState(null)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    let objUrl, alive = true
+    axios.get(`${API}/receipts/file/${receipt.id}`, { responseType: 'blob' })
+      .then(res => {
+        if (!alive) return
+        objUrl = URL.createObjectURL(res.data); setUrl(objUrl)
+      })
+      .catch(e => alive && setErr(e.response?.data?.error || e.message))
+    return () => { alive = false; if (objUrl) URL.revokeObjectURL(objUrl) }
+  }, [receipt.id])
+  const isImg = (receipt.mime_type || '').startsWith('image/')
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.75)',zIndex:1100,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}
+      onClick={e=>e.target===e.currentTarget && onClose()}>
+      <div style={{background:'var(--bg-card)',border:'0.5px solid var(--border)',borderRadius:'var(--radius-lg)',maxWidth:'94vw',maxHeight:'92vh',display:'flex',flexDirection:'column',overflow:'hidden',...(isImg?{}:{width:'min(860px,94vw)',height:'88vh'})}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'10px 14px',borderBottom:'0.5px solid var(--border)'}}>
+          <span style={{fontSize:13,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{receipt.original_name || 'Receipt'}</span>
+          <div style={{display:'flex',gap:14,alignItems:'center',flexShrink:0}}>
+            {url && <a href={url} download={receipt.original_name || 'receipt'} style={{fontSize:12,color:'var(--blue)',textDecoration:'none',display:'inline-flex',alignItems:'center',gap:4}}><i className="ti ti-download" aria-hidden="true"/>Download</a>}
+            <button onClick={onClose} style={{background:'none',border:'none',color:'var(--text-muted)',fontSize:16,cursor:'pointer'}} aria-label="Close">✕</button>
+          </div>
+        </div>
+        <div style={{flex:1,minHeight:0,background:'#222',display:'flex',alignItems:'center',justifyContent:'center'}}>
+          {err   ? <p style={{color:'var(--coral)',padding:20,fontSize:13}}>{err}</p>
+           : !url ? <p style={{color:'var(--text-muted)',padding:20,fontSize:13}}>Loading…</p>
+           : isImg ? <img src={url} alt={receipt.original_name || 'Receipt'} style={{maxWidth:'90vw',maxHeight:'82vh',objectFit:'contain',display:'block'}}/>
+           :         <iframe src={url} title={receipt.original_name || 'Receipt'} style={{width:'100%',height:'100%',border:'none'}}/>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ReceiptPanel({ txId, onChanged }) {
   const [receipts,   setReceipts]   = useState([])
   const [uploading,  setUploading]  = useState(false)
+  const [err,        setErr]        = useState('')
   const [expanded,   setExpanded]   = useState({})
+  const [fileUrls,   setFileUrls]   = useState({})     // receiptId → blob object URL (thumbnails)
+  const [viewing,    setViewing]    = useState(null)   // receipt open in the full-size viewer
+  const [dragOver,   setDragOver]   = useState(false)
+  const urlsRef = useRef({})                           // owns the object URLs for cleanup
 
   const load = useCallback(() => {
     axios.get(`${API}/receipts/${txId}`).then(r => setReceipts(r.data)).catch(() => {})
   }, [txId])
 
   useEffect(() => { load() }, [load])
+  useEffect(() => () => {
+    Object.values(urlsRef.current).forEach(u => { if (u && u !== 'pending') URL.revokeObjectURL(u) })
+  }, [])
 
-  async function attach(file) {
-    if (!file) return
-    setUploading(true)
-    const fd = new FormData(); fd.append('file', file)
+  // Lazy-fetch the bytes for image thumbnails (authed via the axios token header).
+  const ensureFileUrl = useCallback((id) => {
+    if (urlsRef.current[id]) return
+    urlsRef.current[id] = 'pending'
+    axios.get(`${API}/receipts/file/${id}`, { responseType: 'blob' })
+      .then(res => {
+        const u = URL.createObjectURL(res.data)
+        urlsRef.current[id] = u
+        setFileUrls(m => ({ ...m, [id]: u }))
+      })
+      .catch(() => { delete urlsRef.current[id] })
+  }, [])
+  useEffect(() => {
+    receipts.filter(r => (r.mime_type || '').startsWith('image/')).forEach(r => ensureFileUrl(r.id))
+  }, [receipts, ensureFileUrl])
+
+  async function attach(fileList) {
+    const files = [...(fileList || [])].filter(Boolean)
+    if (!files.length || uploading) return
+    setUploading(true); setErr('')
     try {
-      await axios.post(`${API}/receipts/attach/${txId}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
-      load()
-    } catch (e) { console.error('receipt upload:', e.message) }
+      for (const f of files) {
+        const fd = new FormData(); fd.append('file', f)
+        await axios.post(`${API}/receipts/attach/${txId}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+      }
+    } catch (e) {
+      setErr(e.response?.data?.error || `Upload failed: ${e.message}`)
+    }
+    load(); onChanged?.()
     setUploading(false)
   }
+
+  // Paste a screenshot (Ctrl+V) while the detail modal is open. Only fires when
+  // the clipboard holds an image, so pasting text into the memo still works.
+  const attachRef = useRef(null)
+  attachRef.current = attach
+  useEffect(() => {
+    const onPaste = (e) => {
+      const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'))
+      if (!item) return
+      const f = item.getAsFile()
+      if (f) { e.preventDefault(); attachRef.current([f]) }
+    }
+    document.addEventListener('paste', onPaste)
+    return () => document.removeEventListener('paste', onPaste)
+  }, [])
 
   async function del(id) {
     await axios.delete(`${API}/receipts/${id}`).catch(() => {})
     setReceipts(prev => prev.filter(r => r.id !== id))
+    onChanged?.()
   }
 
   return (
-    <div style={{marginBottom:16,borderTop:'0.5px solid var(--border)',paddingTop:14}}>
+    <div
+      onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={e => { e.preventDefault(); setDragOver(false); attach(e.dataTransfer.files) }}
+      style={{marginBottom:16,borderTop:'0.5px solid var(--border)',paddingTop:14,
+        outline: dragOver ? '1.5px dashed var(--blue)' : 'none', outlineOffset:4, borderRadius:6}}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
         <span style={{fontSize:12,fontWeight:600,color:'var(--text-secondary)',textTransform:'uppercase',letterSpacing:'0.5px'}}>
-          <i className="ti-receipt-2" style={{marginRight:5}}/>Receipts
+          <i className="ti ti-receipt-2" style={{marginRight:5}} aria-hidden="true"/>Receipts
         </span>
         <label style={{cursor:'pointer',fontSize:12,color:'var(--blue)',display:'flex',alignItems:'center',gap:4}}>
-          <i className={uploading ? 'ti-loader-2' : 'ti-upload'} style={uploading ? {animation:'spin 1s linear infinite'} : {}}/>
+          <i className={uploading ? 'ti ti-loader-2' : 'ti ti-paperclip'} style={uploading ? {animation:'spin 1s linear infinite'} : {}} aria-hidden="true"/>
           {uploading ? 'Scanning…' : 'Attach'}
-          <input type="file" accept="image/*,.pdf" style={{display:'none'}}
-            onChange={e => attach(e.target.files[0])} disabled={uploading}/>
+          <input type="file" accept="image/*,.pdf" multiple style={{display:'none'}}
+            onChange={e => { attach(e.target.files); e.target.value = '' }} disabled={uploading}/>
         </label>
       </div>
 
-      {receipts.length === 0 && (
-        <p style={{fontSize:12,color:'var(--text-muted)',margin:'0 0 4px',fontStyle:'italic'}}>No receipts attached.</p>
+      {err && (
+        <p style={{fontSize:12,color:'var(--coral)',margin:'0 0 8px',display:'flex',alignItems:'flex-start',gap:5}}>
+          <i className="ti ti-alert-triangle" style={{marginTop:1,flexShrink:0}} aria-hidden="true"/>{err}
+        </p>
+      )}
+
+      {receipts.length === 0 && !err && (
+        <p style={{fontSize:12,color:'var(--text-muted)',margin:'0 0 4px',fontStyle:'italic'}}>
+          No receipts attached — click Attach, drop a file, or paste a screenshot (Ctrl+V).
+        </p>
       )}
 
       {receipts.map(r => {
-        const ms = MATCH_STYLE[r.match_status] || MATCH_STYLE.unreviewed
-        const ocr = r.ocr_data || {}
-        const open = !!expanded[r.id]
+        const ms    = MATCH_STYLE[r.match_status] || MATCH_STYLE.unreviewed
+        const ocr   = r.ocr_data || {}
+        const open  = !!expanded[r.id]
+        const isImg = (r.mime_type || '').startsWith('image/')
+        const thumb = fileUrls[r.id]
         return (
           <div key={r.id} style={{marginBottom:8,borderRadius:6,border:'0.5px solid var(--border)',overflow:'hidden'}}>
             {/* Header row */}
-            <div style={{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',background:'var(--bg-secondary)',cursor:'pointer'}}
+            <div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',background:'var(--bg-secondary)',cursor:'pointer'}}
                  onClick={() => setExpanded(p => ({...p,[r.id]:!p[r.id]}))}>
-              <i className={ms.icon} style={{color:ms.color,fontSize:13}}/>
+              {isImg && thumb
+                ? <img src={thumb} alt="" onClick={e => { e.stopPropagation(); setViewing(r) }}
+                    style={{width:28,height:28,objectFit:'cover',borderRadius:4,border:'0.5px solid var(--border)',cursor:'zoom-in',flexShrink:0}}/>
+                : <i className={isImg ? 'ti ti-photo' : 'ti ti-file-type-pdf'} style={{fontSize:16,color:isImg?'var(--text-secondary)':'var(--coral)',flexShrink:0}} aria-hidden="true"/>}
               <span style={{fontSize:12,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.original_name}</span>
-              <span style={{fontSize:11,color:ms.color,fontWeight:600}}>{ms.label}</span>
-              <i className={open?'ti-chevron-up':'ti-chevron-down'} style={{fontSize:11,color:'var(--text-muted)'}}/>
+              <i className={ms.icon} style={{color:ms.color,fontSize:13}} aria-hidden="true"/>
+              <span style={{fontSize:11,color:ms.color,fontWeight:600,whiteSpace:'nowrap'}}>{ms.label}</span>
+              <i className={open?'ti ti-chevron-up':'ti ti-chevron-down'} style={{fontSize:11,color:'var(--text-muted)'}} aria-hidden="true"/>
             </div>
 
             {/* Expanded detail */}
             {open && (
               <div style={{padding:'8px 10px',fontSize:12}}>
+                {/* Preview — click to open full size */}
+                {isImg && thumb && (
+                  <img src={thumb} alt={r.original_name || 'Receipt'} onClick={() => setViewing(r)}
+                    style={{maxWidth:'100%',maxHeight:160,borderRadius:6,border:'0.5px solid var(--border)',cursor:'zoom-in',display:'block',marginBottom:8}}/>
+                )}
+
                 {/* OCR fields */}
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
                   {[
@@ -649,7 +705,7 @@ function ReceiptPanel({ txId, txAmount, txDate, txDesc }) {
                   <div style={{marginBottom:8}}>
                     {r.match_flags.map((f,i) => (
                       <div key={i} style={{fontSize:11,color:'var(--coral)',display:'flex',alignItems:'flex-start',gap:4,marginBottom:3}}>
-                        <i className="ti-alert-triangle" style={{marginTop:1,flexShrink:0}}/>
+                        <i className="ti ti-alert-triangle" style={{marginTop:1,flexShrink:0}} aria-hidden="true"/>
                         {f}
                       </div>
                     ))}
@@ -669,21 +725,354 @@ function ReceiptPanel({ txId, txAmount, txDate, txDesc }) {
                   </div>
                 )}
 
-                <button onClick={() => del(r.id)}
-                  style={{fontSize:11,color:'var(--coral)',background:'none',border:'none',cursor:'pointer',padding:0}}>
-                  <i className="ti-trash" style={{marginRight:3}}/>Remove
-                </button>
+                <div style={{display:'flex',gap:14}}>
+                  <button onClick={() => setViewing(r)}
+                    style={{fontSize:11,color:'var(--blue)',background:'none',border:'none',cursor:'pointer',padding:0}}>
+                    <i className="ti ti-eye" style={{marginRight:3}} aria-hidden="true"/>View
+                  </button>
+                  <button onClick={() => del(r.id)}
+                    style={{fontSize:11,color:'var(--coral)',background:'none',border:'none',cursor:'pointer',padding:0}}>
+                    <i className="ti ti-trash" style={{marginRight:3}} aria-hidden="true"/>Remove
+                  </button>
+                </div>
               </div>
             )}
           </div>
         )
       })}
+
+      {viewing && <ReceiptViewModal receipt={viewing} onClose={() => setViewing(null)}/>}
+    </div>
+  )
+}
+
+// ── Hierarchical category picker (searchable tree + inline "add sub-category") ──
+// Renders the Chart-of-Accounts tree (parentId nesting). Selecting any node sets
+// its coaId; the ＋ on any row adds a child at any depth (e.g. Chipotle → Fast Food).
+const PICKER_TYPE_COLOR = { income:'var(--green)', expense:'var(--amber)', asset:'var(--blue)', liability:'var(--coral)', equity:'var(--teal)' }
+
+function CategoryPicker({ coa, value, onChange, onCreate }) {
+  const [open, setOpen]         = useState(false)
+  const [search, setSearch]     = useState('')
+  const [expanded, setExpanded] = useState({})
+  const [addingTo, setAddingTo] = useState(null)
+  const [newName, setNewName]   = useState('')
+  const [busy, setBusy]         = useState(false)
+  const ref = useRef(null)
+
+  const byId = useMemo(() => new Map(coa.map(a => [a.id, a])), [coa])
+  const childrenOf = useMemo(() => {
+    const m = {}
+    for (const a of coa) { const p = a.parentId || '__root'; (m[p] = m[p] || []).push(a) }
+    return m
+  }, [coa])
+
+  const pathOf = (id) => {
+    const parts = []; let cur = byId.get(id)
+    while (cur) { parts.unshift(cur.name); cur = cur.parentId ? byId.get(cur.parentId) : null }
+    return parts
+  }
+  const selectedPath = value ? pathOf(value) : null
+
+  useEffect(() => {
+    if (!open) return
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+
+  const q = search.trim().toLowerCase()
+  // During search, show matching nodes + their ancestors, fully expanded.
+  const visibleIds = useMemo(() => {
+    if (!q) return null
+    const vis = new Set()
+    for (const a of coa) if (a.name.toLowerCase().includes(q)) {
+      let cur = a
+      while (cur) { vis.add(cur.id); cur = cur.parentId ? byId.get(cur.parentId) : null }
+    }
+    return vis
+  }, [q, coa, byId])
+
+  const add = async (parentId) => {
+    if (!newName.trim() || busy) return
+    setBusy(true)
+    try {
+      const node = await onCreate(newName.trim(), parentId)
+      setNewName(''); setAddingTo(null)
+      if (node?.id) { onChange(node.id); setOpen(false) }
+    } catch (e) { alert('Could not add category: ' + (e.response?.data?.error || e.message)) }
+    setBusy(false)
+  }
+
+  const renderNode = (a, depth) => {
+    if (a.active === false) return null
+    if (visibleIds && !visibleIds.has(a.id)) return null
+    const kids = childrenOf[a.id] || []
+    const hasKids = kids.length > 0
+    const exp = q ? true : !!expanded[a.id]
+    const sel = value === a.id
+    // Click a branch → drill in (open its sub-categories); click a leaf → pick it.
+    // The whole row is the target, so a category with sub-categories never gets
+    // selected by accident — you choose a specific leaf instead.
+    const rowClick = () => {
+      if (hasKids) setExpanded(p => ({ ...p, [a.id]: !p[a.id] }))
+      else { onChange(a.id); setOpen(false) }
+    }
+    return (
+      <div key={a.id}>
+        <div onClick={rowClick}
+          style={{ display:'flex', alignItems:'center', gap:4, paddingLeft:6 + depth*15, borderRadius:6, cursor:'pointer',
+            background: sel ? 'rgba(99,153,34,0.12)' : 'transparent' }}
+          onMouseEnter={e => { if (!sel) e.currentTarget.style.background = 'var(--bg-hover)' }}
+          onMouseLeave={e => { if (!sel) e.currentTarget.style.background = 'transparent' }}>
+          <span style={{ width:18, height:24, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+            {hasKids
+              ? <i className={`ti ${exp ? 'ti-chevron-down' : 'ti-chevron-right'}`} style={{ fontSize:12, color:'var(--text-muted)' }} aria-hidden="true"/>
+              : <i className={`ti ${sel ? 'ti-circle-check-filled' : 'ti-point'}`} style={{ fontSize: sel ? 13 : 9, color: sel ? 'var(--green)' : 'var(--text-muted)' }} aria-hidden="true"/>}
+          </span>
+          <span style={{ flex:1, fontSize:13, padding:'5px 2px', fontWeight: a.parentId ? 400 : 600, color: sel ? 'var(--green)' : 'var(--text-primary)' }}>
+            {a.name}
+            {hasKids && <span style={{ fontSize:10, marginLeft:6, color:'var(--text-muted)' }}>{kids.length}</span>}
+          </span>
+          {!a.parentId && <span style={{ fontSize:9, textTransform:'uppercase', letterSpacing:'0.3px', color: PICKER_TYPE_COLOR[a.type] || 'var(--text-muted)', marginRight:2 }}>{a.scope}</span>}
+          <button type="button" title={`Add a sub-category under "${a.name}"`}
+            onClick={e => { e.stopPropagation(); setAddingTo(a.id); setExpanded(p => ({ ...p, [a.id]: true })); setNewName('') }}
+            style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:24, height:21, background:'var(--green-light)', border:'0.5px solid var(--green)', borderRadius:6, padding:0, cursor:'pointer', color:'var(--green)', flexShrink:0, marginRight:2 }}>
+            <i className="ti ti-plus" style={{ fontSize:13 }} aria-hidden="true"/>
+          </button>
+        </div>
+        {addingTo === a.id && (
+          <div onClick={e => e.stopPropagation()} style={{ display:'flex', gap:6, padding:'4px 6px', paddingLeft:6 + (depth+1)*15 + 18 }}>
+            <input autoFocus value={newName} onChange={e => setNewName(e.target.value)}
+              placeholder={`New under "${a.name}"…`}
+              onKeyDown={e => { if (e.key === 'Enter') add(a.id); if (e.key === 'Escape') { setAddingTo(null); setNewName('') } }}
+              style={{ flex:1, fontSize:12, padding:'5px 8px' }}/>
+            <button type="button" disabled={busy || !newName.trim()} onClick={() => add(a.id)}
+              style={{ fontSize:12, padding:'4px 10px', background:'var(--green)', color:'#fff', border:'none', borderRadius:6, cursor:'pointer', opacity: busy || !newName.trim() ? 0.5 : 1 }}>
+              {busy ? '…' : 'Add'}
+            </button>
+          </div>
+        )}
+        {exp && hasKids && kids.map(k => renderNode(k, depth + 1))}
+      </div>
+    )
+  }
+
+  const roots = childrenOf['__root'] || []
+
+  return (
+    <div ref={ref} style={{ position:'relative' }}>
+      <button type="button" onClick={() => setOpen(o => !o)}
+        style={{ width:'100%', display:'flex', alignItems:'center', gap:8, textAlign:'left', padding:'8px 10px', fontSize:13, background:'var(--bg-secondary)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)', color:'var(--text-primary)', cursor:'pointer' }}>
+        <span style={{ flex:1, minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+          {selectedPath
+            ? selectedPath.map((p, i) => <span key={i} style={{ color: i === selectedPath.length - 1 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{i > 0 ? ' › ' : ''}{p}</span>)
+            : <span style={{ color:'var(--text-muted)' }}>Uncategorized — choose a category</span>}
+        </span>
+        <i className={`ti ${open ? 'ti-chevron-up' : 'ti-chevron-down'}`} style={{ fontSize:13, color:'var(--text-muted)', flexShrink:0 }} aria-hidden="true"/>
+      </button>
+      {open && (
+        <div style={{ position:'absolute', zIndex:30, top:'calc(100% + 4px)', left:0, right:0, background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:8, boxShadow:'0 12px 32px rgba(0,0,0,0.45)', maxHeight:360, display:'flex', flexDirection:'column' }}>
+          <div style={{ padding:8, borderBottom:'0.5px solid var(--border)' }}>
+            <input autoFocus value={search} onChange={e => setSearch(e.target.value)} placeholder="Search categories…" style={{ width:'100%', fontSize:13, padding:'7px 10px' }}/>
+          </div>
+          <div style={{ overflowY:'auto', padding:6 }}>
+            <div onClick={() => { onChange(''); setOpen(false) }}
+              style={{ padding:'6px 8px', fontSize:13, color:'var(--text-muted)', cursor:'pointer', borderRadius:6 }}>
+              Uncategorized
+            </div>
+            {roots.map(r => renderNode(r, 0))}
+            {roots.length === 0 && <p style={{ fontSize:12, color:'var(--text-muted)', padding:'8px' }}>No categories yet.</p>}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Statement match panel (inside the transaction detail popup) ───────────────
+// Shows whether this Plaid transaction was verified against an uploaded bank
+// statement. When it wasn't, a dropdown lists the unmatched statement rows on the
+// same date (plus near dates — statements can post a couple days late) so the user
+// can pair it. Matching ONCE auto-teaches the merchant name pairing on the server
+// (Plaid "Walmart" ↔ statement "WM SUPERCENTER"), so every future pair with these
+// names matches automatically — amount and date are still verified by the engine.
+const aliasNorm = s => String(s || '').toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
+
+function StatementMatchPanel({ tx, onChanged }) {
+  const [rec, setRec]         = useState(null)    // GET /reconcile/txn/:id payload
+  const [aliases, setAliases] = useState([])      // learned alias rules (to explain/undo rule matches)
+  const [loadErr, setLoadErr] = useState(false)
+  const [err, setErr]         = useState('')
+  const [busy, setBusy]       = useState('')
+  const [selCand, setSelCand] = useState('')      // selected candidate stmt_source_id
+
+  const load = useCallback(() => {
+    axios.get(`${API}/reconcile/txn/${tx.id}`).then(r => { setRec(r.data); setLoadErr(false) }).catch(() => setLoadErr(true))
+    axios.get(`${API}/reconcile/aliases`).then(r => setAliases(Array.isArray(r.data) ? r.data : [])).catch(() => {})
+  }, [tx.id])
+  useEffect(() => { load(); setSelCand('') }, [load])
+
+  // Dropdown candidates: same-day statement rows first (most likely the same
+  // purchase), then near-date ones — statements often post a day or two late.
+  const { sameDay, nearby } = useMemo(() => {
+    const list    = rec?.candidates || []
+    const amt     = Math.abs(Number(tx.amount) || 0)
+    const dist    = d => Math.abs((new Date(d) - new Date(tx.date)) / 86400000) || 0
+    const amtDiff = c => Math.abs(Math.abs(Number(c.amount) || 0) - amt)
+    return {
+      sameDay: list.filter(c => c.date === tx.date).sort((a, b) => amtDiff(a) - amtDiff(b)),
+      nearby:  list.filter(c => c.date !== tx.date && dist(c.date) <= 4)
+        .sort((a, b) => (dist(a.date) - dist(b.date)) || (amtDiff(a) - amtDiff(b))),
+    }
+  }, [rec, tx])
+
+  const selRow = [...sameDay, ...nearby].find(c => c.stmt_source_id === selCand) || null
+
+  // Learned rules that explain the current match — shown so a bad one can be
+  // removed right here. Same normalized word-boundary test the server uses.
+  const hitRules = useMemo(() => {
+    if (!rec?.matchedStmt) return []
+    const pd = ' ' + aliasNorm(tx.desc) + ' ', sd = ' ' + aliasNorm(rec.matchedStmt.desc) + ' '
+    return aliases.filter(a => {
+      if (!a || a.enabled === false) return false
+      const ap = aliasNorm(a.plaid), as = aliasNorm(a.statement)
+      return ap && as && pd.includes(' ' + ap + ' ') && sd.includes(' ' + as + ' ')
+    })
+  }, [aliases, rec, tx])
+
+  const run = async (label, fn) => {
+    setBusy(label); setErr('')
+    try { await fn(); load(); onChanged?.() }
+    catch (e) { setErr(e.response?.data?.error || e.message) }
+    setBusy('')
+  }
+  const doMatch = () => run('match', async () => {
+    await axios.post(`${API}/reconcile/match`, { stmtSourceId: selCand, plaidTxnId: tx.id })
+    setSelCand('')
+  })
+  const unmatch = ()   => run('unmatch', () => axios.delete(`${API}/reconcile/manual/${rec.manualLinkId}`))
+  const delRule = (id) => run('rule:' + id, () => axios.delete(`${API}/reconcile/aliases/${id}`))
+
+  const matched = rec && (rec.status === 'matched' || rec.status === 'conflict')
+  const amtWarn = selRow && Math.abs(Math.abs(Number(selRow.amount) || 0) - Math.abs(Number(tx.amount) || 0)) > 0.01
+  const chip = (color, bg, label) => (
+    <span style={{marginLeft:'auto',fontSize:10,fontWeight:600,padding:'2px 8px',borderRadius:99,background:bg,color,textTransform:'uppercase',letterSpacing:'0.3px'}}>{label}</span>
+  )
+  const optLabel = (c, withDate) => {
+    const desc  = c.desc || '—'
+    const short = desc.length > 46 ? desc.slice(0, 46) + '…' : desc
+    return `${short} — ${fmtFull(Math.abs(Number(c.amount) || 0))}${withDate ? ` · ${c.date}` : ''}`
+  }
+
+  return (
+    <div style={{marginBottom:16,padding:'10px 12px',background:'var(--bg-secondary)',border:'0.5px solid var(--border)',borderRadius:'var(--radius-sm)'}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+        <span style={{fontSize:12,fontWeight:600,color:'var(--text-secondary)',textTransform:'uppercase',letterSpacing:'0.5px'}}>
+          <i className="ti ti-file-check" style={{marginRight:5}} aria-hidden="true"/>Statement match
+        </span>
+        {loadErr ? chip('var(--text-muted)','var(--bg-card)','Unavailable')
+         : !rec  ? chip('var(--text-muted)','var(--bg-card)','Checking…')
+         : rec.status === 'matched'  ? chip('var(--teal)','var(--teal-light)','Matched')
+         : rec.status === 'conflict' ? chip('var(--coral)','var(--coral-light)','Conflict')
+         : chip('var(--amber)','var(--amber-light)','Unmatched')}
+      </div>
+
+      {err && <p style={{fontSize:11.5,color:'var(--coral)',margin:'0 0 8px',display:'flex',alignItems:'center',gap:5}}><i className="ti ti-alert-triangle" aria-hidden="true"/>{err}</p>}
+
+      {/* ── Matched / conflict: show what it verified against ── */}
+      {matched && (
+        <div>
+          {rec.matchedStmt ? (
+            <p style={{fontSize:12,margin:0,color:'var(--text-secondary)',lineHeight:1.6}}>
+              On statement as <b style={{color:'var(--text-primary)'}}>{rec.matchedStmt.desc}</b>
+              {' '}· {rec.matchedStmt.date} · {fmtFull(Math.abs(Number(rec.matchedStmt.amount) || 0))}
+              {rec.matchedStmt.sourceFile && <span style={{color:'var(--text-muted)'}}> · {rec.matchedStmt.sourceFile}</span>}
+            </p>
+          ) : (
+            <p style={{fontSize:12,margin:0,color:'var(--text-secondary)'}}>Verified against a bank statement.</p>
+          )}
+          {rec.status === 'conflict' && rec.flagReason && (
+            <p style={{fontSize:11,color:'var(--coral)',margin:'6px 0 0'}}>{rec.flagReason}</p>
+          )}
+          {(hitRules.length > 0 || rec.manualLinkId) && (
+            <div style={{display:'flex',alignItems:'center',gap:6,marginTop:8,flexWrap:'wrap'}}>
+              {hitRules.map(r => (
+                <span key={r.id} style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:11,padding:'2px 8px',borderRadius:99,background:'var(--bg-card)',border:'0.5px solid var(--border)',color:'var(--text-secondary)'}}>
+                  <i className="ti ti-arrows-left-right" style={{fontSize:11,color:'var(--teal)'}} aria-hidden="true"/>
+                  {r.plaid} ↔ {r.statement}
+                  <button onClick={()=>delRule(r.id)} disabled={busy === 'rule:'+r.id} title="Delete this match rule (re-runs matching)"
+                    style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'var(--text-muted)',display:'inline-flex'}}>
+                    <i className={`ti ${busy === 'rule:'+r.id ? 'ti-loader-2 spin' : 'ti-x'}`} style={{fontSize:11}} aria-hidden="true"/>
+                  </button>
+                </span>
+              ))}
+              {rec.manualLinkId && (
+                <button onClick={unmatch} disabled={!!busy} title="Undo this manual match"
+                  style={{fontSize:11,padding:'3px 9px',borderRadius:99,background:'none',border:'0.5px solid var(--border)',color:'var(--text-secondary)',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:4}}>
+                  <i className={`ti ${busy === 'unmatch' ? 'ti-loader-2 spin' : 'ti-unlink'}`} aria-hidden="true"/> Unmatch
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Unmatched: pick the statement transaction it actually is ── */}
+      {rec && !matched && (
+        <div>
+          {(sameDay.length + nearby.length) === 0 ? (
+            <p style={{fontSize:12,color:'var(--text-muted)',margin:0,lineHeight:1.6}}>
+              {rec.stmtRowCount === 0
+                ? <>This account has no bank statement data indexed yet — upload statements in Data Vault, then index them, and they'll appear here for matching.</>
+                : <>Not found on any uploaded statement, and there are no unmatched statement transactions on or near {tx.date} to pair it with.</>}
+            </p>
+          ) : (
+            <>
+              <p style={{fontSize:12,color:'var(--text-secondary)',margin:'0 0 6px'}}>
+                Not found on your statements. Pick the statement transaction this actually is:
+              </p>
+              <div style={{display:'flex',gap:8}}>
+                <select value={selCand} onChange={e=>setSelCand(e.target.value)}
+                  style={{flex:1,minWidth:0,fontSize:12,padding:'7px 8px',borderRadius:6,border:'0.5px solid var(--border)',background:'var(--bg-card)',color:'var(--text-primary)'}}>
+                  <option value="">Choose a statement transaction…</option>
+                  {sameDay.length > 0 && (
+                    <optgroup label={`Same day — ${tx.date}`}>
+                      {sameDay.map(c => <option key={c.stmt_source_id} value={c.stmt_source_id}>{optLabel(c, false)}</option>)}
+                    </optgroup>
+                  )}
+                  {nearby.length > 0 && (
+                    <optgroup label="Nearby dates — statements can post a few days late">
+                      {nearby.map(c => <option key={c.stmt_source_id} value={c.stmt_source_id}>{optLabel(c, true)}</option>)}
+                    </optgroup>
+                  )}
+                </select>
+                <button onClick={doMatch} disabled={!selRow || !!busy}
+                  style={{fontSize:12.5,fontWeight:600,padding:'0 16px',background:'var(--green)',color:'#fff',border:'none',borderRadius:6,cursor:selRow&&!busy?'pointer':'default',opacity:selRow&&!busy?1:0.5,display:'inline-flex',alignItems:'center',gap:6,flexShrink:0}}>
+                  <i className={`ti ${busy === 'match' ? 'ti-loader-2 spin' : 'ti-link'}`} aria-hidden="true"/>
+                  {busy === 'match' ? 'Matching…' : 'Match'}
+                </button>
+              </div>
+              {amtWarn && (
+                <p style={{fontSize:11,color:'var(--amber)',margin:'6px 0 0',display:'flex',alignItems:'flex-start',gap:5}}>
+                  <i className="ti ti-alert-triangle" style={{marginTop:1,flexShrink:0}} aria-hidden="true"/>
+                  Amounts differ ({fmtFull(Math.abs(Number(tx.amount)))} vs {fmtFull(Math.abs(Number(selRow.amount)))}) — double-check this is the same transaction.
+                </p>
+              )}
+              <p style={{fontSize:10.5,color:'var(--text-muted)',margin:'7px 0 0',lineHeight:1.5}}>
+                <i className="ti ti-bulb" style={{marginRight:4}} aria-hidden="true"/>
+                Matching once teaches CaiShen the merchant pairing — future transactions with these names will match automatically (amount and date still checked).
+              </p>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
 // ── Transaction detail + QuickBooks-style categorization modal ────────────────
-function TxDetailModal({ tx, bankAccounts, coa, coaById, onUpdate, reload, onClose }) {
+function TxDetailModal({ tx, bankAccounts, coa, coaById, onUpdate, reload, onClose, onCreateCategory, onReceiptsChanged, onReconciled }) {
   const [coaId,  setCoaId]  = useState(tx.coaId || '')
   const [note,   setNote]   = useState(tx.note  || '')
   const [saving, setSaving] = useState(false)
@@ -703,22 +1092,13 @@ function TxDetailModal({ tx, bankAccounts, coa, coaById, onUpdate, reload, onClo
   const glAcct = coaById.get(coaId)                             // currently-selected COA entry
   const debit  = tx.amount < 0
 
-  // Active COA accounts grouped by Account Type for the <select>. Keep the
-  // currently-assigned account selectable even if it was made inactive/deleted.
-  const grouped = useMemo(() => {
-    const byType = {}
-    for (const t of TYPE_ORDER) byType[t] = coa.filter(a => a.type === t && a.active !== false)
-    const cur = coaId ? coaById.get(coaId) : null
-    if (cur && cur.active === false) (byType[cur.type] = byType[cur.type] || []).push(cur)
-    return byType
-  }, [coa, coaId, coaById])
-
   const save = async () => {
     setSaving(true)
     try {
-      await axios.patch(`${API}/transactions/${tx.id}`, { coaId: coaId || null, note, approved: !!coaId })
+      // coaAuto:false marks this as a manual pick, so "Auto-categorize all" never overwrites it.
+      await axios.patch(`${API}/transactions/${tx.id}`, { coaId: coaId || null, note, approved: !!coaId, coaAuto: false })
       // Functional update so a concurrent SSE refetch doesn't get mapped over a stale snapshot.
-      onUpdate(prev => prev.map(t => t.id === tx.id ? { ...t, coaId: coaId || null, note, approved: !!coaId } : t))
+      onUpdate(prev => prev.map(t => t.id === tx.id ? { ...t, coaId: coaId || null, note, approved: !!coaId, coaAuto: false } : t))
       // "Remember this": save a rule and back-fill matching uncategorized txns.
       if (remember && coaId && keyword.trim()) {
         const { data } = await axios.post(`${API}/categorization-rules`, { value: keyword.trim(), coaId, applyNow: true })
@@ -773,16 +1153,12 @@ function TxDetailModal({ tx, bankAccounts, coa, coaById, onUpdate, reload, onClo
         {row('ID', <span style={{fontSize:11,color:'var(--text-muted)',fontFamily:'monospace'}}>{tx.id}</span>)}
       </div>
 
-      {/* Categorization — assign to a Chart-of-Accounts account */}
-      <Field label="Category (Chart of Accounts)">
-        <select value={coaId} onChange={e=>setCoaId(e.target.value)} style={{width:'100%'}}>
-          <option value="">Uncategorized</option>
-          {TYPE_ORDER.map(t => grouped[t]?.length ? (
-            <optgroup key={t} label={TYPE_LABELS[t]}>
-              {grouped[t].map(a => <option key={a.id} value={a.id}>{a.number?`${a.number} `:''}{a.name}</option>)}
-            </optgroup>
-          ) : null)}
-        </select>
+      {/* ── Statement match — verify against uploaded statements; manual pair + alias rules ── */}
+      {(!tx.source || tx.source === 'plaid') && <StatementMatchPanel tx={tx} onChanged={onReconciled}/>}
+
+      {/* Categorization — assign to a Chart-of-Accounts category (hierarchical) */}
+      <Field label="Category">
+        <CategoryPicker coa={coa} value={coaId} onChange={setCoaId} onCreate={onCreateCategory}/>
       </Field>
 
       {/* Live Account Type badge — the QuickBooks "Account Type" of the chosen category */}
@@ -818,7 +1194,7 @@ function TxDetailModal({ tx, bankAccounts, coa, coaById, onUpdate, reload, onClo
       )}
 
       {/* ── Receipts (Phase 4) ── */}
-      <ReceiptPanel txId={tx.id} txAmount={tx.amount} txDate={tx.date} txDesc={tx.desc}/>
+      <ReceiptPanel txId={tx.id} onChanged={onReceiptsChanged}/>
 
       <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
         <button onClick={onClose} style={{cursor:'pointer'}}>Cancel</button>
@@ -834,6 +1210,7 @@ export default function Banking({ accounts, transactions, onUpdate }) {
   const [vaultData, setVaultData]       = useState(null)
   const [coa, setCoa]                   = useState([])             // chart of accounts
   const [detailTx, setDetailTx]         = useState(null)           // transaction open in detail modal
+  const [previewStmt, setPreviewStmt]   = useState(null)           // statement PDF open in preview popup
   const [selectedAcct, setSelectedAcct] = useState(null)          // null = all accounts
   const [view, setView]                 = useState('transactions') // 'transactions' | 'statements'
   const [search, setSearch]             = useState('')
@@ -842,25 +1219,54 @@ export default function Banking({ accounts, transactions, onUpdate }) {
   const [statusFilter, setStatusFilter] = useState('all')          // 'all' | 'pending' | 'approved'
   const [autoMsg, setAutoMsg]           = useState('')             // transient auto-categorize feedback
   const [reconcileFlags, setReconcileFlags] = useState({})        // {plaid_txn_id → status} for inline badges
+  const [acctSettings, setAcctSettings] = useState({})            // {accountId → {business, propertyId}}
+  const [properties, setProperties]     = useState([])            // rentals, for the business property tag
+  const [receiptCounts, setReceiptCounts] = useState({})          // {txn_id → receipt count} for the 📎 row indicator
+
+  // Refetched after every attach/remove in the detail modal so row 📎s stay current.
+  const reloadReceiptCounts = useCallback(() => {
+    axios.get(`${API}/receipts/counts`).then(r => setReceiptCounts(r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? r.data : {})).catch(() => {})
+  }, [])
 
   useEffect(() => {
     axios.get(`${API}/vault`).then(r => setVaultData(r.data)).catch(() => {})
     axios.get(`${API}/accounting/coa`).then(r => setCoa(r.data || [])).catch(() => {})
     axios.get(`${API}/reconcile/txn-flags`).then(r => setReconcileFlags(r.data || {})).catch(() => {})
-  }, [])
+    axios.get(`${API}/account-settings`).then(r => setAcctSettings(r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? r.data : {})).catch(() => {})
+    axios.get(`${API}/properties`).then(r => setProperties(Array.isArray(r.data) ? r.data : [])).catch(() => {})
+    reloadReceiptCounts()
+  }, [reloadReceiptCounts])
 
   // Lookup a COA entry by id — tolerant of missing (deleted) accounts.
   const coaById = useMemo(() => new Map(coa.map(a => [a.id, a])), [coa])
 
   // Refetch the full transaction list after server-side rule application.
   const reload = () => axios.get(`${API}/transactions`).then(r => onUpdate(r.data)).catch(() => {})
+  const reloadCoa = () => axios.get(`${API}/accounting/coa`).then(r => setCoa(r.data || [])).catch(() => {})
+  // After a manual match / alias change in the detail popup, refresh the inline
+  // reconcile badges (✓ / ◈ / ⚠) on the transaction rows.
+  const reloadFlags = () => axios.get(`${API}/reconcile/txn-flags`).then(r => setReconcileFlags(r.data || {})).catch(() => {})
+  // Persist a per-account business flag / property tag (optimistic). Re-run "Auto-categorize
+  // all" afterwards to reclassify that account's transactions as business.
+  const saveAcctSetting = async (id, patch) => {
+    setAcctSettings(s => ({ ...s, [id]: { ...(s[id] || {}), ...patch } }))
+    try { await axios.put(`${API}/account-settings/${id}`, patch) } catch {}
+  }
+  // Create a (possibly deeply nested) category and refresh the chart. Powers the
+  // CategoryPicker's inline "add sub-category" — e.g. Chipotle under Food & Dining → Fast Food.
+  const createCategory = async (name, parentId) => {
+    const { data } = await axios.post(`${API}/accounting/coa`, { name, parentId })
+    await reloadCoa()
+    return data
+  }
   const autoCategorize = async () => {
     setAutoMsg('Categorizing…')
     try {
-      const { data } = await axios.post(`${API}/categorization-rules/apply`)
-      await reload()
-      setAutoMsg(data.count ? `Categorized ${data.count} transaction${data.count===1?'':'s'}` : 'No matching rules yet')
-      setTimeout(() => setAutoMsg(''), 3500)
+      const { data } = await axios.post(`${API}/transactions/auto-categorize`)
+      if (Array.isArray(data.transactions)) onUpdate(data.transactions)   // render server result directly — avoids the DB re-read race
+      else await reload()
+      setAutoMsg(data.total ? `Categorized ${data.total} transaction${data.total===1?'':'s'}${data.capital?` · ${data.capital} fixed asset${data.capital===1?'':'s'}`:''} — review the “auto” ones` : 'Everything already categorized')
+      setTimeout(() => setAutoMsg(''), 4000)
     } catch { setAutoMsg('') }
   }
 
@@ -951,7 +1357,6 @@ export default function Banking({ accounts, transactions, onUpdate }) {
 
   const scopeTxCount   = (selectedAcct ? bankTxs.filter(t=>t.account===selectedAcct) : bankTxs).length
   const scopeStmtCount = scopedStmts.length
-  const hasSpending    = filteredTxs.some(t => t.amount < 0 && t.category !== 'Transfer')
 
   const inputStyle = {padding:'7px 10px',fontSize:12,borderRadius:'var(--radius-sm)',border:'0.5px solid var(--border)',background:'var(--bg-secondary)',color:'var(--text-primary)'}
   const noData = bankAccounts.length === 0
@@ -996,12 +1401,12 @@ export default function Banking({ accounts, transactions, onUpdate }) {
                 </button>
               )}
             </div>
-            <AccountStrip bankAccounts={bankAccounts} selectedAcct={selectedAcct} setSelectedAcct={setSelectedAcct}/>
+            <AccountStrip bankAccounts={bankAccounts} selectedAcct={selectedAcct} setSelectedAcct={setSelectedAcct} settings={acctSettings} properties={properties} onSaveSetting={saveAcctSetting}/>
           </div>
 
           {/* ── Transactions | Statements toggle ───────────────────── */}
           <div style={{display:'flex',alignItems:'center',borderBottom:'0.5px solid var(--border)',marginBottom:14}}>
-            {[['transactions',`Transactions (${scopeTxCount})`],['statements',`Statements (${scopeStmtCount})`]].map(([id,label]) => (
+            {[['transactions',`Transactions (${scopeTxCount})`],['statements',`Statements (${scopeStmtCount})`],...(IS_LOCALHOST?[['verify','🔧 Verify']]:[])].map(([id,label]) => (
               <button key={id} onClick={()=>setView(id)} style={{
                 background:'none',border:'none',
                 borderBottom:view===id?'2px solid var(--green)':'2px solid transparent',
@@ -1042,44 +1447,43 @@ export default function Banking({ accounts, transactions, onUpdate }) {
                 ))}
                 <div style={{flex:1}}/>
                 {autoMsg && <span style={{fontSize:11,color:'var(--text-muted)'}}>{autoMsg}</span>}
-                <button onClick={autoCategorize} title="Apply your saved rules to uncategorized transactions" style={{
+                <button onClick={autoCategorize} title="Auto-categorize every uncategorized transaction — your saved rules first, then a best-effort merchant guess you can review or change" style={{
                   fontSize:12, padding:'5px 13px', borderRadius:99, cursor:'pointer',
                   border:'0.5px solid var(--blue)', background:'var(--blue-light)', color:'var(--blue)',
-                }}><i className="ti ti-wand" aria-hidden="true"/> Auto-categorize</button>
+                }}><i className="ti ti-wand" aria-hidden="true"/> Auto-categorize all</button>
               </div>
 
-              {/* Totals + table | spending sidebar */}
-              <div style={{display:'grid',gridTemplateColumns:hasSpending?'1fr 240px':'1fr',gap:24,alignItems:'start'}}>
-                <div>
-                  {filteredTxs.length > 0 && (
-                    <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
-                      {[
-                        ['Deposits',    fd(filtIncome),   'var(--teal)'],
-                        ['Withdrawals', fd(filtExpenses), 'var(--coral)'],
-                        ['Net',         (filtNet>=0?'+':'')+fd(filtNet), filtNet>=0?'var(--teal)':'var(--coral)'],
-                        ['Count',       String(filteredTxs.length), 'var(--text-primary)'],
-                      ].map(([label,val,color]) => (
-                        <div key={label} style={{padding:'6px 14px',background:'var(--bg-secondary)',borderRadius:'var(--radius-sm)',border:'0.5px solid var(--border)'}}>
-                          <p style={{fontSize:10,color:'var(--text-muted)',margin:'0 0 2px',textTransform:'uppercase'}}>{label}</p>
-                          <p style={{fontSize:14,fontWeight:500,margin:0,color}}>{val}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <TxTable txs={filteredTxs} bankAccounts={bankAccounts} showAccount={!selectedAcct}
-                    sortDir={sortDir} onToggleSort={()=>setSortDir(d=>d==='desc'?'asc':'desc')}
-                    onRowClick={setDetailTx} coaById={coaById} reconcileFlags={reconcileFlags}/>
-                </div>
-                {hasSpending && (
-                  <div className="card" style={{padding:'14px 16px'}}>
-                    <SpendingBreakdown txs={filteredTxs}/>
+              {/* Totals + table */}
+              <div>
+                {filteredTxs.length > 0 && (
+                  <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
+                    {[
+                      ['Deposits',    fd(filtIncome),   'var(--teal)'],
+                      ['Withdrawals', fd(filtExpenses), 'var(--coral)'],
+                      ['Net',         (filtNet>=0?'+':'')+fd(filtNet), filtNet>=0?'var(--teal)':'var(--coral)'],
+                      ['Count',       String(filteredTxs.length), 'var(--text-primary)'],
+                    ].map(([label,val,color]) => (
+                      <div key={label} style={{padding:'6px 14px',background:'var(--bg-secondary)',borderRadius:'var(--radius-sm)',border:'0.5px solid var(--border)'}}>
+                        <p style={{fontSize:10,color:'var(--text-muted)',margin:'0 0 2px',textTransform:'uppercase'}}>{label}</p>
+                        <p style={{fontSize:14,fontWeight:500,margin:0,color}}>{val}</p>
+                      </div>
+                    ))}
                   </div>
                 )}
+                <TransactionsTable txs={filteredTxs} bankAccounts={bankAccounts} showAccount={!selectedAcct}
+                  sortDir={sortDir} onToggleSort={()=>setSortDir(d=>d==='desc'?'asc':'desc')}
+                  onRowClick={setDetailTx} coaById={coaById} reconcileFlags={reconcileFlags}
+                  receiptCounts={receiptCounts} reload={reload}/>
               </div>
             </div>
           )}
 
           {/* ── Statements view ────────────────────────────────────── */}
+          {/* ── Verify view (dev only — reconciliation cross-check) ── */}
+          {view==='verify' && IS_LOCALHOST && (
+            <ReconcileVerify/>
+          )}
+
           {view==='statements' && (
             <div>
               {scopedStmts.length === 0 ? (
@@ -1097,7 +1501,7 @@ export default function Banking({ accounts, transactions, onUpdate }) {
                   <div key={year} style={{marginBottom:18}}>
                     <p style={{fontSize:11,color:'var(--text-muted)',margin:'0 0 8px',textTransform:'uppercase',letterSpacing:'0.5px',fontWeight:500}}>{year}</p>
                     <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(230px,1fr))',gap:8}}>
-                      {[...files].sort((a,b)=>b.name.localeCompare(a.name)).map(f => <StmtCard key={f.id} f={f}/>)}
+                      {[...files].sort((a,b)=>b.name.localeCompare(a.name)).map(f => <StmtCard key={f.id} f={f} onOpen={setPreviewStmt}/>)}
                     </div>
                   </div>
                 ))
@@ -1117,7 +1521,7 @@ export default function Banking({ accounts, transactions, onUpdate }) {
                             <div key={year} style={{marginBottom:14,marginLeft:12}}>
                               <p style={{fontSize:11,color:'var(--text-muted)',margin:'0 0 8px',textTransform:'uppercase',letterSpacing:'0.5px',fontWeight:500}}>{year}</p>
                               <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(230px,1fr))',gap:8}}>
-                                {[...files].sort((a,b)=>b.name.localeCompare(a.name)).map(f => <StmtCard key={f.id} f={f}/>)}
+                                {[...files].sort((a,b)=>b.name.localeCompare(a.name)).map(f => <StmtCard key={f.id} f={f} onOpen={setPreviewStmt}/>)}
                               </div>
                             </div>
                           ))}
@@ -1132,6 +1536,8 @@ export default function Banking({ accounts, transactions, onUpdate }) {
         </div>
       )}
 
+      {previewStmt && <StmtPreviewModal f={previewStmt} onClose={()=>setPreviewStmt(null)}/>}
+
       {detailTx && (
         <TxDetailModal
           tx={detailTx}
@@ -1140,6 +1546,9 @@ export default function Banking({ accounts, transactions, onUpdate }) {
           coaById={coaById}
           onUpdate={onUpdate}
           reload={reload}
+          onCreateCategory={createCategory}
+          onReceiptsChanged={reloadReceiptCounts}
+          onReconciled={reloadFlags}
           onClose={()=>setDetailTx(null)}
         />
       )}

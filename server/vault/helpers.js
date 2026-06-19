@@ -88,16 +88,17 @@ function detectTaxFormTags(filename) {
   return extra;
 }
 
-const autoTag = (folderPath) => {
+// Auto-tag a vault folder by its path. Property matching uses the user's real
+// properties (passed in) — no hardcoded demo names; unknown paths stay untagged.
+const autoTag = (folderPath, properties = []) => {
   const l = folderPath.toLowerCase();
-  if (l.includes('haas'))                              return { property: 'haas' };
-  if (l.includes('kobe'))                              return { property: 'kobe' };
-  if (l.includes('bayhill') || l.includes('bay hill')) return { property: 'bayhill' };
-  if (l.includes('muirfield'))                         return { property: 'muirfield' };
-  if (l.includes('alcita'))                            return { property: 'alcita' };
-  if (l.includes('tax'))                               return { type: 'tax' };
-  if (l.includes('personal'))                          return { type: 'personal' };
-  if (l.includes('business'))                          return { type: 'business' };
+  for (const p of properties) {
+    const name = String(p.name || '').toLowerCase();
+    if (name && l.includes(name)) return { property: p.id };
+  }
+  if (l.includes('tax'))      return { type: 'tax' };
+  if (l.includes('personal')) return { type: 'personal' };
+  if (l.includes('business')) return { type: 'business' };
   return {};
 };
 
@@ -119,4 +120,4 @@ function wordJaccard(text1, text2) {
   return inter / (a.size + b.size - inter);
 }
 
-module.exports = { validateUploadFile, getFileType, detectTaxFormTags, autoTag, titleCase, stmtFilename, wordJaccard, upload, DUPE_SIMILARITY_THRESHOLD };
+module.exports = { validateUploadFile, getFileType, detectTaxFormTags, autoTag, titleCase, stmtFilename, MONTH_ABBR, wordJaccard, upload, DUPE_SIMILARITY_THRESHOLD };

@@ -1,50 +1,6 @@
 const express = require('express');
-
-// ── Default Chart of Accounts (seeded on first boot) ─────────────────
-const DEFAULT_COA = [
-  // Assets
-  { id: 'a1000', number: '1000', name: 'Chase Checking',         type: 'asset',     subtype: 'bank',          active: true },
-  { id: 'a1010', number: '1010', name: 'Savings',                type: 'asset',     subtype: 'bank',          active: true },
-  { id: 'a1200', number: '1200', name: 'Brokerage - Schwab',     type: 'asset',     subtype: 'investment',     active: true },
-  { id: 'a1210', number: '1210', name: '401(k)',                  type: 'asset',     subtype: 'retirement',    active: true },
-  { id: 'a1220', number: '1220', name: 'Crypto',                  type: 'asset',     subtype: 'investment',    active: true },
-  // NOTE: property-specific accounts (the property asset, its mortgage, and its
-  // rental-income account) are intentionally NOT seeded here — they belong to
-  // whichever properties a user actually adds, so nobody inherits someone else's
-  // portfolio. Generic property-related expense buckets (5000s) remain below.
-  { id: 'a1600', number: '1600', name: 'Accounts Receivable',    type: 'asset',     subtype: 'receivable',    active: true },
-
-  // Liabilities
-  { id: 'l2100', number: '2100', name: 'Amex Platinum',          type: 'liability', subtype: 'credit_card',   active: true },
-  { id: 'l2200', number: '2200', name: 'Accounts Payable',       type: 'liability', subtype: 'payable',       active: true },
-
-  // Equity
-  { id: 'e3000', number: '3000', name: "Owner's Equity",         type: 'equity',    subtype: 'equity',        active: true },
-  { id: 'e3100', number: '3100', name: 'Retained Earnings',      type: 'equity',    subtype: 'equity',        active: true },
-
-  // Income
-  { id: 'i4100', number: '4100', name: 'W-2 / Salary Income',    type: 'income',    subtype: 'wage',          active: true },
-  { id: 'i4200', number: '4200', name: 'RSU / Stock Income',     type: 'income',    subtype: 'investment',    active: true },
-  { id: 'i4300', number: '4300', name: 'Interest / Dividends',   type: 'income',    subtype: 'interest',      active: true },
-  { id: 'i4400', number: '4400', name: 'Other Income',           type: 'income',    subtype: 'other',         active: true },
-
-  // Expenses
-  { id: 'x5000', number: '5000', name: 'Mortgage Interest',      type: 'expense',   subtype: 'mortgage',      active: true },
-  { id: 'x5010', number: '5010', name: 'Property Tax',           type: 'expense',   subtype: 'tax',           active: true },
-  { id: 'x5020', number: '5020', name: 'Insurance',              type: 'expense',   subtype: 'insurance',     active: true },
-  { id: 'x5030', number: '5030', name: 'HOA Fees',               type: 'expense',   subtype: 'hoa',           active: true },
-  { id: 'x5040', number: '5040', name: 'Repairs & Maintenance',  type: 'expense',   subtype: 'maintenance',   active: true },
-  { id: 'x5050', number: '5050', name: 'Property Management',    type: 'expense',   subtype: 'management',    active: true },
-  { id: 'x5060', number: '5060', name: 'Utilities',              type: 'expense',   subtype: 'utilities',     active: true },
-  { id: 'x5070', number: '5070', name: 'Landscaping',            type: 'expense',   subtype: 'maintenance',   active: true },
-  { id: 'x5100', number: '5100', name: 'Dining & Entertainment', type: 'expense',   subtype: 'personal',      active: true },
-  { id: 'x5110', number: '5110', name: 'Groceries',              type: 'expense',   subtype: 'personal',      active: true },
-  { id: 'x5120', number: '5120', name: 'Travel',                 type: 'expense',   subtype: 'personal',      active: true },
-  { id: 'x5130', number: '5130', name: 'Shopping',               type: 'expense',   subtype: 'personal',      active: true },
-  { id: 'x5200', number: '5200', name: 'Professional Services',  type: 'expense',   subtype: 'professional',  active: true },
-  { id: 'x5210', number: '5210', name: 'Subscriptions',          type: 'expense',   subtype: 'subscription',  active: true },
-  { id: 'x5900', number: '5900', name: 'Miscellaneous Expense',  type: 'expense',   subtype: 'other',         active: true },
-];
+const { buildDefaultChart, categoryLibrary, resolveLibraryAdditions, OLD_DEFAULT_IDS, idForPath } = require('./categories');
+const { autoCoaId, isLikelyBusiness } = require('../banking/auto-categorize');
 
 module.exports = function(makeIO) {
   const router = express.Router();
@@ -56,35 +12,117 @@ module.exports = function(makeIO) {
     next();
   });
 
-  // ── Chart of Accounts ─────────────────────────────────────────────────
-  router.get('/coa', (req, res) => {
-    // Seed defaults on first access
-    let coa = req.read('chart_of_accounts.json');
-    if (!coa || coa.length === 0) { coa = DEFAULT_COA; req.write('chart_of_accounts.json', DEFAULT_COA); }
-    res.json(coa);
-  });
+  // ── Chart of Accounts — self-healing to the canonical default tree ────
+  // The curated default tree is authoritative. On every load we GUARANTEE all default
+  // nodes are present, KEEP the user's own added categories (system === false — e.g.
+  // "Chipotle" under Fast Food), and DROP stale / duplicate / orphan nodes left behind by
+  // earlier seed/migration versions. This keeps auto-categorization targets resolvable and
+  // the report tree clean (one section root per type+scope, no parentless orphans), and is
+  // idempotent — it only rewrites the chart when the node set actually changes.
+  function loadChart(req) {
+    const fresh = buildDefaultChart();
+    const freshIds = new Set(fresh.map(n => n.id));
+    const coa = req.read('chart_of_accounts.json');
+
+    if (!coa || coa.length === 0) {
+      req.write('chart_of_accounts.json', fresh);
+      return fresh;
+    }
+
+    const seen = new Set(freshIds);
+    const userNodes = [];
+    for (const n of coa) {
+      if (n.system === false && !seen.has(n.id)) { seen.add(n.id); userNodes.push(n); }   // user-created, keep (dedup by id)
+    }
+    const merged = [...fresh, ...userNodes];
+
+    const coaIds = new Set(coa.map(n => n.id));
+    const unchanged = merged.length === coa.length && merged.every(n => coaIds.has(n.id));
+    if (!unchanged) req.write('chart_of_accounts.json', merged);
+    return merged;
+  }
+
+  router.get('/coa', (req, res) => res.json(loadChart(req)));
 
   router.post('/coa', (req, res) => {
-    const coa = req.read('chart_of_accounts.json') || [];
-    const entry = { id: `acct_${Date.now()}`, active: true, ...req.body };
+    const coa = loadChart(req);
+    const b = req.body || {};
+    if (!b.name) return res.status(400).json({ error: 'name is required' });
+    // Inherit type/scope from the parent when adding a sub-category.
+    const parent = b.parentId ? coa.find(a => a.id === b.parentId) : null;
+    const entry = {
+      id: `cat_user_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: b.name,
+      type: b.type || parent?.type || 'expense',
+      scope: b.scope || parent?.scope || null,
+      parentId: b.parentId || null,
+      subtype: b.subtype,
+      active: b.active !== false,
+      system: false,
+    };
     coa.push(entry);
     req.write('chart_of_accounts.json', coa);
     res.json(entry);
   });
 
   router.put('/coa/:id', (req, res) => {
-    const coa = req.read('chart_of_accounts.json') || [];
+    const coa = loadChart(req);
     const idx = coa.findIndex(a => a.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'Not found' });
-    coa[idx] = { ...coa[idx], ...req.body };
+    const next = { ...coa[idx], ...req.body, id: coa[idx].id };
+    // Guard against moving a node under itself or a descendant (would create a cycle).
+    if (next.parentId && next.parentId !== coa[idx].parentId) {
+      const descendants = new Set([req.params.id]);
+      for (let added = true; added; ) {
+        added = false;
+        for (const a of coa) if (a.parentId && descendants.has(a.parentId) && !descendants.has(a.id)) { descendants.add(a.id); added = true; }
+      }
+      if (descendants.has(next.parentId)) return res.status(400).json({ error: 'Cannot move a category under itself' });
+    }
+    coa[idx] = next;
     req.write('chart_of_accounts.json', coa);
     res.json(coa[idx]);
   });
 
   router.delete('/coa/:id', (req, res) => {
-    const coa = req.read('chart_of_accounts.json') || [];
+    const coa = loadChart(req);
+    if (coa.some(a => a.parentId === req.params.id))
+      return res.status(400).json({ error: 'This category has sub-categories. Delete or move them first.' });
+    const txs = req.read('transactions.json') || [];
+    if (txs.some(t => t.coaId === req.params.id))
+      return res.status(400).json({ error: 'Transactions are categorized here. Recategorize them first, or deactivate instead.' });
     req.write('chart_of_accounts.json', coa.filter(a => a.id !== req.params.id));
     res.json({ success: true });
+  });
+
+  // ── Category library (the long-tail set the user can add later) ───────
+  router.get('/category-library', (req, res) => {
+    const coa = loadChart(req);
+    res.json(categoryLibrary(new Set(coa.map(a => a.id))));
+  });
+
+  router.post('/coa/from-library', (req, res) => {
+    const coa = loadChart(req);
+    const additions = resolveLibraryAdditions(req.body?.id, new Set(coa.map(a => a.id)));
+    if (!additions) return res.status(400).json({ error: 'Unknown library category' });
+    if (additions.length) { coa.push(...additions); req.write('chart_of_accounts.json', coa); }
+    // The requested leaf is the last node in the ancestors-first chain.
+    res.json({ added: additions, node: additions[additions.length - 1] || coa.find(a => a.id === req.body.id) });
+  });
+
+  // ── Manual balance-sheet balances (per leaf, for items not in any account) ──
+  router.get('/category-balances', (req, res) => res.json(req.read('category_balances.json') || {}));
+
+  router.put('/category-balances/:id', (req, res) => {
+    const balances = req.read('category_balances.json') || {};
+    const amount = Number(req.body?.amount);
+    if (!Number.isFinite(amount) || amount === 0) {
+      delete balances[req.params.id];                       // clearing the balance
+    } else {
+      balances[req.params.id] = { amount, note: req.body?.note || '', asOf: new Date().toISOString() };
+    }
+    req.write('category_balances.json', balances);
+    res.json(balances);
   });
 
   // ── Vendors ──────────────────────────────────────────────────────────
@@ -216,7 +254,7 @@ module.exports = function(makeIO) {
     const { startDate, endDate, propertyId } = req.query;
     const txs       = req.read('transactions.json')   || [];
     const journals  = req.read('journal_entries.json') || [];
-    const coa       = req.read('chart_of_accounts.json') || [];
+    const coa       = loadChart(req);   // re-seeded tree, so auto-category ids resolve
     const properties = req.read('properties.json') || [];
 
     const start = startDate || new Date(Date.now() - 365*24*60*60*1000).toISOString().split('T')[0];
@@ -226,37 +264,32 @@ module.exports = function(makeIO) {
     let filteredTxs = txs.filter(t => t.date >= start && t.date <= end);
     if (propertyId) filteredTxs = filteredTxs.filter(t => t.propertyId === propertyId || t.account === propertyId);
 
-    // Group by category. Prefer the transaction's assigned Chart-of-Accounts
-    // account (coaId) — QuickBooks-style, the account's *type* decides income vs
-    // expense, and balance-sheet accounts (asset/liability/equity — e.g. transfers
-    // and credit-card payments) are excluded from the P&L. Fall back to the legacy
-    // sign-based bucketing by tx.category for any uncategorized transaction.
+    // Effective category for each transaction: its manual coaId if set, otherwise an
+    // auto-guess from merchant/description (auto-categorize.js). Transfers/card payments
+    // resolve to null and are excluded. The account's *type* decides income vs expense;
+    // balance-sheet accounts (asset/liability/equity) never get assigned here.
     const incomeByCategory  = {};
     const expenseByCategory = {};
+    const byAccount = {};                          // coaId → total (drives the nested report)
     let totalIncome = 0, totalExpenses = 0;
     const coaById = new Map(coa.map(a => [a.id, a]));
 
     for (const tx of filteredTxs) {
-      const acct = tx.coaId ? coaById.get(tx.coaId) : null;
-      if (acct) {
-        const amt = Math.abs(tx.amount);
-        if (acct.type === 'income') {
-          incomeByCategory[acct.name] = (incomeByCategory[acct.name] || 0) + amt;
-          totalIncome += amt;
-        } else if (acct.type === 'expense') {
-          expenseByCategory[acct.name] = (expenseByCategory[acct.name] || 0) + amt;
-          totalExpenses += amt;
-        }
-        // asset/liability/equity → balance-sheet account, excluded from P&L
-        continue;
-      }
-      if (tx.amount > 0) {
-        incomeByCategory[tx.category] = (incomeByCategory[tx.category] || 0) + tx.amount;
-        totalIncome += tx.amount;
-      } else {
-        const cat = tx.category || 'Uncategorized';
-        expenseByCategory[cat] = (expenseByCategory[cat] || 0) + Math.abs(tx.amount);
-        totalExpenses += Math.abs(tx.amount);
+      if (tx.capital) continue;                    // capitalized fixed-asset purchase → Balance Sheet, not P&L
+      // Prefer the saved category; if it's stale (id not in the current chart) or absent,
+      // fall back to the auto-guess so the transaction still lands on a valid leaf.
+      let acct = tx.coaId ? coaById.get(tx.coaId) : null;
+      if (!acct) { const g = autoCoaId(tx); acct = g ? coaById.get(g) : null; }
+      if (!acct) continue;                         // transfer, or unresolved → skip
+      const amt = Math.abs(tx.amount);
+      if (acct.type === 'income') {
+        incomeByCategory[acct.name] = (incomeByCategory[acct.name] || 0) + amt;
+        byAccount[acct.id] = (byAccount[acct.id] || 0) + amt;
+        totalIncome += amt;
+      } else if (acct.type === 'expense') {
+        expenseByCategory[acct.name] = (expenseByCategory[acct.name] || 0) + amt;
+        byAccount[acct.id] = (byAccount[acct.id] || 0) + amt;
+        totalExpenses += amt;
       }
     }
 
@@ -268,11 +301,11 @@ module.exports = function(makeIO) {
         if (!acct) continue;
         if (acct.type === 'income') {
           const credit = line.credit || 0;
-          if (credit > 0) { incomeByCategory[acct.name] = (incomeByCategory[acct.name] || 0) + credit; totalIncome += credit; }
+          if (credit > 0) { incomeByCategory[acct.name] = (incomeByCategory[acct.name] || 0) + credit; byAccount[acct.id] = (byAccount[acct.id] || 0) + credit; totalIncome += credit; }
         }
         if (acct.type === 'expense') {
           const debit = line.debit || 0;
-          if (debit > 0) { expenseByCategory[acct.name] = (expenseByCategory[acct.name] || 0) + debit; totalExpenses += debit; }
+          if (debit > 0) { expenseByCategory[acct.name] = (expenseByCategory[acct.name] || 0) + debit; byAccount[acct.id] = (byAccount[acct.id] || 0) + debit; totalExpenses += debit; }
         }
       }
     }
@@ -290,45 +323,106 @@ module.exports = function(makeIO) {
       period: { start, end },
       income: { total: totalIncome, byCategory: incomeByCategory },
       expenses: { total: totalExpenses, byCategory: expenseByCategory },
+      byAccount,
       netIncome: totalIncome - totalExpenses,
       propertyPL
     });
   });
 
   // ── Balance Sheet ─────────────────────────────────────────────────────
+  // Unified: every linked account, property, and capitalized fixed-asset purchase is
+  // mapped onto a specific chart leaf (`byLeaf`), so the UI rolls them up into one tree
+  // alongside manual category balances. Accounts are classified by `accountClass`
+  // (bank/card/loan/investment/crypto) — NOT by balance sign — so an overdrawn checking
+  // account stays an asset instead of flipping to a liability. Equity = Assets − Liabilities.
   router.get('/balance-sheet', async (req, res) => {
     const accounts   = await require('../core/banking-store').listAccounts(req.user.id) || [];
+    const settings   = req.read('account_settings.json') || {};
     const properties = req.read('properties.json') || [];
+    const txs        = req.read('transactions.json') || [];
 
-    const bankAccounts    = accounts.filter(a => a.balance > 0 && ['bank','checking','savings','depository'].includes(a.type?.toLowerCase()));
-    const investAccounts  = accounts.filter(a => a.balance > 0 && ['investment','brokerage','retirement'].includes(a.type?.toLowerCase()));
-    const cryptoAccounts  = accounts.filter(a => a.balance > 0 && ['crypto'].includes(a.type?.toLowerCase()));
-    const creditLiab      = accounts.filter(a => a.balance < 0);
+    const L = (...names) => idForPath(names);
+    const byLeaf = {};
+    const add = (leafId, amount, item) => {
+      if (!leafId || !amount) return;
+      const e = byLeaf[leafId] || (byLeaf[leafId] = { linked: 0, accounts: [] });
+      e.linked += amount;
+      if (item) e.accounts.push(item);
+    };
+    const isBiz = (a) => {
+      const s = settings[a.id];
+      return (s && typeof s.business === 'boolean') ? s.business : isLikelyBusiness(a);
+    };
+    const classOf = (a) => {
+      if (a.accountClass) return a.accountClass;
+      const t = (a.type || '').toLowerCase(), st = (a.subtype || '').toLowerCase();
+      if (a.source === 'crypto') return 'crypto';
+      if (st.includes('mortgage')) return 'loan';
+      if (t === 'credit') return 'card';
+      if (t === 'loan') return 'loan';
+      if (t === 'investment') return 'investment';
+      return 'bank';
+    };
 
-    const totalRE         = properties.reduce((s, p) => s + (p.value    || 0), 0);
-    const totalMortgage   = properties.reduce((s, p) => s + (p.mortgage || 0), 0);
-    const totalBank       = bankAccounts.reduce((s, a) => s + (a.balance || 0), 0);
-    const totalInvest     = investAccounts.reduce((s, a) => s + (a.balance || 0), 0);
-    const totalCrypto     = cryptoAccounts.reduce((s, a) => s + (a.balance || 0), 0);
-    const totalCredit     = Math.abs(creditLiab.reduce((s, a) => s + (a.balance || 0), 0));
-    const totalAssets     = totalBank + totalInvest + totalCrypto + totalRE;
-    const totalLiabilities = totalMortgage + totalCredit;
+    // 1. Linked accounts → asset / liability leaves (itemized per account).
+    for (const a of accounts) {
+      const cls = classOf(a), biz = isBiz(a);
+      const sub = (a.subtype || '').toLowerCase();
+      const bal = Number(a.balance) || 0;
+      let leafId, amt = bal;
+      if (cls === 'card') {
+        leafId = biz ? L('Business Liabilities', 'Credit Cards', 'Business Credit Card')
+                     : L('Personal Liabilities', 'Credit Cards', 'Credit Card Balance');
+        amt = Math.abs(bal);
+      } else if (cls === 'loan') {
+        leafId = sub.includes('mortgage') ? L('Personal Liabilities', 'Mortgage & Real Estate Debt', 'Primary Mortgage')
+               : biz                      ? L('Business Liabilities', 'Loans', 'Business Loan')
+               :                            L('Personal Liabilities', 'Loans', 'Personal Loan');
+        amt = Math.abs(bal);
+      } else if (cls === 'investment') {
+        leafId = L('Personal Assets', 'Investments', 'Brokerage');
+      } else if (cls === 'crypto') {
+        leafId = L('Personal Assets', 'Investments', 'Crypto');
+      } else { // bank / depository
+        leafId = biz
+          ? (sub.includes('saving') ? L('Business Assets', 'Cash & Equivalents', 'Business Savings')
+                                    : L('Business Assets', 'Cash & Equivalents', 'Business Checking'))
+          : (sub.includes('saving') ? L('Personal Assets', 'Cash & Bank Accounts', 'Savings')
+                                    : L('Personal Assets', 'Cash & Bank Accounts', 'Checking'));
+      }
+      add(leafId, amt, { id: a.id, name: a.name, balance: amt, sub: a.subtype || cls, institution: a.institution, last4: a.last4, business: biz });
+    }
+
+    // 2. Properties → Real Estate asset + Rental Mortgage liability (itemized).
+    const reLeaf = L('Personal Assets', 'Real Estate', 'Rental Property');
+    const rmLeaf = L('Personal Liabilities', 'Mortgage & Real Estate Debt', 'Rental Mortgage');
+    for (const p of properties) {
+      const v = Number(p.value) || 0, m = Number(p.mortgage) || 0;
+      if (v) add(reLeaf, v, { name: p.name || 'Property', balance: v, sub: 'Property' });
+      if (m) add(rmLeaf, m, { name: (p.name || 'Property') + ' — mortgage', balance: m, sub: 'Mortgage' });
+    }
+
+    // 3. Capitalized fixed-asset purchases (capital:true) → their Fixed Asset leaf (itemized).
+    for (const t of txs) {
+      if (!t.capital || !t.coaId) continue;
+      const amt = Math.abs(Number(t.amount) || 0);
+      add(t.coaId, amt, { name: t.desc || 'Asset', balance: amt, sub: t.date || '', needsReview: !t.approved });
+    }
+
+    // 4. Quick linked-only totals by chart type (the UI recomputes including manual balances).
+    const coa = loadChart(req);
+    const typeById = new Map(coa.map(n => [n.id, n.type]));
+    let assets = 0, liabilities = 0;
+    for (const [id, e] of Object.entries(byLeaf)) {
+      const ty = typeById.get(id);
+      if (ty === 'asset') assets += e.linked;
+      else if (ty === 'liability') liabilities += e.linked;
+    }
 
     res.json({
       asOf: new Date().toISOString(),
-      assets: {
-        total: totalAssets,
-        cash: { total: totalBank, accounts: bankAccounts },
-        investments: { total: totalInvest, accounts: investAccounts },
-        crypto: { total: totalCrypto, accounts: cryptoAccounts },
-        realEstate: { total: totalRE, equity: totalRE - totalMortgage, properties }
-      },
-      liabilities: {
-        total: totalLiabilities,
-        mortgages: { total: totalMortgage, properties: properties.map(p => ({ name: p.name, balance: p.mortgage })) },
-        creditCards: { total: totalCredit, accounts: creditLiab }
-      },
-      equity: totalAssets - totalLiabilities
+      byLeaf,
+      totals: { assets, liabilities, equity: assets - liabilities },
     });
   });
 

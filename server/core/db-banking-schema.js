@@ -67,6 +67,40 @@ module.exports.init = async (query) => {
     )
   `);
   await query(`CREATE INDEX IF NOT EXISTS idx_txnmsg_open ON txn_messages(user_id, state)`);
+  // Multi-channel: tag each question with the transport it went out on ('discord'|'sms').
+  await query(`ALTER TABLE txn_messages ADD COLUMN IF NOT EXISTS channel TEXT`);
+
+  // Messaging identity: bind an external chat identity (a Discord user, an SMS phone, …)
+  // to a CaiShen user, so the categorizer bot knows whose transactions to ask about and
+  // who a reply came from. Channel-generic ON PURPOSE — 'discord' now, 'sms' (Twilio)
+  // later add only new rows, never a schema change. Supersedes the unused telegram_links.
+  await query(`
+    CREATE TABLE IF NOT EXISTS messaging_links (
+      id           TEXT        PRIMARY KEY,
+      user_id      TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      channel      TEXT        NOT NULL,            -- 'discord' | 'sms'
+      external_id  TEXT        NOT NULL,            -- Discord user id, or E.164 phone
+      display_name TEXT,
+      linked_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  // One external identity maps to exactly one user (looked up on every inbound message).
+  await query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_msglink_channel_ext ON messaging_links(channel, external_id)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_msglink_user ON messaging_links(user_id, channel)`);
+
+  // Short-lived codes for the link handshake: the web app mints one for a logged-in user;
+  // the user sends it to the bot, which exchanges it for a messaging_links row.
+  await query(`
+    CREATE TABLE IF NOT EXISTS messaging_link_codes (
+      code       TEXT        PRIMARY KEY,
+      user_id    TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      channel    TEXT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used       BOOLEAN     NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS idx_msglinkcode_user ON messaging_link_codes(user_id)`);
 
   // Phase 3 — reconciliation match results: one row per (statement txn, plaid txn) pair,
   // or a stmt_only/plaid_only stub when one side has no match.
@@ -94,7 +128,7 @@ module.exports.init = async (query) => {
       id            TEXT        PRIMARY KEY,
       user_id       TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       txn_id        TEXT        NOT NULL,               -- local Plaid transaction id
-      file_path     TEXT        NOT NULL,               -- absolute path on disk (data/users/{id}/receipts/)
+      file_path     TEXT        NOT NULL,               -- R2 object key (doc_id set) or legacy disk path
       original_name TEXT,                               -- original uploaded filename
       mime_type     TEXT,                               -- image/jpeg | image/png | application/pdf etc.
       ocr_data      JSONB,                              -- { merchant, total, date, items }
@@ -103,8 +137,10 @@ module.exports.init = async (query) => {
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // Phase 5 — bytes live in R2: doc_id references the documents row (null = legacy disk file).
+  await query(`ALTER TABLE receipts ADD COLUMN IF NOT EXISTS doc_id TEXT`);
   await query(`CREATE INDEX IF NOT EXISTS idx_receipts_txn    ON receipts(user_id, txn_id)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_receipts_status ON receipts(user_id, match_status)`);
 
-  console.log('✓ Banking/notification schema ready (source_transactions, categorization_memory, telegram_links, txn_messages, statement_matches, receipts)');
+  console.log('✓ Banking/notification schema ready (source_transactions, categorization_memory, messaging_links, txn_messages, statement_matches, receipts)');
 };

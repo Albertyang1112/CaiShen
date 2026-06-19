@@ -17,6 +17,7 @@
  */
 const express = require('express');
 const { applyRules: applyCatRules, suggestKeyword: suggestCatKeyword } = require('./categorize');
+const { guessCategory, resolveCtx } = require('./auto-categorize');
 const store = require('../core/banking-store');   // DB-backed reads for accounts/transactions
 
 module.exports = function makeBankingRouter({ readData, writeData }) {
@@ -188,6 +189,64 @@ module.exports = function makeBankingRouter({ readData, writeData }) {
     const r = applyCatRules(txs, rules, { overwrite: !!(req.body && req.body.overwrite) });
     if (r.count) writeData('transactions.json', r.transactions, uid);
     res.json({ count: r.count, byRule: r.byRule });
+  });
+
+  // Auto-categorize: precedence is manual > user rule > built-in guesser. A manual pick
+  // is a coaId WITHOUT the coaAuto flag and is never touched. Auto picks land as
+  // { coaAuto:true, approved:false }; business-account purchases route to business leaves,
+  // and big equipment/furniture buys are capitalized ({ capital:true }) so they show on the
+  // Balance Sheet instead of the P&L. Re-runnable after each sync.
+  router.post('/transactions/auto-categorize', async (req, res) => {
+    const uid = req.user.id;
+    let txs = readData('transactions.json', uid) || [];
+    const rules = readData('categorization_rules.json', uid) || [];
+    const settings = readData('account_settings.json', uid) || {};
+    let accountsById = new Map();
+    try { accountsById = new Map((await store.listAccounts(uid)).map(a => [a.id, a])); } catch {}
+
+    // 1. Drop prior auto-guesses (incl. capitalized fixed-asset picks) so rules / a refreshed
+    //    guesser re-evaluate them. Manual + rule-set coaIds (no coaAuto flag) are left intact.
+    txs = txs.map(t => { if (t.coaAuto) { const { coaId, coaAuto, capital, ...rest } = t; return rest; } return t; });
+
+    // 2. User rules fill anything uncategorized.
+    const ruleRes = applyCatRules(txs, rules);
+    txs = ruleRes.transactions;
+
+    // 3. Built-in business-aware guesser fills whatever's still uncategorized.
+    let auto = 0, capital = 0;
+    txs = txs.map(t => {
+      if (t.excluded || t.coaId) return t;       // excluded, manual, or rule-set
+      const g = guessCategory(t, resolveCtx(t, settings, accountsById));
+      if (!g) return t;                           // transfer → stays uncategorized
+      auto++; if (g.capital) capital++;
+      return { ...t, coaId: g.coaId, coaAuto: true, approved: false, ...(g.capital ? { capital: true } : {}) };
+    });
+
+    writeData('transactions.json', txs, uid);
+    // Return the updated set so the client can render it directly (no DB re-read while
+    // the async mirror is still committing).
+    res.json({ rules: ruleRes.count, auto, capital, total: ruleRes.count + auto, transactions: txs });
+  });
+
+  // ── Per-account settings (business flag + property tag) ────────────────
+  // Kept separate from accounts.json so a Plaid re-sync never wipes them.
+  // Shape: { [accountId]: { business: bool, propertyId: string|null } }.
+  router.get('/account-settings', (req, res) => {
+    res.json(readData('account_settings.json', req.user?.id) || {});
+  });
+
+  router.put('/account-settings/:id', (req, res) => {
+    const uid = req.user.id;
+    const all = readData('account_settings.json', uid) || {};
+    const cur = all[req.params.id] || {};
+    const b = req.body || {};
+    const next = { ...cur };
+    if (b.business   !== undefined) next.business   = !!b.business;
+    if (b.propertyId !== undefined) next.propertyId = b.propertyId || null;
+    if (!next.business && !next.propertyId) delete all[req.params.id];   // prune empty
+    else all[req.params.id] = next;
+    writeData('account_settings.json', all, uid);
+    res.json({ id: req.params.id, setting: all[req.params.id] || null });
   });
 
   return router;

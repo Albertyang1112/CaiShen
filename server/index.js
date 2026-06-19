@@ -298,17 +298,24 @@ function notifyClients() {
 const { router: plaidRouter, syncUser: plaidSyncUser } = require('./banking/plaid')(makeIO, notifyClients);
 app.use('/api/plaid', plaidRouter);
 
-// ── Routes: Statements ───────────────────────────────────────────────
-const { router: stmtRouter, generateForUser } = require('./banking/statements')(makeIO, VAULT_DIR);
-app.use('/api/statements', stmtRouter);
+// ── Statements: upload-only ──────────────────────────────────────────
+// CaiShen no longer generates statement PDFs. All statements come from the
+// user via Data Vault upload. The /api/statements generator was removed.
 
 // ── Routes: Reconciliation (Phase 3) ─────────────────────────────────
 app.use('/api/reconcile', require('./banking/reconcile-routes')(makeIO));
 // DEV-ONLY reconciliation verification (localhost only; delete this line + banking/dev-verify.js to remove).
 app.use('/api/dev-verify', localhostOnly, require('./banking/dev-verify')(makeIO));
 
+// DEV-ONLY CSV inspector — lists stored plaid/statement/confirmed CSVs (localhost only;
+// delete this line + banking/dev-csv.js to remove).
+app.use('/api/dev-csv', localhostOnly, require('./banking/dev-csv')());
+
 // ── Routes: Receipts / OCR (Phase 4) ─────────────────────────────────
 app.use('/api/receipts', require('./banking/receipt-routes')(makeIO, DATA_DIR));
+
+// ── Routes: Messaging (Discord/SMS categorizer linking) ───────────────
+app.use('/api/messaging', require('./banking/messaging-routes')(makeIO));
 
 // ── Routes: QuickBooks ────────────────────────────────────────────────
 const { authRouter: qbAuth, apiRouter: qbApi } = require('./accounting/quickbooks')(makeIO);
@@ -793,16 +800,18 @@ app.get('/{*path}', (req, res) => {
     const { rows: users } = await dbQuery('SELECT id, username FROM users').catch(() => ({ rows: [] }));
     for (const user of users) {
       try {
-        const { read } = makeIO(user.id);
-        const conns = read('connections.json') || { plaid: [] };
-        if (!(conns.plaid || []).length) continue;
+        // Plaid connections live in the DB (plaid_items), not connections.json.
+        // syncUser is self-gating: {skipped} when Plaid is off, {synced:0} when this
+        // user has no connections — so no stale-file precheck is needed (the old
+        // `connections.json` gate was always empty after connections moved to the DB,
+        // which silently disabled auto-sync for everyone).
         const result = await plaidSyncUser(user.id).catch(e => ({ error: e.message }));
         if (result.skipped || result.error) continue;
         for (const r of result.results || []) {
           if (r.error) console.log(`[${ts}] ${user.username}/${r.institution}: error — ${r.error}`);
           else console.log(`[${ts}] ${user.username}/${r.institution}: ${r.accounts} accounts, ${r.transactions} txs`);
         }
-        // Statements are upload-only — never auto-generated. (was: generateForUser)
+        // Statements are upload-only — CaiShen never auto-generates them.
       } catch (e) { console.error(`[${ts}] Cron error for ${user.username}:`, e.message); }
     }
   });
@@ -815,6 +824,10 @@ app.get('/{*path}', (req, res) => {
     console.log(`✓ Auto-sync every ${intervalMinutes} minutes`);
     console.log(`\nOpen http://localhost:${PORT} in your browser\n`);
     try { require('open')(`http://localhost:${PORT}`); } catch(e) {}
+
+    // Categorizer bot (in-process): DMs users to confirm/correct new transaction categories.
+    try { require('./banking/messaging-bot').start({ makeIO, query: require('./core/db').query }); }
+    catch (e) { console.error('[bot] start error:', e.message); }
 
     // Run startup verification for all existing users
     const { verifyUser } = require('./core/verify');

@@ -22,18 +22,40 @@ async function saveCsv(userId, key, text) {
   );
 }
 
-/** Rebuild statements.csv from the canonical source_transactions statement rows. */
+/** Rebuild statements.csv from the canonical source_transactions statement rows.
+ *  The single statement CSV (period_year is redundant — it's in the date + source_file). */
 async function refreshStatementsCsv(query, userId) {
   const r = await query(
-    `SELECT txn_date::text AS date, description, amount, source_file, period_year
+    `SELECT txn_date::text AS date, description, amount, source_file
        FROM source_transactions
       WHERE user_id = $1 AND source = 'statement'
       ORDER BY txn_date, source_file`,
     [userId]
   );
-  const text = csv.stringify(r.rows, ['date', 'description', 'amount', 'source_file', 'period_year']);
+  const text = csv.stringify(r.rows, ['date', 'description', 'amount', 'source_file']);
   await saveCsv(userId, 'statements.csv', text);
   return r.rows.length;
 }
 
-module.exports = { saveCsv, refreshStatementsCsv };
+/**
+ * Rebuild confirmed_transactions.csv — the reconciled ("confirmed") rows: each
+ * statement transaction that was verified against a Plaid transaction (status
+ * 'matched'). This is the Plaid ∩ statement intersection, with the match quality.
+ */
+async function refreshConfirmedCsv(query, userId) {
+  const r = await query(
+    `SELECT st.txn_date::text AS date, st.description, st.amount, st.source_file,
+            sm.match_score, sm.name_sim, sm.date_delta_days, sm.plaid_txn_id
+       FROM statement_matches sm
+       JOIN source_transactions st ON st.id = sm.stmt_source_id AND st.user_id = sm.user_id
+      WHERE sm.user_id = $1 AND sm.status = 'matched'
+      ORDER BY st.txn_date, st.source_file`,
+    [userId]
+  );
+  const text = csv.stringify(r.rows,
+    ['date', 'description', 'amount', 'source_file', 'match_score', 'name_sim', 'date_delta_days', 'plaid_txn_id']);
+  await saveCsv(userId, 'confirmed_transactions.csv', text);
+  return r.rows.length;
+}
+
+module.exports = { saveCsv, refreshStatementsCsv, refreshConfirmedCsv };

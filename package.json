@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "nodemon --watch server server/index.js",
+    "dev": "nodemon server/index.js",
     "build": "cd client && npm install && npm run build",
     "test": "jest --forceExit --runInBand"
   },
@@ -14,7 +14,10 @@
     "testMatch": [
       "**/server/tests/**/*.test.js"
     ],
-    "testTimeout": 30000
+    "testTimeout": 30000,
+    "modulePathIgnorePatterns": [
+      "\\.venv"
+    ]
   },
   "keywords": [],
   "author": "",
@@ -42,7 +45,6 @@
     "open": "^11.0.0",
     "otplib": "^13.4.0",
     "pdf2json": "^4.0.3",
-    "pdfkit": "^0.18.0",
     "pg": "^8.21.0",
     "plaid": "^42.2.0",
     "playwright": "^1.60.0",
