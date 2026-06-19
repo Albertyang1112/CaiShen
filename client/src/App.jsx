@@ -8,6 +8,7 @@ import DataVault from './pages/DataVault/DataVault'
 import Accounting from './pages/Accounting/Accounting'
 import Crypto from './pages/Crypto/Crypto'
 import Scrapers from './pages/Scrapers/Scrapers'
+import CsvFiles from './pages/DevTools/CsvFiles'
 import Banking, { classifyAccount } from './pages/Banking/Banking'
 import Login from './pages/Login/Login'
 import { usePlaidLink } from 'react-plaid-link'
@@ -108,6 +109,7 @@ const NAV_TOOLS = [
   {id:'data',          label:'Data Vault',    icon:'ti-database',         adminOnly:false, localhostOnly:false},
   {id:'accounting',    label:'Report',        icon:'ti-building-bank',    adminOnly:false, localhostOnly:false},
   {id:'scrapers',      label:'Scrapers',      icon:'ti-cloud-download',   adminOnly:false, localhostOnly:true},
+  {id:'dev-csv',       label:'CSV Files',     icon:'ti-file-spreadsheet', adminOnly:false, localhostOnly:true},
   {id:'settings',      label:'Settings',      icon:'ti-settings',         adminOnly:false, localhostOnly:false},
 ]
 
@@ -615,182 +617,6 @@ function PropertyDetail({propId, properties, onRefresh}) {
   )
 }
 
-
-// ── Statements Panel ──────────────────────────────────────────────────
-const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-function StatementsPanel() {
-  const [activeTab, setActiveTab]   = useState('monthly')
-  const [months, setMonths]         = useState([])
-  const [loading, setLoading]       = useState(true)
-  const [generating, setGenerating] = useState({})
-  const [genAllBusy, setGenAllBusy] = useState(false)
-  const [expandedAcct, setExpandedAcct] = useState(null)
-  const [result, setResult]         = useState(null)
-
-  const fetchMonths = async () => {
-    setLoading(true)
-    try {
-      const r = await axios.get(`${API}/statements/months`)
-      const data = Array.isArray(r.data) ? r.data : []
-      setMonths(data)
-      if (data.length > 0 && !expandedAcct) setExpandedAcct(data[0].id)
-    } catch {}
-    setLoading(false)
-  }
-
-  useEffect(() => { fetchMonths() }, [])
-
-  const generateOne = async (accountId, month) => {
-    const key = `${accountId}:${month}`
-    setGenerating(g => ({ ...g, [key]: true }))
-    try {
-      await axios.post(`${API}/statements/generate-single`, { accountId, month })
-      await fetchMonths()
-    } catch (e) {
-      setResult({ error: e.response?.data?.error || e.message })
-    }
-    setGenerating(g => ({ ...g, [key]: false }))
-  }
-
-  const generateAll = async () => {
-    setGenAllBusy(true); setResult(null)
-    try {
-      const r = await axios.post(`${API}/statements/generate`)
-      setResult(r.data)
-      await fetchMonths()
-    } catch (e) {
-      setResult({ error: e.response?.data?.error || e.message })
-    }
-    setGenAllBusy(false)
-  }
-
-  const totalMissing = months.reduce((s, a) => s + (a.missingCount || 0), 0)
-
-  return (
-    <div className="card" style={{ marginBottom: 12 }}>
-      {/* Header */}
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
-        <div style={{ width:38, height:38, borderRadius:'var(--radius-md)', background:'var(--teal-light)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-          <i className="ti ti-file-description" style={{ fontSize:19, color:'var(--teal)' }} aria-hidden="true"/>
-        </div>
-        <div style={{ flex:1 }}>
-          <p style={{ fontSize:14, fontWeight:500, margin:0 }}>Statements</p>
-          <p style={{ fontSize:12, color:'var(--text-secondary)', margin:0 }}>
-            {loading ? 'Checking…' : totalMissing > 0 ? `${totalMissing} statement${totalMissing !== 1 ? 's' : ''} not yet generated` : 'All statements up to date'}
-          </p>
-        </div>
-        {!loading && totalMissing > 0 && (
-          <button onClick={generateAll} disabled={genAllBusy}
-            style={{ fontSize:12, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)', whiteSpace:'nowrap' }}>
-            <i className={`ti ${genAllBusy ? 'ti-loader-2 spin' : 'ti-wand'}`} aria-hidden="true"/>
-            {' '}{genAllBusy ? 'Generating…' : `Generate ${totalMissing} Missing`}
-          </button>
-        )}
-      </div>
-
-      {/* Result banner */}
-      {result && (
-        <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', borderRadius:'var(--radius-sm)', background: result.error ? 'var(--coral-light)' : 'var(--teal-light)', border:`0.5px solid ${result.error ? 'var(--coral)' : 'var(--teal)'}`, color: result.error ? 'var(--coral)' : 'var(--teal)', fontSize:12, marginBottom:12 }}>
-          <i className={`ti ${result.error ? 'ti-alert-circle' : 'ti-circle-check'}`} aria-hidden="true"/>
-          {result.error || (result.generated === 0
-            ? `All statements already exist (${result.skipped} total)`
-            : `Generated ${result.generated} PDF${result.generated !== 1 ? 's' : ''} → Data Vault`)}
-          <button onClick={() => setResult(null)} style={{ marginLeft:'auto', background:'none', border:'none', color:'inherit', padding:0, cursor:'pointer' }}>✕</button>
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div style={{ display:'flex', borderBottom:'0.5px solid var(--border)', marginBottom:12 }}>
-        {[['monthly','Monthly Statements','ti-calendar-month'], ...(IS_LOCALHOST ? [['tax','Tax Forms','ti-receipt-tax'],['escrow','Escrow','ti-home-dollar']] : [])].map(([tab, label, icon]) => (
-          <button key={tab} onClick={() => setActiveTab(tab)}
-            style={{ fontSize:12, padding:'7px 14px', border:'none', borderRadius:0, borderBottom: activeTab === tab ? '2px solid var(--teal)' : '2px solid transparent', background:'none', color: activeTab === tab ? 'var(--teal)' : 'var(--text-secondary)', fontWeight: activeTab === tab ? 500 : 400, cursor:'pointer', display:'flex', alignItems:'center', gap:5 }}>
-            <i className={`ti ${icon}`} aria-hidden="true"/>{label}
-          </button>
-        ))}
-      </div>
-
-      {/* Monthly tab */}
-      {activeTab === 'monthly' && (
-        loading ? (
-          <div style={{ padding:'16px', textAlign:'center', color:'var(--text-secondary)', fontSize:12 }}>
-            <i className="ti ti-loader-2 spin" aria-hidden="true"/> Loading statement availability…
-          </div>
-        ) : months.length === 0 ? (
-          <p style={{ fontSize:12, color:'var(--text-secondary)', textAlign:'center', padding:'16px 0 4px' }}>
-            No Plaid accounts connected. Connect a bank to start generating statements.
-          </p>
-        ) : (
-          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-            {months.map(acct => (
-              <div key={acct.id} style={{ border:`0.5px solid ${acct.missingCount > 0 ? 'var(--border)' : 'var(--teal)'}`, borderRadius:'var(--radius-sm)', overflow:'hidden' }}>
-                {/* Account header row */}
-                <button onClick={() => setExpandedAcct(expandedAcct === acct.id ? null : acct.id)}
-                  style={{ width:'100%', display:'flex', alignItems:'center', gap:10, padding:'9px 12px', background:'var(--bg-secondary)', border:'none', cursor:'pointer', borderBottom: expandedAcct === acct.id ? '0.5px solid var(--border)' : 'none' }}>
-                  <i className="ti ti-building-bank" style={{ fontSize:14, color:'var(--blue)', flexShrink:0 }} aria-hidden="true"/>
-                  <span style={{ fontSize:13, fontWeight:500, flex:1, textAlign:'left', color:'var(--text-primary)' }}>
-                    {acct.name}{acct.last4 ? ` ••••${acct.last4}` : ''}
-                    <span style={{ color:'var(--text-muted)', fontWeight:400, fontSize:11 }}>{' '}({acct.institution})</span>
-                  </span>
-                  <span style={{ fontSize:11, color: acct.missingCount > 0 ? 'var(--amber)' : 'var(--teal)', flexShrink:0 }}>
-                    {acct.missingCount > 0 ? `${acct.missingCount} missing` : '✓ all generated'}
-                  </span>
-                  <i className={`ti ${expandedAcct === acct.id ? 'ti-chevron-up' : 'ti-chevron-down'}`} style={{ fontSize:12, color:'var(--text-muted)', flexShrink:0 }} aria-hidden="true"/>
-                </button>
-
-                {/* Month grid */}
-                {expandedAcct === acct.id && (
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(120px, 1fr))', gap:6, padding:12 }}>
-                    {acct.months.map(m => {
-                      const key = `${acct.id}:${m.month}`
-                      const busy = !!generating[key]
-                      const [y, mo] = m.month.split('-')
-                      const label  = `${MONTH_NAMES[parseInt(mo,10)-1]} ${y}`
-                      return (
-                        <div key={m.month} style={{ display:'flex', flexDirection:'column', gap:4, padding:'8px 10px', background:'var(--bg-card)', borderRadius:'var(--radius-sm)', border:`0.5px solid ${m.hasStatement ? 'var(--teal)' : 'var(--border)'}` }}>
-                          <span style={{ fontSize:12, fontWeight:500, color: m.hasStatement ? 'var(--teal)' : 'var(--text-primary)' }}>{label}</span>
-                          <span style={{ fontSize:10, color:'var(--text-muted)' }}>{m.txCount} transaction{m.txCount !== 1 ? 's' : ''}</span>
-                          {m.hasStatement ? (
-                            <span style={{ fontSize:11, color:'var(--teal)', display:'flex', alignItems:'center', gap:4 }}>
-                              <i className="ti ti-circle-check" aria-hidden="true"/> PDF ready
-                            </span>
-                          ) : (
-                            <button onClick={() => generateOne(acct.id, m.month)} disabled={busy}
-                              style={{ fontSize:10, padding:'3px 8px', background:'var(--blue-light)', color:'var(--blue)', border:'0.5px solid var(--blue)', borderRadius:'var(--radius-sm)', cursor: busy ? 'wait' : 'pointer', display:'flex', alignItems:'center', gap:4 }}>
-                              {busy ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Generating…</> : <><i className="ti ti-sparkles" aria-hidden="true"/> Generate</>}
-                            </button>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )
-      )}
-
-      {/* Tax Forms tab (placeholder) */}
-      {activeTab === 'tax' && (
-        <div style={{ padding:'24px', textAlign:'center', color:'var(--text-secondary)' }}>
-          <i className="ti ti-receipt-tax" style={{ fontSize:36, display:'block', marginBottom:10, color:'var(--text-muted)' }} aria-hidden="true"/>
-          <p style={{ fontSize:13, margin:'0 0 6px', color:'var(--text-primary)', fontWeight:500 }}>Tax form generation coming soon</p>
-          <p style={{ fontSize:12, color:'var(--text-muted)', margin:0 }}>Will include Schedule A, 1098, and 1099 summaries from your transaction data.</p>
-        </div>
-      )}
-
-      {/* Escrow tab (placeholder) */}
-      {activeTab === 'escrow' && (
-        <div style={{ padding:'24px', textAlign:'center', color:'var(--text-secondary)' }}>
-          <i className="ti ti-home-dollar" style={{ fontSize:36, display:'block', marginBottom:10, color:'var(--text-muted)' }} aria-hidden="true"/>
-          <p style={{ fontSize:13, margin:'0 0 6px', color:'var(--text-primary)', fontWeight:500 }}>Escrow statement generation coming soon</p>
-          <p style={{ fontSize:12, color:'var(--text-muted)', margin:0 }}>Auto-generate monthly escrow reports per property once linked.</p>
-        </div>
-      )}
-    </div>
-  )
-}
-
 // ── Net Worth Verification ────────────────────────────────────────────
 function NetWorthVerification({ accounts }) {
   const [expanded, setExpanded] = useState(false)
@@ -866,7 +692,6 @@ function ConnectionsScreen({status, accounts, onSync}) {
   const [linkError, setLinkError]           = useState(null)
   const [qbStatus, setQbStatus]             = useState(null)
   const [connecting, setConnecting]         = useState(false)
-  const [stmtResult, setStmtResult]         = useState(null)
   const [showHistoryWarning, setShowHistoryWarning] = useState(false)
 
   const plaidAccounts = (accounts || []).filter(a => a.source === 'plaid')
@@ -894,18 +719,15 @@ function ConnectionsScreen({status, accounts, onSync}) {
     }
   }
 
-  // Pull full 2-year transaction history from Plaid then generate all statements
+  // Pull full 2-year transaction history from Plaid (statements are upload-only — none generated).
   const syncFullHistory = async () => {
     setHistoryRunning(true)
-    setStmtResult(null)
     setLinkError(null)
     try {
       await axios.post(`${API}/plaid/sync-history`)
-      // Server responds immediately and processes async — wait then generate statements.
-      // SSE will also push data-updated when the sync finishes on the server.
+      // Server responds immediately and processes async; SSE pushes data-updated when done.
       setTimeout(async () => {
         try {
-          // Statements are upload-only now — no auto-generation after a history pull.
           const connsRes = await axios.get(`${API}/plaid/connections`)
           setPlaidConns(Array.isArray(connsRes.data) ? connsRes.data : [])
           onSync?.()
@@ -997,19 +819,6 @@ function ConnectionsScreen({status, accounts, onSync}) {
           <button onClick={()=>setLinkError(null)} style={{ marginLeft:'auto', background:'none', border:'none', color:'var(--coral)', padding:0 }}>✕</button>
         </div>
       )}
-      {stmtResult && (
-        <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background: stmtResult.error ? 'var(--coral-light)' : 'var(--teal-light)', borderRadius:'var(--radius-md)', marginBottom:16, fontSize:13, color: stmtResult.error ? 'var(--coral)' : 'var(--teal)', border:`0.5px solid ${stmtResult.error ? 'var(--coral)' : 'var(--teal)'}` }}>
-          <i className={`ti ${stmtResult.error ? 'ti-alert-circle' : 'ti-circle-check'}`} style={{ fontSize:15 }} aria-hidden="true"/>
-          {stmtResult.error
-            ? stmtResult.error
-            : stmtResult.generated === 0
-              ? `All statements up to date — ${stmtResult.skipped} PDF${stmtResult.skipped !== 1 ? 's' : ''} already in Data Vault`
-              : `Generated ${stmtResult.generated} new statement PDF${stmtResult.generated !== 1 ? 's' : ''} → Data Vault${stmtResult.skipped ? ` (${stmtResult.skipped} already existed)` : ''}`
-          }
-          <button onClick={()=>setStmtResult(null)} style={{ marginLeft:'auto', background:'none', border:'none', color:'inherit', padding:0 }}>✕</button>
-        </div>
-      )}
-
       <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:12, marginBottom:20 }}>
 
         {/* Plaid */}
@@ -1061,7 +870,7 @@ function ConnectionsScreen({status, accounts, onSync}) {
             )}
             {plaidConns.length > 0 && (
               <button onClick={() => setShowHistoryWarning(true)} disabled={syncing || historyRunning}
-                title="Pull up to 2 years of transaction history from Plaid, then generate statements for every month found"
+                title="Pull up to 2 years of transaction history from Plaid"
                 style={{ fontSize:12, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
                 <i className={`ti ${historyRunning ? 'ti-loader-2 spin' : 'ti-clock-down'}`} aria-hidden="true"/>
                 {' '}{historyRunning ? 'Pulling history…' : 'Sync full history'}
@@ -1126,11 +935,20 @@ function SettingsScreen({ auth }) {
   const [error, setError]             = useState('')
   const [success, setSuccess]         = useState('')
   const [exporting, setExporting]     = useState(false)
+  const [links, setLinks]             = useState([])
+  const [linkCode, setLinkCode]       = useState(null)
+  const [msgLoading, setMsgLoading]   = useState(false)
+  const [msgErr, setMsgErr]           = useState('')
+  const [copied, setCopied]           = useState(false)
 
   useEffect(() => {
     axios.get(`${AUTH_API}/2fa/status`)
       .then(r => setTwoFaStatus(r.data))
       .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    axios.get(`${API}/messaging/links`).then(r => setLinks(r.data || [])).catch(() => {})
   }, [])
 
   const startTotpSetup = async () => {
@@ -1179,6 +997,33 @@ function SettingsScreen({ auth }) {
     } catch (e) { setError('Export failed: ' + e.message) }
     setExporting(false)
   }
+
+  // ── Messaging (categorizer bot) linking ──
+  const loadLinks = async () => {
+    try { const r = await axios.get(`${API}/messaging/links`); setLinks(r.data || []); return r.data || [] }
+    catch { return [] }
+  }
+  const connectMessaging = async () => {
+    setMsgLoading(true); setMsgErr('')
+    try { const r = await axios.post(`${API}/messaging/link-code`, { channel: 'discord' }); setLinkCode(r.data) }
+    catch (e) { setMsgErr(e.response?.data?.error || e.message) }
+    setMsgLoading(false)
+  }
+  const checkLinked = async () => {
+    setMsgLoading(true); setMsgErr('')
+    const arr = await loadLinks()
+    if (arr.find(l => l.channel === 'discord')) setLinkCode(null)
+    else setMsgErr(`Not linked yet — make sure you DM'd the bot:  link ${linkCode?.code || ''}`)
+    setMsgLoading(false)
+  }
+  const unlinkMessaging = async () => {
+    setMsgLoading(true); setMsgErr('')
+    try { await axios.delete(`${API}/messaging/links/discord`); await loadLinks(); setLinkCode(null) }
+    catch (e) { setMsgErr(e.response?.data?.error || e.message) }
+    setMsgLoading(false)
+  }
+  const copyCode = () => { try { navigator.clipboard.writeText(linkCode.code); setCopied(true); setTimeout(() => setCopied(false), 1500) } catch {} }
+  const discordLink = links.find(l => l.channel === 'discord')
 
   const isTotp = twoFaStatus?.method === 'totp'
 
@@ -1318,6 +1163,64 @@ function SettingsScreen({ auth }) {
           It does <strong>not</strong> include vault files — use the Data Vault's "Download all" button for those.
         </div>
       </div>
+
+      {/* Transaction categorizer bot (Discord / SMS) */}
+      <div className="card" style={{ marginTop: 16 }}>
+        <p style={{ fontSize:14, fontWeight:500, margin:'0 0 4px' }}>Transaction categorizer bot</p>
+        <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'0 0 16px', lineHeight:1.5 }}>
+          Connect Discord and the bot will DM you about each new transaction so you can confirm or fix its category. (SMS support coming later.)
+        </p>
+
+        {msgErr && (
+          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', background:'var(--coral-light)', borderRadius:'var(--radius-md)', fontSize:12, color:'var(--coral)', border:'0.5px solid var(--coral)', marginBottom:12 }}>
+            <i className="ti ti-alert-circle" aria-hidden="true"/> {msgErr}
+          </div>
+        )}
+
+        {discordLink ? (
+          <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'var(--bg-secondary)', borderRadius:'var(--radius-md)' }}>
+            <i className="ti ti-brand-discord" style={{ fontSize:18, color:'var(--purple)' }} aria-hidden="true"/>
+            <div style={{ flex:1 }}>
+              <p style={{ fontSize:13, fontWeight:500, margin:0 }}>Discord connected</p>
+              <p style={{ fontSize:11, color:'var(--text-secondary)', margin:'1px 0 0' }}>
+                {discordLink.display_name ? `as ${discordLink.display_name}` : `id ${discordLink.external_id}`}
+              </p>
+            </div>
+            <button onClick={unlinkMessaging} disabled={msgLoading}
+              style={{ fontSize:12, background:'var(--coral-light)', color:'var(--coral)', borderColor:'var(--coral)' }}>
+              Disconnect
+            </button>
+          </div>
+        ) : linkCode ? (
+          <div>
+            <p style={{ fontSize:13, color:'var(--text-secondary)', margin:'0 0 8px', lineHeight:1.6 }}>
+              In Discord, open a DM with the <strong>CaiShen</strong> bot and send:
+            </p>
+            <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:10 }}>
+              <code style={{ flex:1, fontSize:14, fontFamily:'monospace', background:'var(--bg-secondary)', padding:'10px 12px', borderRadius:'var(--radius-sm)', letterSpacing:1 }}>
+                link {linkCode.code}
+              </code>
+              <button onClick={copyCode} style={{ fontSize:12 }}>
+                {copied ? <><i className="ti ti-check" aria-hidden="true"/> Copied</> : <><i className="ti ti-copy" aria-hidden="true"/> Copy</>}
+              </button>
+            </div>
+            <p style={{ fontSize:11, color:'var(--text-muted)', margin:'0 0 12px' }}>
+              Code expires in {linkCode.expiresInMinutes || 15} minutes.
+            </p>
+            <button onClick={checkLinked} disabled={msgLoading}
+              style={{ fontSize:13, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
+              {msgLoading ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Checking…</> : "I've sent it — check link"}
+            </button>
+          </div>
+        ) : (
+          <button onClick={connectMessaging} disabled={msgLoading}
+            style={{ fontSize:13, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
+            {msgLoading
+              ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Generating…</>
+              : <><i className="ti ti-brand-discord" aria-hidden="true"/> Connect Discord</>}
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -1456,6 +1359,7 @@ function MainApp({ auth, onLogout }) {
     if(nav==='projections') return <Projections/>
     if(nav==='accounting') return <Accounting/>
     if(nav==='scrapers' && IS_LOCALHOST) return <Scrapers/>
+    if(nav==='dev-csv'  && IS_LOCALHOST) return <CsvFiles/>
     if(nav==='data')       return <DataVault accounts={accounts} transactions={transactions} onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])} onTransactionsChanged={()=>{ axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])).catch(()=>{}); axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])).catch(()=>{}) }}/>
     if(nav==='settings')   return <SettingsScreen auth={auth}/>
     return null

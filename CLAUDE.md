@@ -42,13 +42,17 @@ CaiShen/
 │       ├── App.css           ← Not used much — styles in index.css
 │       ├── index.css         ← All CSS variables and global styles
 │       ├── main.jsx          ← React entry point
-│       ├── Login.jsx         ← Login, signup, 2FA verification screens
-│       ├── PersonalSpending.jsx     ← CSV upload, auto-categorization, friend sidebar
-│       ├── TransactionTransfer.jsx  ← Move/split transactions, auto-transfer rules
-│       ├── Projections.jsx          ← Tax projections, property sale optimizer, net worth
-│       ├── Crypto.jsx               ← Crypto module (Portfolio / Transactions / Tax Report / Wallets)
-│       ├── BankScraper.jsx          ← Bank Scraper UI (LOCAL-ONLY, gitignored — see "Local-only files" below)
-│       └── DataVault.jsx            ← File browser, folder upload, PDF/Excel preview
+│       └── pages/            ← Folder-per-page: pages/<Name>/<Name>.jsx (branch refactor/folder-per-page)
+│           ├── Login/        ← Login, signup, 2FA verification screens
+│           ├── Banking/      ← Banking.jsx + TransactionsTable.jsx, ReconcileVerify.jsx, bankingFormat.js
+│           ├── PersonalSpending/ ← CSV upload, auto-categorization, friend sidebar
+│           ├── Projections/  ← Tax projections, property sale optimizer, net worth
+│           ├── Crypto/       ← Crypto module (Portfolio / Transactions / Tax Report / Wallets)
+│           ├── Accounting/   ← Chart of accounts, invoices, bills (sidebar "Report" tab)
+│           ├── DataVault/    ← File browser, folder upload, PDF/Excel preview
+│           ├── DevTools/     ← Dev-only tools (CsvFiles.jsx) — localhost
+│           ├── Scrapers/     ← Scrapers.jsx — LOCAL-ONLY, gitignored (App.jsx imports this)
+│           └── BankScraper/  ← Bank Scraper UI — LOCAL-ONLY, gitignored
 ├── data/                 ← Local JSON storage (gitignored)
 │   ├── users/            ← Per-user financial data directories (data/users/{userId}/)
 │   │   └── {userId}/     ← accounts.json, transactions.json, properties.json, etc.
@@ -98,7 +102,7 @@ Steps to pick the project back up on another machine from the **private** repo. 
    ```
 3. **Recreate `.env` in the repo root** — it is gitignored and never committed, so it won't come down with the clone. Recreate it with the variable **names** from the ".env Structure" section below and paste in your own secrets. Minimum to boot: `DATABASE_URL` (shared Neon user list), `MASTER_PASSWORD` + `ADMIN_EMAIL` (seeds/admin login), `EMAIL_FROM` + `EMAIL_PASS` (2FA emails on new devices). `JWT_SECRET` is optional — the server falls back to a built-in default if it's unset (set your own for production). Everything else (Plaid, QuickBooks, Anthropic, Etherscan) is feature-specific and can be filled in later.
 4. **Recreate the two local-only gitignored files** (see "Local-only files" under Git / GitHub):
-   - **`client/src/BankScraper.jsx` is REQUIRED** — without it `npm run dev` / `npm run build` fail with *"Could not resolve './BankScraper'"* and the whole client bundle won't build. Drop in your real local copy, or create a minimal default-export React component as a placeholder.
+   - **`client/src/pages/Scrapers/Scrapers.jsx` is REQUIRED** — `App.jsx` statically imports it (`import Scrapers from './pages/Scrapers/Scrapers'`), so without it `npm run dev` / `npm run build` fail with *"Could not resolve './pages/Scrapers/Scrapers'"* and the whole client bundle won't build. The `pages/BankScraper/` UI is local-only too. Drop in your real local copies, or stub `Scrapers.jsx` as a minimal default-export component. (Pre-refactor this was `client/src/BankScraper.jsx` at the src root — that path no longer exists.)
    - `server/bank-scraper.js` is optional for startup (the server guards its require and just logs that `/api/scraper` is disabled). Add it back only to use the Bank Scraper feature.
 5. **Local data does NOT travel with the repo** — `data/`, `vault/`, and `backups/` are gitignored. A fresh clone starts with no financial data; user **accounts** still resolve because they live in the shared Neon DB (via `DATABASE_URL`). Per-user crypto/transactions/etc. are recreated locally as you use the app (or copy the `data/` folder over manually).
 6. **Run it** — two terminals: `npm start` (root → :3001) and `npm run dev` (client → :5173). Sanity-check the crypto engine with `node --test server/tests/`.
@@ -412,7 +416,7 @@ A JS port of a previously-built Python cost-basis engine, wired into the Crypto 
 ## Bank Scraper — Known Issues (Backlog)
 - **Chase blocks post-login**: Playwright browser gets past the login form but Chase detects the automated session afterwards and redirects to `chase.com/digital/chase_outage`. Basic stealth patches applied (`navigator.webdriver`, chrome runtime, plugins, UA). Chase's detection is post-authentication (behavioral/TLS fingerprinting) — not solved by basic patches. Needs `playwright-stealth` or real Chrome profile to bypass. **Do not attempt repeatedly** — could flag user's account. Other banks untested.
 - **Manual nav flow added**: After login detection, scraper now pauses and prompts user to manually navigate to the statements page, then click "I'm on the statements page" button. This avoids the hardcoded `statementsUrl` 404 issue that was the original bug.
-- **Scraper is localhost-only**: `localhostOnly` middleware on `/api/scraper` + `IS_LOCALHOST` gate in `BankScraper.jsx`. HAR fixtures in `server/scraper-fixtures/` are gitignored.
+- **Scraper is localhost-only**: `localhostOnly` middleware on `/api/scraper` + `IS_LOCALHOST` gate in `App.jsx` (`nav==='scrapers'`). HAR fixtures in `server/scraper-fixtures/` are gitignored.
 
 ## What's NOT Built Yet ⏳
 - **Tax Return Tab** — 1040, Schedule E, Schedule D, Schedule C, AMT, year-over-year, PDF export
@@ -501,7 +505,7 @@ Because of the pdf2json shared-state bug above, fudge detection cannot parse two
 
 ### Local-only files (gitignored — must be recreated per machine)
 Two files are deliberately kept off GitHub but are **required for the app to build/run**:
-- **`client/src/BankScraper.jsx`** — `App.jsx` does a static `import BankScraper from './BankScraper'`. A missing static import breaks the **entire** Vite bundle, so this file must exist or `npm run dev` / `npm run build` fails with *"Could not resolve './BankScraper'"*. On a fresh clone, drop your real local copy back in, or create a minimal placeholder default-export component. (The tab only mounts on localhost: `nav==='scraper' && IS_LOCALHOST`.)
+- **`client/src/pages/Scrapers/Scrapers.jsx`** (plus the `client/src/pages/BankScraper/` folder) — the scraper UIs, kept local-only. `App.jsx` statically imports `./pages/Scrapers/Scrapers`, so a missing file breaks the **entire** Vite bundle: `npm run dev` / `npm run build` fails with *"Could not resolve './pages/Scrapers/Scrapers'"*. On a fresh clone, drop your real local copies back in, or stub `Scrapers.jsx` as a minimal default-export component. (The tab only mounts on localhost: `nav==='scrapers' && IS_LOCALHOST`.) NOTE: pre-refactor this lived at `client/src/BankScraper.jsx` (src root) — that path is gone; don't recreate it there.
 - **`server/bank-scraper.js`** — `index.js` guards its require: `if (fs.existsSync(path.join(__dirname,'bank-scraper.js'))) app.use('/api/scraper', localhostOnly, require('./bank-scraper')(makeIO, VAULT_DIR))`. If absent, the server still boots and just logs `[scraper] ... disabled for this run.` — so this one is optional for startup, required only for the Bank Scraper feature.
 
 ---

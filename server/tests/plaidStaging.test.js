@@ -49,12 +49,13 @@ describe('Plaid CSV staging-layer import', () => {
     const text = io.store[PLAID_CSV];
 
     expect(text).toBeTruthy();
-    expect(text.split('\n')[0]).toBe('id,date,month,desc,amount,category,plaidCategory,account,institution,pending,source,lastUpdated');
+    // Slim audit columns only — month/pending/source are dropped as CSV noise.
+    expect(text.split('\n')[0]).toBe('id,date,desc,amount,category,plaidCategory,account,institution,lastUpdated');
     expect(text).not.toContain('coaId');   // user fields are never serialized to CSV
     expect(text).not.toContain('secret');
   });
 
-  test('coerces amount->number and pending->boolean after the CSV round-trip', () => {
+  test('keeps amount as number and pending as boolean on the imported transaction', () => {
     const io = fakeTextIO();
     const plaidTxs = [plaidRow({ id: 'p2', amount: -12.5, pending: true })];
 
@@ -90,5 +91,39 @@ describe('Plaid CSV staging-layer import', () => {
     // BOA tx kept (with its category), chase1 history kept, chase2 added — nothing lost.
     expect(ids).toEqual(['boa1', 'chase1', 'chase2']);
     expect(result.find(t => t.id === 'boa1').coaId).toBe('6000');
+  });
+
+  test('settles a pending row into its posted twin (drops the duplicate, keeps edits)', () => {
+    const io = fakeTextIO();
+    // A pending charge from a prior sync that the user already categorized.
+    const existing = [
+      plaidRow({ id: 'pend1', desc: 'DoorDash', amount: -9.99, pending: true, coaId: '5040', note: 'lunch' }),
+    ];
+    // Next pull: the posted version arrives with a NEW id, linked back via pendingTransactionId.
+    const plaidTxs = [
+      plaidRow({ id: 'post1', desc: 'DoorDash', amount: -9.99, pending: false, pendingTransactionId: 'pend1' }),
+    ];
+
+    const result = stageAndImport({ existing, plaidTxs, readText: io.readText, writeText: io.writeText });
+
+    // Only the posted row remains — the stale pending twin is gone (no duplicate).
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('post1');
+    expect(result[0].pending).toBe(false);
+    // The user's edits moved from the pending row onto the posted one.
+    expect(result[0].coaId).toBe('5040');
+    expect(result[0].note).toBe('lunch');
+  });
+
+  test('drops the pending row when one pull carries both pending and its posted twin', () => {
+    const io = fakeTextIO();
+    const plaidTxs = [
+      plaidRow({ id: 'pend2', desc: 'Chinatown', amount: -19.41, pending: true }),
+      plaidRow({ id: 'post2', desc: 'Chinatown', amount: -19.41, pending: false, pendingTransactionId: 'pend2' }),
+    ];
+
+    const result = stageAndImport({ existing: [], plaidTxs, readText: io.readText, writeText: io.writeText });
+
+    expect(result.map(t => t.id)).toEqual(['post2']);
   });
 });

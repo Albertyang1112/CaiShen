@@ -190,17 +190,25 @@ export default function Projections() {
   const [projectionYears, setProjectionYears] = useState(10)
 
   // Property sale scenario
-  const [saleProperty, setSaleProperty] = useState('muirfield')
+  const [saleProperty, setSaleProperty] = useState('')
   const [salePriceAdj, setSalePriceAdj] = useState(0)
   const [yearsHeld, setYearsHeld] = useState(9)
 
-  const PROPS = [
-    { id: 'haas', name: 'Haas', value: 1250000, basis: 820000, mortgage: 780000 },
-    { id: 'kobe', name: 'Kobe', value: 980000, basis: 650000, mortgage: 610000 },
-    { id: 'bayhill', name: 'Bay Hill', value: 1680000, basis: 1100000, mortgage: 1050000 },
-    { id: 'muirfield', name: 'Muirfield', value: 2100000, basis: 1380000, mortgage: 1320000 },
-    { id: 'alcita', name: 'Alcita', value: 875000, basis: 580000, mortgage: 540000 },
-  ]
+  // Real properties (per-user). Cost basis isn't captured by the property form
+  // yet, so fall back to current value (a conservative zero-gain estimate).
+  const [PROPS, setPROPS] = useState([])
+  useEffect(() => {
+    axios.get(`${API}/properties`).then(r => {
+      const list = (r.data || []).map(p => ({
+        id: p.id, name: p.name,
+        value:    Number(p.value)    || 0,
+        mortgage: Number(p.mortgage) || 0,
+        basis:    p.basis != null ? Number(p.basis) : (Number(p.value) || 0),
+      }))
+      setPROPS(list)
+      setSaleProperty(cur => cur || (list[0]?.id || ''))
+    }).catch(() => {})
+  }, [])
 
   // ── Tax calculations ─────────────────────────────────────────────────
   const taxCalc = useMemo(() => {
@@ -266,7 +274,7 @@ export default function Projections() {
     const totalTaxOnSale = ltcgTaxOnSale + deprecTax + niit
     const netAfterTax = netProceeds - totalTaxOnSale
     return { salePrice, closingCosts, netProceeds, gain, deprecRecapture, taxableGain, ltcgTaxOnSale, deprecTax, niit, totalTaxOnSale, netAfterTax, prop }
-  }, [saleProperty, salePriceAdj, yearsHeld, w2, rsu, reIncome])
+  }, [PROPS, saleProperty, salePriceAdj, yearsHeld, w2, rsu, reIncome])
 
   // ── Net worth projection ──────────────────────────────────────────────
   const nwData = useMemo(() => NetWorthProjection({

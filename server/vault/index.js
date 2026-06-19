@@ -232,71 +232,162 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── POST /api/vault/auto-organize — scan PDFs, detect metadata, sort into folders ──
-  // body: { folderId?, consolidate? }
-  //   folderId   — limit to PDFs in this folder (omit = all untagged PDFs)
-  //   consolidate — skip organizing, only backfill last4 and merge duplicate folders
-  router.post('/auto-organize', require('./auto-organize')({ getUserVaultDir, makeIO, readMeta, writeMeta }));
+  // ── POST /api/vault/auto-organize — classify each PDF with AI, sort into folders ──
+  // body: { folderId?, consolidate?, duplicateResolutions? }
+  //   folderId   — limit to PDFs in this folder (omit = all un-sorted PDFs)
+  //   consolidate — no-op for the AI sorter (kept for client compatibility)
+  // Powered by Groq (vault/ai-organize.js → ai-sort.js); replaces the old heuristic.
+  router.post('/auto-organize', require('./ai-organize')({ getUserVaultDir, makeIO, readMeta, writeMeta }));
+
+  // ── Vault review — propose cleanups (dup files, empty/redundant folders); apply on approval ──
+  {
+    const { reviewHandler, applyHandler } = require('./ai-review')({ getUserVaultDir, makeIO, readMeta, writeMeta });
+    router.post('/review', reviewHandler);
+    router.post('/review/apply', applyHandler);
+  }
 
   // ── POST /api/vault/extract-stats ───────────────────────────────────────────
-  // Scans all organized PDFs that haven't had financial stats extracted yet,
-  // runs parsePDFTransactions on each (5 at a time), and caches income/spending/net
-  // in the file's tags so the vault list can show them without a manual click.
+  // Caches each statement's income/spending/net from its STATED period totals
+  // (Beginning Balance / Deposits / Ending Balance) — read deterministically from the
+  // text when possible, else via Groq validated by the balance equation. This is far
+  // steadier than summing individual transactions with an LLM (which wobbles between
+  // runs). Transaction-summing remains only as a last-resort fallback.
+  // body: { fileIds? } — force re-extraction of those files; otherwise only statements
+  // without stats yet (retry up to 3×).
   router.post('/extract-stats', async (req, res) => {
     try {
-      const { parsePDFTransactions } = require('../core/pdf-parser');
+      const { extractTransactions, extractSummary } = require('./ai-extract');
       const userId   = req.user.id;
       const vaultDir = getUserVaultDir(userId);
       let   meta     = readMeta(userId);
 
-      // Process organized PDFs that either haven't been scanned yet, or were scanned
-      // but returned 0 transactions (income still undefined) — retry up to 3 times
-      // in case the parser improves between runs.
+      const { fileIds, revalidate } = req.body || {};
+      const want = Array.isArray(fileIds) && fileIds.length ? new Set(fileIds) : null;
+
+      // Normally only statements without stats yet. `revalidate: true` re-checks EVERY
+      // statement and corrects any whose figures changed — the retroactive fix for a
+      // value that got cached wrong (e.g. a rate-limited extraction that stored $0).
       const needsStats = meta.files.filter(f =>
         f.type === 'pdf' &&
         f.tags?.institution &&
+        !f.tags?.mortgage &&            // mortgage statements aren't bank-transaction PDFs
         f.tags?.year &&
         f.tags?.month &&
-        f.tags?.income === undefined &&
-        (f.tags?.statsAttempts || 0) < 3
+        (want
+          ? want.has(f.id)
+          : revalidate
+            ? true
+            : (f.tags?.income === undefined && (f.tags?.statsAttempts || 0) < 3))
       );
 
-      if (!needsStats.length) return res.json({ processed: 0 });
+      if (!needsStats.length) return res.json({ processed: 0, corrected: 0 });
 
-      let processed = 0;
-      const CONC = 5;
-      for (let i = 0; i < needsStats.length; i += CONC) {
-        await Promise.allSettled(needsStats.slice(i, i + CONC).map(async (f) => {
-          const fp = path.join(vaultDir, f.folderPath, f.name);
-          if (!fs.existsSync(fp)) return;
+      let processed = 0, corrected = 0;
+      // Sequential — one statement at a time keeps Groq under its rate limit.
+      for (const f of needsStats) {
+        try {
+          let buffer = await require('../core/documents').getDocumentBytes(userId, f.id);
+          if (!buffer) {
+            const fp = path.join(vaultDir, f.folderPath, f.name);
+            buffer = fs.existsSync(fp) ? fs.readFileSync(fp) : null;
+          }
+          if (!buffer) continue;
+
+          // 1. Period totals from the stated summary (deterministic, or Groq-validated).
+          let stats = null;   // { income, spending, net, txCount? }
           try {
-            const buffer       = fs.readFileSync(fp);
-            const transactions = await parsePDFTransactions(buffer, f.tags || {});
-            const fi         = meta.files.findIndex(x => x.id === f.id);
-            if (fi < 0) return;
-            const txIncome   = +transactions.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0).toFixed(2);
-            const txSpending = +transactions.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0).toFixed(2);
-            // Always write income/spending/net — even 0 — so the UI shows $0 instead of "—"
-            // for months that genuinely have no parseable transactions.
-            meta.files[fi].tags = {
-              ...meta.files[fi].tags,
-              statsProcessed: true,
-              statsAttempts:  (meta.files[fi].tags.statsAttempts || 0) + 1,
-              income:   txIncome,
-              spending: txSpending,
-              net:      +(txIncome + txSpending).toFixed(2),
-              txCount:  transactions.length,
-            };
-            processed++;
-          } catch {}
-        }));
+            const s = await extractSummary(buffer, { year: f.tags?.year });
+            if (s.income != null) stats = { income: s.income, spending: s.spending, net: s.net };
+          } catch (e) { console.error('[vault/extract-stats] summary:', e.message); }
+
+          // 2. Last resort — sum transactions (only a trustworthy, non-empty result).
+          if (!stats) {
+            try {
+              const r = await extractTransactions(buffer, { year: f.tags?.year });
+              if (!r.needsOcr && !r.suspicious && r.transactions.length) {
+                const inc = +r.transactions.filter(t => t.amount > 0).reduce((a, t) => a + t.amount, 0).toFixed(2);
+                const spd = +r.transactions.filter(t => t.amount < 0).reduce((a, t) => a + t.amount, 0).toFixed(2);
+                stats = { income: inc, spending: spd, net: +(inc + spd).toFixed(2), txCount: r.transactions.length };
+              }
+            } catch (e) { console.error('[vault/extract-stats] txns:', e.message); }
+          }
+
+          const fi = meta.files.findIndex(x => x.id === f.id);
+          if (fi < 0) continue;
+          if (!stats) {                                 // couldn't read it reliably — retry later, don't cache a fake $0
+            meta.files[fi].tags = { ...meta.files[fi].tags, statsAttempts: (meta.files[fi].tags.statsAttempts || 0) + 1 };
+            continue;
+          }
+          const prev = meta.files[fi].tags || {};
+          const changed = prev.income !== stats.income || prev.spending !== stats.spending;
+          meta.files[fi].tags = {
+            ...prev,
+            statsProcessed: true,
+            statsAttempts:  (prev.statsAttempts || 0) + 1,
+            income:   stats.income,
+            spending: stats.spending,
+            net:      stats.net,
+            ...(stats.txCount != null && { txCount: stats.txCount }),
+          };
+          processed++;
+          if (changed && prev.income !== undefined) corrected++;   // a previously-cached value we just fixed
+        } catch {}
       }
 
       if (processed > 0) writeMeta(meta, userId);
-      console.log(`[vault/extract-stats] Cached stats for ${processed}/${needsStats.length} PDFs`);
-      res.json({ processed });
+      console.log(`[vault/extract-stats] ${processed}/${needsStats.length} processed, ${corrected} corrected`);
+      res.json({ processed, corrected });
     } catch (e) {
       console.error('[vault/extract-stats]', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── POST /api/vault/index-statements ────────────────────────────────────────
+  // Closes the loop: mirror an uploaded statement's transactions into the DB and
+  // reconcile them against Plaid, so an upload flows straight through to the Banking
+  // tab. Reuses the existing banking reconciler (parse → mirror → reconcile) as-is —
+  // no changes to it. Body: { fileIds?: [...] } limits to those files; otherwise
+  // every Bank-Statements PDF is re-indexed (mirrorStatement is idempotent).
+  router.post('/index-statements', async (req, res) => {
+    try {
+      const userId    = req.user.id;
+      const io        = makeIO(userId);
+      const meta      = readMeta(userId);
+      const { query } = require('../core/db');
+      const documents = require('../core/documents');
+      const { parseStatement, mirrorStatement, reconcileUser } = require('../banking/reconciler');
+
+      const { fileIds } = req.body || {};
+      let targets = meta.files.filter(f =>
+        f.type === 'pdf' && (f.folderPath || '').startsWith('Bank Statements/'));
+      if (Array.isArray(fileIds) && fileIds.length) {
+        const want = new Set(fileIds);
+        targets = targets.filter(f => want.has(f.id));
+      }
+
+      let statements = 0, mirrored = 0, failed = 0;
+      for (const f of targets) {
+        try {
+          const bytes = await documents.getDocumentBytes(userId, f.id);
+          if (!bytes) { failed++; continue; }
+          const rows = await parseStatement(bytes, f.name);   // PDF → [{date,amount,desc}]
+          if (!rows.length) { failed++; continue; }
+          mirrored += await mirrorStatement(query, userId, rows, f.name, { documentId: f.id }); // → source_transactions (+ period, bank_statement)
+          statements++;
+        } catch (e) { failed++; console.error('[vault/index-statements]', f.name, e.message); }
+      }
+
+      // Compare to Plaid + (re)populate statement_matches — the Banking badges read these.
+      let reconcile = null;
+      if (statements > 0) {
+        try { reconcile = await reconcileUser(query, userId, io); }
+        catch (e) { console.error('[vault/index-statements] reconcile:', e.message); }
+      }
+      console.log(`[vault/index-statements] ${statements} statement(s), ${mirrored} rows mirrored, ${failed} failed`);
+      res.json({ statements, mirrored, failed, reconcile });
+    } catch (e) {
+      console.error('[vault/index-statements]', e.message);
       res.status(500).json({ error: e.message });
     }
   });
@@ -797,6 +888,7 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
       const candidates  = meta.files.filter(f =>
         f.type === 'pdf' &&
         f.tags?.institution &&
+        !f.tags?.mortgage &&                          // mortgages have no Plaid txns to match
         f.tags?.verificationStatus !== 'verified' && // frozen once verified
         (
           (f.tags?.year && f.tags?.month) ||          // normal organized file

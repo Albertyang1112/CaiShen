@@ -11,9 +11,11 @@
  *   Returns count of rows inserted.
  *
  * reconcileUser(query, userId, io, year?)
- *   Fuzzy-matches statement rows vs Plaid transactions loaded via io.
- *   Writes results to statement_matches (clears old run for that user/year first).
- *   Returns { matched, stmtOnly, plaidOnly, conflicts }.
+ *   Matches statement rows vs Plaid transactions loaded via io, in three passes:
+ *   manual links → EXACT (same day + exact amount, unique on both sides — no name
+ *   needed) → fuzzy fallback (±$0.01, ±4 days, shared name token or learned alias).
+ *   Writes results to statement_matches atomically (clears old run for that
+ *   user/year first). Returns { matched, stmtOnly, plaidOnly, conflicts }.
  *
  * getStatus(query, userId)
  *   Returns { stats:{matched,stmt_only,plaid_only,conflict}, files:[{source_file,period_year}] }.
@@ -21,7 +23,7 @@
 
 const crypto = require('crypto');
 const { parsePDFTransactions } = require('../core/pdf-parser');
-const { stageStatementCsv } = require('./statement-csv');
+const { findOrCreatePeriod } = require('./periods');
 
 // ── Text normalisation for name similarity ────────────────────────────────────
 const norm = s => String(s || '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -187,30 +189,136 @@ function cleanStmtDesc(desc) {
 }
 
 // ── Mirror statement rows into source_transactions ────────────────────────────
-async function mirrorStatement(query, userId, rows, sourceFile) {
-  const year = parseInt((sourceFile || '').match(/20\d{2}/)?.[0] || new Date().getFullYear());
+// "9092 Statement Apr 2021.pdf" → {last4,month,year}; also "2026-02 NAME Statement.pdf".
+const STMT_MON = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
+function parseStmtMeta(name) {
+  if (!name) return null;
+  let m = /(\d{3,4})\s+Statement\s+([A-Za-z]{3,})\s+(\d{4})/i.exec(name);
+  if (m) { const mo = STMT_MON[m[2].slice(0, 3).toLowerCase()]; if (mo) return { last4: m[1], month: mo, year: Number(m[3]) }; }
+  m = /(20\d{2})-(\d{2})/.exec(name);
+  if (m) return { last4: null, month: Number(m[2]), year: Number(m[1]) };
+  return null;
+}
+const pad2s = (n) => String(n).padStart(2, '0');
+
+// Increment 3 (remodel write-flow): besides upserting the parsed rows, resolve the
+// statement's account (last4 from filename → accounts.mask; single-account fallback),
+// find-or-create its month period, and create/link a typed bank_statements row (to the
+// PDF's documents row via opts.documentId when known). Each row then carries account_id,
+// the period, the bank_statement, and a content source_hash. Idempotent (deterministic
+// ids; COALESCE keeps already-set fields). opts: { documentId }.
+async function mirrorStatement(query, userId, rows, sourceFile, opts = {}) {
+  const meta = parseStmtMeta(sourceFile);
+
+  // Resolve account: last4 → accounts.mask; else the user's single account (unambiguous).
+  const accts = (await query(`SELECT id, mask FROM accounts WHERE user_id=$1`, [userId])).rows;
+  let accountId = null;
+  if (meta?.last4) { const a = accts.find(x => x.mask === meta.last4); if (a) accountId = a.id; }
+  if (!accountId && accts.length === 1) accountId = accts[0].id;
+  const last4 = meta?.last4 || accts.find(a => a.id === accountId)?.mask || 'noacct';
+
+  // Period + typed bank_statement for this file (one each), when the file is datable.
+  let periodId = null, bankStatementId = null;
+  if (meta?.year && meta?.month) {
+    const firstOfMonth = `${meta.year}-${pad2s(meta.month)}-01`;
+    try { periodId = await findOrCreatePeriod(query, userId, accountId, firstOfMonth); } catch {}
+    // Link the PDF's documents row only when it really exists (keeps the FK safe).
+    let docId = opts.documentId || null;
+    if (docId && !(await query(`SELECT 1 FROM documents WHERE id=$1 AND user_id=$2`, [docId, userId])).rows.length) docId = null;
+    bankStatementId = `bstmt_${userId}_${last4}_${meta.year}${pad2s(meta.month)}`;
+    const lastDay = new Date(Date.UTC(meta.year, meta.month, 0)).getUTCDate();
+    try {
+      await query(
+        `INSERT INTO bank_statements
+           (id,user_id,account_id,bank_account_period_id,document_id,statement_start_date,statement_end_date,parser_status,parsed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'parsed',NOW())
+         ON CONFLICT (id) DO UPDATE SET
+           account_id=COALESCE(EXCLUDED.account_id, bank_statements.account_id),
+           bank_account_period_id=COALESCE(EXCLUDED.bank_account_period_id, bank_statements.bank_account_period_id),
+           document_id=COALESCE(EXCLUDED.document_id, bank_statements.document_id),
+           parser_status='parsed', updated_at=NOW()`,
+        [bankStatementId, userId, accountId, periodId, docId, firstOfMonth, `${meta.year}-${pad2s(meta.month)}-${pad2s(lastDay)}`]
+      );
+    } catch (e) { bankStatementId = null; }   // never let a statement-record hiccup drop the rows
+  }
+
+  const year = meta?.year || parseInt((sourceFile || '').match(/20\d{2}/)?.[0] || new Date().getFullYear());
   let inserted = 0;
   for (const row of rows) {
     const cleanDesc = cleanStmtDesc(row.desc);
-    // Deterministic ID so re-uploading the same file is idempotent
+    // Deterministic ID so re-uploading the same file is idempotent.
     const id = 'stmt_' + crypto.createHash('sha1')
       .update(`${userId}|${sourceFile}|${row.date}|${row.amount}|${cleanDesc}`)
       .digest('hex').slice(0, 20);
+    // source_hash includes the file, so it's unique wherever the id is (no dedup-index
+    // collision on legit duplicate-looking rows) while still fingerprinting content.
+    const sourceHash = crypto.createHash('sha256')
+      .update(`${userId}|statement|${sourceFile}|${row.date}|${row.amount}|${cleanDesc}`)
+      .digest('hex');
 
     await query(
       `INSERT INTO source_transactions
-         (id, user_id, source, source_file, period_year, txn_date, description, amount, raw)
-       VALUES ($1,$2,'statement',$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (id) DO NOTHING`,
-      [id, userId, sourceFile, year, row.date, cleanDesc, row.amount, JSON.stringify(row)]
+         (id, user_id, source, source_file, period_year, account_id, bank_account_period_id,
+          bank_statement_id, txn_date, description, merchant_name, amount, source_hash, raw)
+       VALUES ($1,$2,'statement',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       ON CONFLICT (id) DO UPDATE SET
+         account_id=COALESCE(EXCLUDED.account_id, source_transactions.account_id),
+         bank_account_period_id=COALESCE(EXCLUDED.bank_account_period_id, source_transactions.bank_account_period_id),
+         bank_statement_id=COALESCE(EXCLUDED.bank_statement_id, source_transactions.bank_statement_id),
+         source_hash=COALESCE(source_transactions.source_hash, EXCLUDED.source_hash)`,
+      [id, userId, sourceFile, year, accountId, periodId, bankStatementId,
+       row.date, cleanDesc, cleanDesc, row.amount, sourceHash, JSON.stringify(row)]
     );
     inserted++;
   }
   return inserted;
 }
 
-// ── Best-match finder (amount exact ±$0.01, date ±4 days, name Jaccard) ─────
-function matchOne(s, plaid, used) {
+// ── Merchant alias rules ───────────────────────────────────────────────────────
+// A learned equivalence: "this Plaid name and this statement name are the same
+// merchant" (e.g. Plaid "Walmart" ↔ statement "WM SUPERCENTER"). Learned
+// AUTOMATICALLY when the user manually matches a pair whose names share no
+// significant token (reconcile-routes POST /match). A hit forces a name match the
+// shared-token test would otherwise miss; the amount (±$0.01) and date (±4 days)
+// gates still apply, so same-named purchases pair with the correct occurrence.
+// Stored per-user in reconcile_aliases.json.
+// Apostrophes are stripped (Dave's → daves) so possessives stay one word.
+const aliasNorm = s => String(s || '').toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+
+function aliasMatch(plaidDesc, stmtDesc, aliases) {
+  if (!aliases || !aliases.length) return false;
+  // Word-boundary match on normalized text, so "art" never hits "Walmart".
+  const pd = ' ' + aliasNorm(plaidDesc) + ' ';
+  const sd = ' ' + aliasNorm(stmtDesc)  + ' ';
+  for (const a of aliases) {
+    if (!a || a.enabled === false) continue;
+    const ap = aliasNorm(a.plaid), as = aliasNorm(a.statement);
+    if (!ap || !as) continue;
+    if (pd.includes(' ' + ap + ' ') && sd.includes(' ' + as + ' ')) return true;
+  }
+  return false;
+}
+
+// Canonical merchant token for auto-learning a rule from a description: the first
+// one or two meaningful words, the two-word form kept only when it appears
+// contiguously in the text. "WM SUPERCENTER #2403" → "wm supercenter";
+// "Steamgames.com 425-952-2985 WA" → "steamgames" ("steamgames wa" isn't contiguous).
+const ALIAS_NOISE = new Set(['com', 'co', 'inc', 'llc', 'llp', 'the', 'pos', 'purchase', 'debit', 'credit', 'card', 'payment', 'www']);
+function aliasToken(desc) {
+  const norm = aliasNorm(desc);
+  const words = (norm.match(/[a-z]{2,}/g) || []).filter(w => !ALIAS_NOISE.has(w));
+  if (!words.length) return '';
+  if (words.length >= 2) {
+    const two = words[0] + ' ' + words[1];
+    if ((' ' + norm + ' ').includes(' ' + two + ' ')) return two;
+  }
+  return words[0];
+}
+
+// ── Fuzzy best-match finder — the FALLBACK pass ───────────────────────────────
+// (amount ±$0.01, date ±4 days, shared name token or alias required). Runs only
+// for rows the exact same-day pass in planMatches couldn't settle unambiguously.
+function matchOne(s, plaid, used, aliases = []) {
   let best = null, bestScore = -1;
   for (let i = 0; i < plaid.length; i++) {
     if (used.has(i)) continue;
@@ -219,11 +327,88 @@ function matchOne(s, plaid, used) {
     if (Math.abs(Math.abs(Number(p.amount)) - Math.abs(Number(s.amount))) > 0.01) continue;
     const dd = dDiff(p.date, s.date);
     if (dd > 4) continue;
-    const sim = nameSim(p.desc, s.desc);
+    // A user alias rule (Walmart ↔ Wm Supercenter) counts as a definitive name match.
+    const alias = aliasMatch(p.desc, s.desc, aliases);
+    const sim = alias ? 1 : nameSim(p.desc, s.desc);
+    // Confidence gate: require ≥1 shared significant name token (or an alias). Amount+
+    // date alone is too weak — common amounts (9.99, 14.99, 3.97…) collide across
+    // different merchants inside the ±4-day window (e.g. Walmart $3.97 ↔ "MONTHLY
+    // SERVICE FEE" $3.97). No shared name token → leave it for review instead.
+    if (sim <= 0) continue;
     const score = sim * 2 + (1 - dd / 5);   // weight name match more than date proximity
-    if (score > bestScore) { bestScore = score; best = { i, p, sim, dd, score }; }
+    if (score > bestScore) { bestScore = score; best = { i, p, sim, dd, score, alias }; }
   }
   return (best && bestScore >= 0) ? best : null;
+}
+
+// ── Match planning (pure — exported for tests) ────────────────────────────────
+// Decides which Plaid transaction each statement row pairs with, in three phases
+// (each phase completes for ALL rows before the next starts, so a fuzzy guess can
+// never steal a transaction an exact pair owns):
+//   1. MANUAL — pairs the user drew in the popup (always win).
+//   2. EXACT  — same calendar day + exact dollar amount, where that (day, amount)
+//      is unique on BOTH sides. The primary check: names play no part, so
+//      "Walmart" ↔ "Wm Supercenter" pairs with no teaching needed.
+//   3. FUZZY  — the fallback for what's left: several purchases sharing a day+amount,
+//      or dates drifting because statements post late. matchOne requires a shared
+//      name token or learned alias (amount ±$0.01, date ±4 days, closest date wins).
+function planMatches(stmtRows, plaid, { aliases = [], manualPlaidFor = new Map() } = {}) {
+  const used = new Set(), matchedPlaidIdx = new Set();
+  const take = (i) => { used.add(i); matchedPlaidIdx.add(i); };
+
+  // Exact-pass index. Ambiguity is judged on the ORIGINAL totals per (day, amount)
+  // key — not on what's left unconsumed — so results don't depend on row order.
+  const exactKey   = (date, amount) => `${date}|${Math.abs(Number(amount)).toFixed(2)}`;
+  const plaidByKey = new Map();
+  plaid.forEach((p, i) => {
+    if (!p.date) return;
+    const k = exactKey(p.date, p.amount);
+    if (!plaidByKey.has(k)) plaidByKey.set(k, []);
+    plaidByKey.get(k).push(i);
+  });
+  const stmtKeyCount = new Map();
+  for (const s of stmtRows) {
+    const k = exactKey(s.date, s.amount);
+    stmtKeyCount.set(k, (stmtKeyCount.get(k) || 0) + 1);
+  }
+
+  const picks = new Array(stmtRows.length).fill(null);   // → { m, manual }
+
+  // Phase 1 — manual links
+  stmtRows.forEach((s, si) => {
+    const forcedId = manualPlaidFor.get(s.id);
+    if (!forcedId) return;
+    const idx = plaid.findIndex((p, i) => !used.has(i) && p.id === forcedId);
+    if (idx >= 0) {
+      take(idx);
+      picks[si] = { m: { i: idx, p: plaid[idx], sim: 1, dd: 0, score: 1 }, manual: true };
+    }
+  });
+
+  // Phase 2 — exact same-day amount, unambiguous on both sides
+  stmtRows.forEach((s, si) => {
+    if (picks[si]) return;
+    const k = exactKey(s.date, s.amount);
+    const idxs = plaidByKey.get(k) || [];
+    if (idxs.length === 1 && stmtKeyCount.get(k) === 1 && !used.has(idxs[0])) {
+      const i = idxs[0];
+      take(i);
+      picks[si] = { m: { i, p: plaid[i], sim: nameSim(plaid[i].desc, s.desc), dd: 0, score: 3, exact: true }, manual: false };
+    }
+  });
+
+  // Phase 3 — fuzzy fallback for everything still unpaired
+  stmtRows.forEach((s, si) => {
+    if (picks[si]) return;
+    const m = matchOne(s, plaid, used, aliases);
+    if (m) take(m.i);
+    picks[si] = { m, manual: false };
+  });
+
+  return {
+    decisions: stmtRows.map((s, si) => ({ s, m: picks[si].m, manual: picks[si].manual })),
+    matchedPlaidIdx,
+  };
 }
 
 // ── Core reconciliation run ───────────────────────────────────────────────────
@@ -231,6 +416,19 @@ async function reconcileUser(query, userId, io, year) {
   // Load Plaid transactions from the DB (transactions table via banking-store)
   const allTxns = await require('../core/banking-store').listTransactions(userId) || [];
   const plaid = allTxns.filter(t => !t.source || t.source === 'plaid');
+
+  // User-taught matching, applied so re-runs stay stable:
+  //   • alias rules  — name equivalences (Walmart ↔ Wm Supercenter), used by matchOne
+  //   • manual links — explicit statement-row ↔ Plaid-txn pairs, applied before fuzzy
+  let aliases = [], manualLinks = [];
+  try {
+    if (io && typeof io.read === 'function') {
+      aliases     = io.read('reconcile_aliases.json') || [];
+      manualLinks = io.read('reconcile_manual.json')  || [];
+    }
+  } catch { /* non-fatal — fall back to pure fuzzy matching */ }
+  const manualPlaidFor = new Map();   // stmtSourceId → forced plaid_txn_id
+  for (const l of manualLinks) if (l && l.stmtSourceId && l.plaidTxnId) manualPlaidFor.set(l.stmtSourceId, l.plaidTxnId);
 
   // Load statement rows from Neon for this user
   const stmtRes = await query(
@@ -243,59 +441,47 @@ async function reconcileUser(query, userId, io, year) {
   );
   const stmtRows = stmtRes.rows;
 
-  // Stage the exact statement rows used for matching to a per-user CSV — the
-  // audit/validation source for the dev reconciliation dashboard.
-  stageStatementCsv(io, stmtRows);
-
   if (!stmtRows.length) return { matched: 0, stmtOnly: 0, plaidOnly: 0, conflicts: 0 };
 
-  // Wipe and re-run (idempotent on re-upload)
-  await query(
-    `DELETE FROM statement_matches WHERE user_id=$1 ${year ? 'AND period_year=$2' : ''}`,
-    year ? [userId, year] : [userId]
-  );
+  // Decide every pairing in memory (manual > exact > fuzzy), then swap the table
+  // contents atomically below. Tuple order mirrors the INSERT column list.
+  const { decisions, matchedPlaidIdx } = planMatches(stmtRows, plaid, { aliases, manualPlaidFor });
 
-  const used = new Set(), matchedPlaidIdx = new Set();
   let matched = 0, conflicts = 0;
+  const pending = [];
 
-  // Pass 1 — match each statement row against Plaid
-  for (const s of stmtRows) {
-    const m = matchOne(s, plaid, used);
+  for (const { s, m, manual } of decisions) {
     const rowYear = year || parseInt(s.date.slice(0, 4));
-
     if (m) {
-      used.add(m.i);
-      matchedPlaidIdx.add(m.i);
       matched++;
-      // Flag if names are very dissimilar despite amount+date match (possible mislabelling)
-      const isConflict = m.sim < 0.15 && m.dd > 2;
+      // Flag if names are very dissimilar despite a fuzzy amount+date match (possible
+      // mislabelling). Manual links, exact same-day hits, and alias hits are trusted.
+      const isConflict = !manual && !m.exact && !m.alias && m.sim < 0.15 && m.dd > 2;
       if (isConflict) conflicts++;
-      await query(
-        `INSERT INTO statement_matches
-           (id,user_id,stmt_source_id,plaid_txn_id,match_score,date_delta_days,name_sim,status,flag_reason,period_year)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        [
-          crypto.randomUUID(), userId, s.id, m.p.id,
-          m.score.toFixed(4), m.dd, m.sim.toFixed(4),
-          isConflict ? 'conflict' : 'matched',
-          isConflict ? `Name mismatch despite amount+date match (sim=${m.sim.toFixed(2)})` : null,
-          rowYear
-        ]
-      );
+      const reason = manual    ? 'Manually matched'
+                   : m.exact   ? 'Exact amount + same-day match'
+                   : m.alias   ? 'Matched via alias rule'
+                   : isConflict ? `Name mismatch despite amount+date match (sim=${m.sim.toFixed(2)})`
+                   : null;
+      pending.push([
+        crypto.randomUUID(), userId, s.id, m.p.id,
+        Number(m.score).toFixed(4), m.dd, Number(m.sim).toFixed(4),
+        isConflict ? 'conflict' : 'matched',
+        reason,
+        rowYear,
+      ]);
     } else {
       // Statement-only — fills pre-90-day gap or catches a missing Plaid pull
-      await query(
-        `INSERT INTO statement_matches
-           (id,user_id,stmt_source_id,plaid_txn_id,match_score,date_delta_days,name_sim,status,flag_reason,period_year)
-         VALUES ($1,$2,$3,NULL,0,NULL,0,'stmt_only','No matching Plaid transaction found',$4)`,
-        [crypto.randomUUID(), userId, s.id, parseInt(s.date.slice(0, 4))]
-      );
+      pending.push([
+        crypto.randomUUID(), userId, s.id, null, 0, null, 0,
+        'stmt_only', 'No matching Plaid transaction found', parseInt(s.date.slice(0, 4)),
+      ]);
     }
   }
 
   // Pass 2 — find Plaid rows in the statement's date window with no match
   let plaidOnly = 0;
-  if (stmtRows.length) {
+  {
     const minDate = stmtRows.reduce((m, r) => r.date < m ? r.date : m, stmtRows[0].date);
     const maxDate = stmtRows.reduce((m, r) => r.date > m ? r.date : m, stmtRows[0].date);
     for (let i = 0; i < plaid.length; i++) {
@@ -304,14 +490,64 @@ async function reconcileUser(query, userId, io, year) {
       if (!p.date || p.date < minDate || p.date > maxDate) continue;
       plaidOnly++;
       const rowYear = year || parseInt((p.date || '2026').slice(0, 4));
-      await query(
-        `INSERT INTO statement_matches
-           (id,user_id,stmt_source_id,plaid_txn_id,match_score,date_delta_days,name_sim,status,flag_reason,period_year)
-         VALUES ($1,$2,NULL,$3,0,NULL,0,'plaid_only','Transaction in Plaid not found in statement',$4)`,
-        [crypto.randomUUID(), userId, p.id, rowYear]
-      );
+      pending.push([
+        crypto.randomUUID(), userId, null, p.id, 0, null, 0,
+        'plaid_only', 'Transaction in Plaid not found in statement', rowYear,
+      ]);
     }
   }
+
+  // Atomic swap — wipe + insert inside ONE transaction (chunked multi-row inserts)
+  // so concurrent readers (txn-flags badges, the popup's /txn/:id, dev tools) never
+  // see a half-rebuilt table. The old per-row awaits left the table empty/partial
+  // for the whole rebuild, and this runs after every auto-sync (every few minutes).
+  const { withTransaction } = require('../core/db');
+  await withTransaction(async (client) => {
+    await client.query(
+      `DELETE FROM statement_matches WHERE user_id=$1 ${year ? 'AND period_year=$2' : ''}`,
+      year ? [userId, year] : [userId]
+    );
+    const CHUNK = 100;
+    for (let i = 0; i < pending.length; i += CHUNK) {
+      const chunk  = pending.slice(i, i + CHUNK);
+      const values = chunk.map((_, r) =>
+        `(${Array.from({ length: 10 }, (_, c) => '$' + (r * 10 + c + 1)).join(',')})`).join(',');
+      await client.query(
+        `INSERT INTO statement_matches
+           (id,user_id,stmt_source_id,plaid_txn_id,match_score,date_delta_days,name_sim,status,flag_reason,period_year)
+         VALUES ${values}`,
+        chunk.flat()
+      );
+    }
+
+    // Remodel evidence links (matched_transaction_sources): the generalized form of
+    // the statement↔plaid matches above. transaction_id = the displayed Plaid txn
+    // (transactions.id, which equals the plaid source_transactions.id), source = the
+    // statement row, role 'bank_statement'. Scoped to THIS run's statement rows (year-
+    // agnostic) so a single-year reconcile never wipes another year's links.
+    const stmtIds = stmtRows.map(r => r.id);
+    await client.query(
+      `DELETE FROM matched_transaction_sources
+        WHERE user_id=$1 AND source_role='bank_statement' AND source_transaction_id = ANY($2)`,
+      [userId, stmtIds]
+    );
+    const mts = decisions
+      .filter(d => d.m)
+      .map(d => [crypto.randomUUID(), userId, d.m.p.id, d.s.id, 'bank_statement', Number(d.m.score).toFixed(4)]);
+    for (let i = 0; i < mts.length; i += CHUNK) {
+      const chunk  = mts.slice(i, i + CHUNK);
+      const values = chunk.map((_, r) =>
+        `(${Array.from({ length: 6 }, (_, c) => '$' + (r * 6 + c + 1)).join(',')})`).join(',');
+      await client.query(
+        `INSERT INTO matched_transaction_sources
+           (id, user_id, transaction_id, source_transaction_id, source_role, match_confidence)
+         VALUES ${values}
+         ON CONFLICT (transaction_id, source_transaction_id) DO UPDATE SET
+           source_role=EXCLUDED.source_role, match_confidence=EXCLUDED.match_confidence, updated_at=NOW()`,
+        chunk.flat()
+      );
+    }
+  });
 
   // Keep the auditable statements.csv in the DB current (extracted statement data).
   try { await require('../core/csv-store').refreshStatementsCsv(query, userId); }
@@ -361,4 +597,4 @@ async function getFlagged(query, userId, status) {
   return res.rows;
 }
 
-module.exports = { parseStatement, mirrorStatement, reconcileUser, getStatus, getFlagged };
+module.exports = { parseStatement, mirrorStatement, reconcileUser, getStatus, getFlagged, planMatches, aliasMatch, aliasToken, nameSim, parseStmtMeta };

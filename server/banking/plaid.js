@@ -4,6 +4,7 @@ const jwt     = require('jsonwebtoken');
 const crypto  = require('crypto');
 const csv     = require('../core/csv');
 const { applyRules } = require('./categorize');
+const { guessCategory, resolveCtx } = require('./auto-categorize');
 const { verifyUser } = require('../core/verify');
 const plaidItems = require('../core/plaid-items');   // Plaid connections live in the DB (encrypted), not connections.json
 
@@ -33,10 +34,15 @@ const PLAID_CAT_MAP = {
 // they live on the transaction and are re-applied on import, keyed by Plaid id,
 // so a re-sync never wipes them.
 const PLAID_CSV   = 'plaid_transactions.csv';
-const CSV_COLUMNS = ['id', 'date', 'month', 'desc', 'amount', 'category', 'plaidCategory', 'account', 'institution', 'pending', 'source', 'lastUpdated'];
-const KEEP        = ['coaId', 'note', 'reconciled', 'isSplit', 'splitOf', 'splitNote', 'propertyId', 'approved', 'categorizedBy', 'verification', 'taxCategory', 'bucket', 'attachments', 'notified'];
+// Full bank columns carried onto each imported transaction (these flow into transactions.json):
+// month feeds grouping, pending drives the Banking "Pending/Posted" badge, source marks Plaid rows.
+const RAW_COLUMNS = ['id', 'date', 'month', 'desc', 'amount', 'category', 'plaidCategory', 'account', 'institution', 'pending', 'source', 'lastUpdated'];
+// Slim columns for the stored audit CSV — drops 'month' (= date's YYYY-MM), 'pending'
+// (transient), and 'source' (always 'plaid' here) as redundant/noise for a CSV view.
+const CSV_COLUMNS = ['id', 'date', 'desc', 'amount', 'category', 'plaidCategory', 'account', 'institution', 'lastUpdated'];
+const KEEP        = ['coaId', 'coaAuto', 'capital', 'note', 'reconciled', 'isSplit', 'splitOf', 'splitNote', 'propertyId', 'approved', 'categorizedBy', 'verification', 'taxCategory', 'bucket', 'attachments', 'notified'];
 
-const rawRow    = t => { const o = {}; for (const c of CSV_COLUMNS) o[c] = t[c]; return o; };
+const rawRow    = t => { const o = {}; for (const c of RAW_COLUMNS) o[c] = t[c]; return o; };
 const coerceRow = r => ({ ...r, amount: r.amount === '' || r.amount == null ? 0 : Number(r.amount), pending: r.pending === 'true' || r.pending === true });
 
 /**
@@ -46,26 +52,51 @@ const coerceRow = r => ({ ...r, amount: r.amount === '' || r.amount == null ? 0 
  *   - Every other Plaid row (other institutions + this one's out-of-window
  *     history) and all non-Plaid rows carry forward untouched.
  *   - User-owned KEEP fields are re-applied by id so categorization survives.
+ *   - A settled charge supersedes its pending row: Plaid re-issues it with a new
+ *     id whose pending_transaction_id points back at the pending one, so we drop
+ *     the stale pending twin and move its edits onto the posted row.
  * Returns the new transactions array to persist.
  */
 function stageAndImport({ existing, plaidTxs, readText, writeText, csvFile = PLAID_CSV }) {
-  const prevById   = new Map(existing.map(t => [t.id, t]));
-  const pulledIds  = new Set(plaidTxs.map(p => p.id));
-  const otherPlaid = existing.filter(t => t.source === 'plaid' && !pulledIds.has(t.id));
-  const allRaw     = [...otherPlaid, ...plaidTxs].map(rawRow);
+  // Pending → posted settlement. When a pending charge settles, Plaid re-issues it as a
+  // posted transaction with a NEW transaction_id whose pending_transaction_id references
+  // the now-gone pending row. Left unhandled, the stale pending row lingers beside its
+  // posted twin (the visible duplicate). Build the old→new link to resolve it.
+  const supersededIds       = new Set();   // pending ids replaced by a posted txn this pull
+  const pendingIdByPostedId = new Map();   // posted txn id -> pending id it replaced
+  for (const p of plaidTxs) if (p.pendingTransactionId) {
+    supersededIds.add(p.pendingTransactionId);
+    pendingIdByPostedId.set(p.id, p.pendingTransactionId);
+  }
+  // If a single pull carries both the pending row and the posted txn replacing it, keep
+  // only the posted one.
+  const livePlaidTxs = plaidTxs.filter(p => !supersededIds.has(p.id));
 
-  writeText(csvFile, csv.stringify(allRaw, CSV_COLUMNS));            // Plaid  -> CSV file
-  const table = csv.parse(readText(csvFile) || '').map(coerceRow);  // CSV    -> table
+  const prevById   = new Map(existing.map(t => [t.id, t]));
+  const pulledIds  = new Set(livePlaidTxs.map(p => p.id));
+  // Carry forward other plaid rows (other institutions + out-of-window history), minus any
+  // pending row a posted txn now supersedes.
+  const otherPlaid = existing.filter(t => t.source === 'plaid' && !pulledIds.has(t.id) && !supersededIds.has(t.id));
+  const allRaw     = [...otherPlaid, ...livePlaidTxs].map(rawRow);
+
+  // Store a slim, human-readable audit snapshot (CSV_COLUMNS subset of the raw rows).
+  writeText(csvFile, csv.stringify(allRaw, CSV_COLUMNS));
+  // Build the import table from the FULL rows — not re-read from the slim CSV — so
+  // month/pending/source still flow onto the transaction.
+  const table = allRaw.map(coerceRow);
 
   const imported = table.map(r => {                                 // table  -> transactions
-    const old = prevById.get(r.id);
+    // Re-pulled row matches its prior self by id; a freshly-posted row (new id) falls back
+    // to the pending row it superseded, so categorization/notes survive settlement.
+    const old = prevById.get(r.id) || prevById.get(pendingIdByPostedId.get(r.id));
     if (!old) return r;
     const carry = {};
     for (const k of KEEP) if (old[k] !== undefined) carry[k] = old[k];
     return { ...r, ...carry };
   });
   const importedIds = new Set(imported.map(r => r.id));
-  return [...existing.filter(t => !importedIds.has(t.id)), ...imported];
+  // Drop superseded pending rows from the carry-forward too, so they never reappear.
+  return [...existing.filter(t => !importedIds.has(t.id) && !supersededIds.has(t.id)), ...imported];
 }
 
 module.exports = function(makeIO, notifyClients = () => {}) {
@@ -96,6 +127,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
       desc: t.merchant_name || t.name, amount, category,
       plaidCategory: plaidPrimary, account: t.account_id,
       institution: institution_name, pending: t.pending,
+      pendingTransactionId: t.pending_transaction_id || null,
       source: 'plaid', lastUpdated: new Date().toISOString()
     };
   }
@@ -134,6 +166,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     ]);
 
     let txCount = 0;
+    let supersededPendingIds = [];
     try {
       const endDate  = new Date().toISOString().split('T')[0];
       const start    = startDate || new Date(Date.now() - 730 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -143,6 +176,8 @@ module.exports = function(makeIO, notifyClients = () => {}) {
       // stageAndImport preserves user-owned fields (categorization, notes, splits)
       // by Plaid id, so a re-sync never wipes them.
       write('transactions.json', stageAndImport({ existing, plaidTxs, readText, writeText }));
+      // Pending ids that a posted txn in this pull replaced — pruned from the audit table in syncUser.
+      supersededPendingIds = plaidTxs.map(p => p.pendingTransactionId).filter(Boolean);
       // Persist the raw Plaid pull CSV into the DB (auditable extracted-data snapshot).
       try { await require('../core/csv-store').saveCsv(userId, PLAID_CSV, readText(PLAID_CSV) || ''); }
       catch (e) { console.error('[csv-store] plaid:', e.message); }
@@ -152,7 +187,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
         console.log(`[${institution_name}] Transactions initializing — will be ready shortly`);
       } else { throw e; }
     }
-    return { accounts: plaidAccounts.length, transactions: txCount };
+    return { accounts: plaidAccounts.length, transactions: txCount, supersededPendingIds };
   }
 
   // ── Sync all items for a given user (used by cron and sync-history) ───
@@ -161,6 +196,9 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     const io    = makeIO(userId);
     const items = await plaidItems.listItems(userId);   // from DB (encrypted tokens), not connections.json
     if (!items.length) return { synced: 0 };
+
+    // Snapshot existing transaction ids so we can tell which are genuinely new this sync.
+    const beforeIds = new Set((io.read('transactions.json') || []).map(t => t.id));
 
     const results = [];
     for (const conn of items) {
@@ -172,16 +210,47 @@ module.exports = function(makeIO, notifyClients = () => {}) {
       }
     }
     for (const it of items) { try { await plaidItems.touchSync(it.item_id); } catch {} }
-    // Auto-categorize freshly-synced transactions against the user's saved rules.
+    // Auto-categorize freshly-synced transactions: saved rules first, then the built-in
+    // merchant/bucket guesser for anything still uncategorized. Only uncategorized txns
+    // are touched, so manual picks and prior auto-guesses (preserved by Plaid id) survive.
     try {
+      let txns = io.read('transactions.json') || [];
       const rules = io.read('categorization_rules.json') || [];
-      if (rules.length) {
-        const { transactions, count } = applyRules(io.read('transactions.json') || [], rules);
-        if (count) { io.write('transactions.json', transactions); console.log(`[Auto-cat] user ${userId}: ${count} txns categorized by rule`); }
-      }
+      const settings = io.read('account_settings.json') || {};
+      let accountsById = new Map();
+      try { accountsById = new Map((await require('../core/banking-store').listAccounts(userId)).map(a => [a.id, a])); } catch {}
+      const r = applyRules(txns, rules);
+      txns = r.transactions;
+      let auto = 0, capital = 0;
+      txns = txns.map(t => {
+        if (t.excluded || t.coaId) return t;       // excluded, manual, rule-set, or prior auto
+        const g = guessCategory(t, resolveCtx(t, settings, accountsById));
+        if (!g) return t;                           // transfer → stays uncategorized
+        auto++; if (g.capital) capital++;
+        return { ...t, coaId: g.coaId, coaAuto: true, approved: false, ...(g.capital ? { capital: true } : {}) };
+      });
+      if (r.count || auto) { io.write('transactions.json', txns); console.log(`[Auto-cat] user ${userId}: ${r.count} by rule, ${auto} auto (${capital} capital)`); }
     } catch (e) { console.error('[Auto-cat] error:', e.message); }
     try { const m = await require('./neon-mirror').mirrorPlaid(userId, io.read('transactions.json') || []); console.log(`[Neon] user ${userId}: mirrored ${m} plaid rows`); } catch (e) { console.error('[Neon mirror] error:', e.message); }
+    // Prune audit rows for pending charges that settled this sync — stageAndImport already
+    // dropped them from transactions.json; clear the source_transactions twins too.
+    try {
+      const supersededPendingIds = [...new Set(results.flatMap(r => r.supersededPendingIds || []))];
+      if (supersededPendingIds.length) {
+        const d = await require('./neon-mirror').deleteSupersededPending(userId, supersededPendingIds);
+        if (d) console.log(`[Neon] user ${userId}: pruned ${d} superseded pending row(s)`);
+      }
+    } catch (e) { console.error('[Neon prune] error:', e.message); }
     try { const _n = await require('./notifier').notifyNew(io, process.env.DISCORD_WEBHOOK_URL); if (_n) console.log(`[notify] user ${userId}: ${_n} Discord alert(s) sent`); } catch (e) { console.error('[notify] error', e.message); }
+    // Queue conversational categorization questions — only for genuinely-new transactions
+    // this sync (not the historical backlog), so the bot asks about fresh activity only.
+    try {
+      const { query } = require('../core/db');
+      const after  = io.read('transactions.json') || [];
+      const newIds = after.filter(t => !beforeIds.has(t.id)).map(t => t.id);
+      const _q = await require('./categorizer-core').enqueueQuestions(query, io, userId, { channel: 'discord', onlyIds: newIds });
+      if (_q) console.log(`[Categorizer] user ${userId}: queued ${_q} question(s) for ${newIds.length} new txn(s)`);
+    } catch (e) { console.error('[Categorizer] enqueue error:', e.message); }
     // Auto-reconcile: re-match Plaid rows against any previously uploaded statement data
     try {
       const { query } = require('../core/db');

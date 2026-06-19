@@ -13,6 +13,11 @@ const fs       = require('fs');
 const os       = require('os');
 const path     = require('path');
 
+// bank-scraper.js is local-only (gitignored) — on a fresh clone it doesn't
+// exist, so skip the whole suite instead of failing the run.
+const SCRAPER_MODULE  = path.join(__dirname, '..', 'scrapers', 'bank-scraper.js');
+const describeScraper = fs.existsSync(SCRAPER_MODULE) ? describe : describe.skip;
+
 // ── Minimal mock IO (avoids hitting the real vault directory) ─────────────────
 function makeMockIO() {
   const store = {};
@@ -57,12 +62,12 @@ function buildApp(overrideHostname) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('BANKS definition', () => {
+describeScraper('BANKS definition', () => {
   // Load the BANKS object by requiring bank-scraper as a plain module
   // and inspecting what GET /banks returns.
   let app;
   beforeAll(() => { app = buildApp('localhost'); });
-  afterAll (() => { app._cleanup(); });
+  afterAll (() => { app?._cleanup(); });
 
   it('returns all four banks from GET /banks', async () => {
     const res = await request(app).get('/api/scraper/banks');
@@ -88,10 +93,10 @@ describe('BANKS definition', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('GET /api/scraper/fixtures', () => {
+describeScraper('GET /api/scraper/fixtures', () => {
   let app;
   beforeAll(() => { app = buildApp('localhost'); });
-  afterAll (() => { app._cleanup(); });
+  afterAll (() => { app?._cleanup(); });
 
   it('returns 200 with boolean flags for each bank', async () => {
     const res = await request(app).get('/api/scraper/fixtures');
@@ -115,10 +120,10 @@ describe('GET /api/scraper/fixtures', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('POST /api/scraper/start — validation', () => {
+describeScraper('POST /api/scraper/start — validation', () => {
   let app;
   beforeAll(() => { app = buildApp('localhost'); });
-  afterAll (() => { app._cleanup(); });
+  afterAll (() => { app?._cleanup(); });
 
   it('returns 400 for an unsupported bank', async () => {
     const res = await request(app)
@@ -151,10 +156,10 @@ describe('POST /api/scraper/start — validation', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('GET /api/scraper/progress/:sessionId', () => {
+describeScraper('GET /api/scraper/progress/:sessionId', () => {
   let app;
   beforeAll(() => { app = buildApp('localhost'); });
-  afterAll (() => { app._cleanup(); });
+  afterAll (() => { app?._cleanup(); });
 
   it('returns 404 for an unknown sessionId', async () => {
     const res = await request(app).get('/api/scraper/progress/nonexistent_session_123');
@@ -184,10 +189,10 @@ describe('GET /api/scraper/progress/:sessionId', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('POST /api/scraper/cancel/:sessionId', () => {
+describeScraper('POST /api/scraper/cancel/:sessionId', () => {
   let app;
   beforeAll(() => { app = buildApp('localhost'); });
-  afterAll (() => { app._cleanup(); });
+  afterAll (() => { app?._cleanup(); });
 
   it('returns { ok: true } for an unknown sessionId (idempotent)', async () => {
     const res = await request(app)
@@ -200,7 +205,7 @@ describe('POST /api/scraper/cancel/:sessionId', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('localhostOnly middleware', () => {
+describeScraper('localhostOnly middleware', () => {
   it('allows requests from localhost', async () => {
     const app = buildApp('localhost');
     const res = await request(app).get('/api/scraper/banks');

@@ -1,7 +1,29 @@
 {
   "permissions": {
     "allow": [
-      "Bash(*)"
+      "Bash(*)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('scripts.test:', p.scripts && p.scripts.test\\); console.log\\('jest dep:', \\(p.devDependencies&&p.devDependencies.jest\\)||\\(p.dependencies&&p.dependencies.jest\\)||'none'\\)\")",
+      "PowerShell($p = Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess; if \\($p\\) { Stop-Process -Id $p -Force; \"Stopped backend PID $p on :3001\" } else { \"Nothing listening on :3001\" })",
+      "PowerShell(node server/index.js)",
+      "PowerShell(node \"C:\\\\Users\\\\Albert Yang\\\\Desktop\\\\CaiShen\\\\tmp-check-docs.js\")",
+      "PowerShell(Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $p = Get-Process -Id $_.OwningProcess; \"LISTENING — pid $\\($_.OwningProcess\\) \\($\\($p.ProcessName\\)\\)\" }; Get-Content ..\\\\nodemon.json -ErrorAction SilentlyContinue)",
+      "PowerShell($p = Get-Process -Id 20968; \"Process started: $\\($p.StartTime\\)\"; \"Now:             $\\(Get-Date\\)\"; \"receipt-routes edited: $\\(\\(Get-Item ..\\\\server\\\\banking\\\\receipt-routes.js\\).LastWriteTime\\)\")",
+      "PowerShell(try { Invoke-WebRequest -Uri \"http://localhost:3001/api/receipts/counts\" -UseBasicParsing -TimeoutSec 10 } catch { \"HTTP $\\($_.Exception.Response.StatusCode.value__\\): $\\(\\(New-Object IO.StreamReader\\($_.Exception.Response.GetResponseStream\\(\\)\\)\\).ReadToEnd\\(\\)\\)\" }; $c = Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; \"still listening: pid $\\($c.OwningProcess\\)\")",
+      "PowerShell(npm test -- scraper 2>$null)",
+      "PowerShell(Set-Location \"$env:TEMP\\\\caishen-deck\"; node gen-deck.js)",
+      "PowerShell(node diag-reconcile.js 2>$null)",
+      "PowerShell(node \"C:\\\\Users\\\\Albert Yang\\\\Desktop\\\\CaiShen\\\\export-dev-csv.tmp.js\")",
+      "PowerShell(whoami; whoami /user; \"--- elevated? ---\"; \\([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent\\(\\)\\).IsInRole\\([Security.Principal.WindowsBuiltInRole]::Administrator\\); \"--- admin group in token ---\"; whoami /groups | Select-String -Pattern 'S-1-5-32-544|S-1-5-114')",
+      "PowerShell(Get-LocalUser)",
+      "PowerShell(net localgroup Administrators)",
+      "PowerShell(\"--- Administrators group ---\")",
+      "PowerShell(Get-CimInstance Win32_UserProfile | Where-Object {-not $_.Special} | Select-Object LocalPath,Loaded,LastUseTime,SID | Format-Table -AutoSize | Out-String; \"--- active sessions ---\"; quser; \"--- Microsoft accounts connected to THIS profile ---\"; Get-ChildItem 'HKCU:\\\\Software\\\\Microsoft\\\\IdentityCRL\\\\UserExtendedProperties' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty PSChildName)",
+      "PowerShell(try { Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\Albert Yang\\\\AppData\\\\Local\\\\Temp\\\\remove-testuser123.ps1\"' -ErrorAction Stop } catch { \"ELEVATION FAILED: $\\($_.Exception.Message\\)\" }; \"--- worker output ---\"; Get-Content \\(Join-Path $env:TEMP 'testuser123-removal.txt'\\) -ErrorAction SilentlyContinue; \"--- verify: remaining users ---\"; Get-LocalUser | Select-Object Name,Enabled | Format-Table -AutoSize | Out-String; \"--- verify: Administrators group ---\"; net localgroup Administrators)",
+      "PowerShell(Remove-Item \"$env:TEMP\\\\remove-testuser123.ps1\",\"$env:TEMP\\\\testuser123-removal.txt\" -Force -Confirm:$false -ErrorAction SilentlyContinue; \"temp scripts cleaned\"; Test-Path \"$env:TEMP\\\\IdentityCRL-backup-before-jeff-removal.reg\")",
+      "PowerShell($conn = Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if \\($conn\\) { $proc = Get-Process -Id $conn.OwningProcess; Write-Host \"PID $\\($proc.Id\\) | $\\($proc.ProcessName\\) | started $\\($proc.StartTime\\)\"; $wmi = Get-CimInstance Win32_Process -Filter \"ProcessId = $\\($conn.OwningProcess\\)\"; Write-Host \"cmdline: $\\($wmi.CommandLine\\)\" } else { Write-Host \"NOTHING ON 3001\" }; Get-ChildItem \"C:\\\\Users\\\\Albert Yang\\\\Desktop\\\\CaiShen\\\\vault\\\\users\\\\1779502545957\" -Directory -ErrorAction SilentlyContinue | Select-Object Name)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\Albert Yang\\\\Desktop\\\\CaiShen\"; Remove-Item tmp-restore.js, tmp-id-missing.js, tmp-find-missing.js -Confirm:$false -ErrorAction SilentlyContinue; $c = Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if \\($c\\) { Stop-Process -Id $c.OwningProcess -Force -Confirm:$false }; Start-Sleep -Seconds 1; Write-Host \"stopped\")",
+      "mcp__visualize__show_widget",
+      "PowerShell(node server/scripts/messaging-link-code.js)"
     ]
   }
 }

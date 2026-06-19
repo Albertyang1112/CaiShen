@@ -1,19 +1,18 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Fragment } from 'react'
 import axios from 'axios'
 
 const API = '/api/accounting'
 
-const PROPS = [
-  { id:'haas',      name:'Haas'      },
-  { id:'kobe',      name:'Kobe'      },
-  { id:'bayhill',   name:'Bay Hill'  },
-  { id:'muirfield', name:'Muirfield' },
-  { id:'alcita',    name:'Alcita'    },
-]
+// Per-user real properties for the invoice / bill / P&L property pickers.
+// (Replaces the old hardcoded demo list — an account with no properties shows none.)
+function useProperties() {
+  const [props, setProps] = useState([])
+  // Properties live at the top-level /api/properties (NOT under /api/accounting).
+  // Array.isArray guards against a stale/unknown route returning the SPA index.html.
+  useEffect(() => { axios.get('/api/properties').then(r => setProps(Array.isArray(r.data) ? r.data : [])).catch(() => {}) }, [])
+  return props
+}
 
-const TYPE_ORDER  = ['asset','liability','equity','income','expense']
-const TYPE_BASE   = { asset:1000, liability:2000, equity:3000, income:4000, expense:5000 }
-const TYPE_LABELS = { asset:'Assets', liability:'Liabilities', equity:'Equity', income:'Income', expense:'Expenses' }
 const TYPE_COLORS = { asset:'var(--blue)', liability:'var(--coral)', equity:'var(--teal)', income:'var(--green)', expense:'var(--amber)' }
 const STATUS_STYLE = {
   draft:    { bg:'var(--bg-secondary)',  color:'var(--text-muted)',    label:'Draft'    },
@@ -25,6 +24,27 @@ const STATUS_STYLE = {
 }
 
 const fd = n => (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 })
+
+// ── Tree helpers (shared by P&L, Balance Sheet, Chart of Accounts) ────
+function childrenMap(list) {
+  const m = {}
+  for (const a of list) { const p = a.parentId || '__root'; (m[p] = m[p] || []).push(a) }
+  return m
+}
+// Roll each node's amount up through its descendants. amountOf(id) -> number.
+function computeTotals(list, amountOf) {
+  const kids = childrenMap(list)
+  const totals = {}
+  const calc = (id) => {
+    if (totals[id] != null) return totals[id]
+    let s = amountOf(id) || 0
+    for (const c of kids[id] || []) s += calc(c.id)
+    return (totals[id] = s)
+  }
+  for (const a of list) calc(a.id)
+  return { kids, totals }
+}
+const rootTotal = (calc) => (calc.kids['__root'] || []).reduce((s, r) => s + (calc.totals[r.id] || 0), 0)
 
 function Badge({ status }) {
   const s = STATUS_STYLE[status] || STATUS_STYLE.unpaid
@@ -54,16 +74,24 @@ function Field({ label, children }) {
   )
 }
 
-// ── Chart of Accounts ─────────────────────────────────────────────────
+// ── Chart of Accounts (hierarchical tree + library) ───────────────────
 function ChartOfAccounts() {
-  const [coa, setCoa]         = useState([])
-  const [rules, setRules]     = useState([])
-  const [modal, setModal]     = useState(null) // null | 'add' | {edit account}
-  const [form, setForm]       = useState({ number:'', name:'', type:'expense', subtype:'', active:true })
+  const [coa, setCoa]             = useState([])
+  const [rules, setRules]         = useState([])
+  const [expanded, setExpanded]   = useState({})
+  const [addingTo, setAddingTo]   = useState(null)
+  const [newName, setNewName]     = useState('')
+  const [renaming, setRenaming]   = useState(null)
+  const [renameVal, setRenameVal] = useState('')
+  const [busy, setBusy]           = useState(false)
+  const [libOpen, setLibOpen]     = useState(false)
+  const [library, setLibrary]     = useState([])
+  const [libSearch, setLibSearch] = useState('')
 
+  const loadCoa = () => axios.get(`${API}/coa`).then(r => setCoa(Array.isArray(r.data) ? r.data : [])).catch(() => {})
   useEffect(() => {
-    axios.get(`${API}/coa`).then(r => setCoa(r.data)).catch(() => {})
-    axios.get('/api/categorization-rules').then(r => setRules(r.data || [])).catch(() => {})
+    loadCoa()
+    axios.get('/api/categorization-rules').then(r => setRules(Array.isArray(r.data) ? r.data : [])).catch(() => {})
   }, [])
 
   const delRule = async (id) => {
@@ -71,74 +99,103 @@ function ChartOfAccounts() {
     setRules(prev => prev.filter(r => r.id !== id))
   }
 
-  const save = async () => {
-    if (!form.name || !form.type) return
-    try {
-      if (modal === 'add') {
-        const res = await axios.post(`${API}/coa`, form)
-        setCoa(prev => [...prev, res.data])
-      } else {
-        const res = await axios.put(`${API}/coa/${modal.id}`, form)
-        setCoa(prev => prev.map(a => a.id === modal.id ? res.data : a))
-      }
-      setModal(null)
-    } catch {}
+  const kids   = childrenMap(coa)
+  const roots  = kids['__root'] || []
+  const byId   = new Map(coa.map(a => [a.id, a]))
+  const pathOf = (id) => { const parts = []; let cur = byId.get(id); while (cur) { parts.unshift(cur.name); cur = cur.parentId ? byId.get(cur.parentId) : null } return parts.join(' › ') }
+
+  const addChild = async (parentId) => {
+    if (!newName.trim() || busy) return
+    setBusy(true)
+    try { await axios.post(`${API}/coa`, { name: newName.trim(), parentId }); await loadCoa(); setNewName(''); setAddingTo(null) }
+    catch (e) { alert(e.response?.data?.error || e.message) }
+    setBusy(false)
+  }
+  const rename = async (id) => {
+    if (!renameVal.trim()) { setRenaming(null); return }
+    try { await axios.put(`${API}/coa/${id}`, { name: renameVal.trim() }); await loadCoa() } catch {}
+    setRenaming(null); setRenameVal('')
+  }
+  const toggleActive = async (node) => {
+    try { await axios.put(`${API}/coa/${node.id}`, { active: node.active === false }); await loadCoa() } catch {}
+  }
+  const del = async (node) => {
+    if (!window.confirm(`Delete "${node.name}"?`)) return
+    try { await axios.delete(`${API}/coa/${node.id}`); await loadCoa() }
+    catch (e) { alert(e.response?.data?.error || 'Could not delete') }
   }
 
-  const del = async (id) => {
-    if (!window.confirm('Delete this account?')) return
-    await axios.delete(`${API}/coa/${id}`)
-    setCoa(prev => prev.filter(a => a.id !== id))
+  const openLibrary = async () => {
+    setLibOpen(true); setLibSearch('')
+    try { const { data } = await axios.get(`${API}/category-library`); setLibrary(Array.isArray(data) ? data : []) } catch {}
+  }
+  const addFromLibrary = async (id) => {
+    try { await axios.post(`${API}/coa/from-library`, { id }); await loadCoa(); setLibrary(prev => prev.filter(l => l.id !== id)) }
+    catch (e) { alert(e.response?.data?.error || e.message) }
   }
 
-  // Suggest the next free account number in a type's range (1000s asset, 2000s liability, …).
-  const nextNumber = (type) => {
-    const base = TYPE_BASE[type] || 1000
-    const used = coa.filter(a => a.type === type).map(a => parseInt(a.number, 10)).filter(n => !isNaN(n) && n >= base && n < base + 1000)
-    return String((used.length ? Math.max(...used) : base - 10) + 10)
-  }
-  const openEdit = (acct) => { setForm({ number:acct.number||'', name:acct.name, type:acct.type, subtype:acct.subtype||'', active:acct.active }); setModal(acct) }
-  const openAdd  = () => { setForm({ number:nextNumber('expense'), name:'', type:'expense', subtype:'', active:true }); setModal('add') }
+  const iconBtn = { background:'none', border:'none', padding:'2px 5px', cursor:'pointer', color:'var(--text-muted)', fontSize:13, lineHeight:1 }
 
-  const grouped = TYPE_ORDER.reduce((acc, t) => { acc[t] = coa.filter(a => a.type === t); return acc }, {})
+  const renderNode = (node, depth) => {
+    const childNodes = kids[node.id] || []
+    const isGroup = childNodes.length > 0
+    const exp = expanded[node.id] ?? (depth === 0)
+    const inactive = node.active === false
+    return (
+      <Fragment key={node.id}>
+        <div style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 10px', paddingLeft:10 + depth*16, borderBottom:'0.5px solid var(--border)', background:'var(--bg-card)', opacity: inactive ? 0.55 : 1 }}>
+          <button onClick={() => setExpanded(p => ({ ...p, [node.id]: !(p[node.id] ?? (depth === 0)) }))}
+            style={{ width:16, height:20, background:'none', border:'none', padding:0, cursor: isGroup ? 'pointer' : 'default', color:'var(--text-muted)', flexShrink:0 }}>
+            {isGroup && <i className={`ti ${exp ? 'ti-chevron-down' : 'ti-chevron-right'}`} style={{ fontSize:12 }} aria-hidden="true"/>}
+          </button>
+          {renaming === node.id ? (
+            <input autoFocus value={renameVal} onChange={e => setRenameVal(e.target.value)} onBlur={() => rename(node.id)}
+              onKeyDown={e => { if (e.key === 'Enter') rename(node.id); if (e.key === 'Escape') setRenaming(null) }}
+              style={{ flex:1, fontSize:13, padding:'3px 6px' }}/>
+          ) : (
+            <span onClick={() => { setRenaming(node.id); setRenameVal(node.name) }} title="Click to rename"
+              style={{ flex:1, fontSize:13, cursor:'text', fontWeight: depth === 0 ? 600 : (isGroup ? 500 : 400), color: depth === 0 ? (TYPE_COLORS[node.type] || 'var(--text-primary)') : 'var(--text-primary)' }}>
+              {node.name}
+            </span>
+          )}
+          {depth === 0 && <span style={{ fontSize:9, textTransform:'uppercase', color:'var(--text-muted)', letterSpacing:'0.3px' }}>{node.scope}</span>}
+          {inactive && <span style={{ fontSize:10, color:'var(--text-muted)' }}>inactive</span>}
+          <button title="Add sub-category" onClick={() => { setAddingTo(node.id); setExpanded(p => ({ ...p, [node.id]: true })); setNewName('') }} style={iconBtn}><i className="ti ti-plus" aria-hidden="true"/></button>
+          <button title={inactive ? 'Activate' : 'Deactivate'} onClick={() => toggleActive(node)} style={iconBtn}><i className={`ti ${inactive ? 'ti-eye' : 'ti-eye-off'}`} aria-hidden="true"/></button>
+          <button title="Delete" onClick={() => del(node)} style={{ ...iconBtn, color:'var(--coral)' }}><i className="ti ti-trash" aria-hidden="true"/></button>
+        </div>
+        {addingTo === node.id && (
+          <div style={{ display:'flex', gap:6, padding:'5px 10px', paddingLeft:10 + (depth+1)*16 + 16, background:'var(--bg-secondary)' }}>
+            <input autoFocus value={newName} onChange={e => setNewName(e.target.value)} placeholder={`New under "${node.name}"…`}
+              onKeyDown={e => { if (e.key === 'Enter') addChild(node.id); if (e.key === 'Escape') { setAddingTo(null); setNewName('') } }}
+              style={{ flex:1, fontSize:12, padding:'4px 8px' }}/>
+            <button disabled={busy || !newName.trim()} onClick={() => addChild(node.id)} style={{ fontSize:12, padding:'3px 10px', background:'var(--blue)', color:'#fff', border:'none', borderRadius:6, cursor:'pointer', opacity: busy || !newName.trim() ? 0.5 : 1 }}>Add</button>
+            <button onClick={() => { setAddingTo(null); setNewName('') }} style={{ fontSize:12, padding:'3px 8px' }}>Cancel</button>
+          </div>
+        )}
+        {exp && childNodes.map(c => renderNode(c, depth + 1))}
+      </Fragment>
+    )
+  }
+
+  const filteredLib = library.filter(l => !libSearch || (l.name + ' ' + (l.parentPath || '')).toLowerCase().includes(libSearch.toLowerCase()))
 
   return (
     <div>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
         <div>
           <p style={{ fontSize:14, fontWeight:500, margin:0 }}>Chart of Accounts</p>
-          <p style={{ fontSize:11, color:'var(--text-muted)', margin:'2px 0 0' }}>{coa.filter(a=>a.active).length} active accounts across {Object.keys(grouped).filter(t=>grouped[t].length>0).length} types</p>
+          <p style={{ fontSize:11, color:'var(--text-muted)', margin:'2px 0 0' }}>{coa.filter(a => a.active !== false).length} categories · click a name to rename, ＋ to add a sub-category at any depth</p>
         </div>
-        <button onClick={openAdd} style={{ fontSize:12, background:'var(--blue-light)', color:'var(--blue)', borderColor:'var(--blue)' }}>
-          <i className="ti ti-plus" aria-hidden="true"/> Add account
+        <button onClick={openLibrary} style={{ fontSize:12, background:'var(--blue-light)', color:'var(--blue)', borderColor:'var(--blue)' }}>
+          <i className="ti ti-books" aria-hidden="true"/> Add from library
         </button>
       </div>
 
-      {TYPE_ORDER.map(type => {
-        const accts = grouped[type]
-        if (!accts.length) return null
-        return (
-          <div key={type} style={{ marginBottom:20 }}>
-            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
-              <span style={{ width:10, height:10, borderRadius:2, background:TYPE_COLORS[type], display:'inline-block' }}/>
-              <p style={{ fontSize:12, fontWeight:600, color:TYPE_COLORS[type], margin:0, textTransform:'uppercase', letterSpacing:'0.5px' }}>{TYPE_LABELS[type]}</p>
-              <span style={{ fontSize:11, color:'var(--text-muted)' }}>{accts.length}</span>
-            </div>
-            <div style={{ border:'0.5px solid var(--border)', borderRadius:'var(--radius-md)', overflow:'hidden' }}>
-              {accts.map((a, i) => (
-                <div key={a.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 14px', borderBottom: i < accts.length-1 ? '0.5px solid var(--border)' : 'none', background:'var(--bg-card)' }}>
-                  <span style={{ fontSize:11, color:'var(--text-muted)', width:40, flexShrink:0 }}>{a.number}</span>
-                  <span style={{ flex:1, fontSize:13, color: a.active ? 'var(--text-primary)' : 'var(--text-muted)' }}>{a.name}</span>
-                  {a.subtype && <span style={{ fontSize:10, padding:'1px 6px', borderRadius:4, background:'var(--bg-secondary)', color:'var(--text-muted)' }}>{a.subtype}</span>}
-                  {!a.active && <span style={{ fontSize:10, color:'var(--text-muted)' }}>inactive</span>}
-                  <button onClick={() => openEdit(a)} style={{ fontSize:11, padding:'2px 8px', background:'none', border:'none', color:'var(--text-muted)' }}><i className="ti ti-edit" aria-hidden="true"/></button>
-                  <button onClick={() => del(a.id)} style={{ fontSize:11, padding:'2px 6px', background:'none', border:'none', color:'var(--coral)' }}><i className="ti ti-trash" aria-hidden="true"/></button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )
-      })}
+      <div style={{ border:'0.5px solid var(--border)', borderRadius:'var(--radius-md)', overflow:'hidden' }}>
+        {roots.map(r => renderNode(r, 0))}
+        {roots.length === 0 && <p style={{ fontSize:12, color:'var(--text-muted)', padding:16, textAlign:'center' }}>Loading…</p>}
+      </div>
 
       {/* Auto-categorization rules */}
       <div style={{ marginTop:28 }}>
@@ -151,13 +208,13 @@ function ChartOfAccounts() {
         ) : (
           <div style={{ border:'0.5px solid var(--border)', borderRadius:'var(--radius-md)', overflow:'hidden' }}>
             {rules.map((r, i) => {
-              const acct = coa.find(a => a.id === r.coaId)
+              const acct = byId.get(r.coaId)
               return (
                 <div key={r.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 14px', borderBottom: i<rules.length-1?'0.5px solid var(--border)':'none', background:'var(--bg-card)' }}>
                   <span style={{ fontSize:11, color:'var(--text-muted)', whiteSpace:'nowrap' }}>{r.field||'desc'} {r.op||'contains'}</span>
                   <span style={{ fontSize:12, fontWeight:500, fontFamily:'monospace', background:'var(--bg-secondary)', padding:'1px 6px', borderRadius:4 }}>{r.value}</span>
                   <i className="ti ti-arrow-right" style={{ fontSize:13, color:'var(--text-muted)' }} aria-hidden="true"/>
-                  <span style={{ flex:1, fontSize:13, color: acct?'var(--text-primary)':'var(--coral)' }}>{acct ? `${acct.number?acct.number+' ':''}${acct.name}` : '(deleted account)'}</span>
+                  <span style={{ flex:1, fontSize:13, color: acct?'var(--text-primary)':'var(--coral)' }}>{acct ? pathOf(acct.id) : '(deleted category)'}</span>
                   <button onClick={() => delRule(r.id)} title="Delete rule" style={{ fontSize:11, padding:'2px 6px', background:'none', border:'none', color:'var(--coral)' }}><i className="ti ti-trash" aria-hidden="true"/></button>
                 </div>
               )
@@ -166,27 +223,25 @@ function ChartOfAccounts() {
         )}
       </div>
 
-      {modal && (
-        <Modal title={modal === 'add' ? 'Add Account' : 'Edit Account'} onClose={() => setModal(null)}>
-          <Field label="Account number"><input value={form.number} onChange={e=>setForm(p=>({...p,number:e.target.value}))} placeholder="5000" style={{width:'100%'}}/></Field>
-          <Field label="Account name *"><input value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="e.g. Repairs & Maintenance" style={{width:'100%'}}/></Field>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-            <Field label="Type *">
-              <select value={form.type} onChange={e=>setForm(p=>({...p,type:e.target.value,number:(modal==='add'&&(!p.number||p.number===nextNumber(p.type)))?nextNumber(e.target.value):p.number}))} style={{width:'100%'}}>
-                {TYPE_ORDER.map(t => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
-              </select>
-            </Field>
-            <Field label="Subtype"><input value={form.subtype} onChange={e=>setForm(p=>({...p,subtype:e.target.value}))} placeholder="e.g. maintenance" style={{width:'100%'}}/></Field>
-          </div>
-          <Field label="Status">
-            <select value={form.active ? 'active' : 'inactive'} onChange={e=>setForm(p=>({...p,active:e.target.value==='active'}))} style={{width:'100%'}}>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
-          </Field>
-          <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:4}}>
-            <button onClick={()=>setModal(null)}>Cancel</button>
-            <button onClick={save} style={{background:'var(--blue)',color:'#fff',border:'none'}}>Save</button>
+      {libOpen && (
+        <Modal title="Add from category library" onClose={() => setLibOpen(false)}>
+          <p style={{ fontSize:12, color:'var(--text-muted)', margin:'0 0 12px' }}>
+            These are the less-common categories kept out of your default chart. Add any you need.
+          </p>
+          <input value={libSearch} onChange={e => setLibSearch(e.target.value)} placeholder="Search library…" style={{ width:'100%', marginBottom:12 }}/>
+          <div style={{ maxHeight:'48vh', overflowY:'auto' }}>
+            {filteredLib.map(l => (
+              <div key={l.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 4px', borderBottom:'0.5px solid var(--border)' }}>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <p style={{ fontSize:13, margin:0 }}>{l.name}</p>
+                  <p style={{ fontSize:11, color:'var(--text-muted)', margin:'1px 0 0' }}>{l.parentPath}</p>
+                </div>
+                <button onClick={() => addFromLibrary(l.id)} style={{ fontSize:12, padding:'4px 10px', background:'var(--blue-light)', color:'var(--blue)', borderColor:'var(--blue)' }}>
+                  <i className="ti ti-plus" aria-hidden="true"/> Add
+                </button>
+              </div>
+            ))}
+            {filteredLib.length === 0 && <p style={{ fontSize:12, color:'var(--text-muted)', textAlign:'center', padding:16 }}>{library.length === 0 ? 'Everything from the library has been added.' : 'No matches.'}</p>}
           </div>
         </Modal>
       )}
@@ -194,31 +249,87 @@ function ChartOfAccounts() {
   )
 }
 
-// ── P&L Report ────────────────────────────────────────────────────────
+// ── P&L Report — nested category tree (transactions auto-categorized server-side),
+//    Personal → Income/Expenses/Net, then Business. Manual coaId always wins.
 function PLReport() {
   const thisYear = new Date().getFullYear()
   const [startDate, setStartDate] = useState(`${thisYear}-01-01`)
   const [endDate,   setEndDate]   = useState(new Date().toISOString().split('T')[0])
-  const [propFilter, setPropFilter] = useState('')
-  const [data, setData] = useState(null)
+  const [data, setData]       = useState(null)
+  const [coa, setCoa]         = useState([])
   const [loading, setLoading] = useState(false)
+  const [showZero, setShowZero] = useState(false)
 
   const load = async () => {
     setLoading(true)
     try {
       const params = new URLSearchParams({ startDate, endDate })
-      if (propFilter) params.set('propertyId', propFilter)
-      const res = await axios.get(`${API}/pl?${params}`)
-      setData(res.data)
+      const [pl, chart] = await Promise.all([
+        axios.get(`${API}/pl?${params}`),
+        axios.get(`${API}/coa`),
+      ])
+      setData(pl.data); setCoa(Array.isArray(chart.data) ? chart.data : [])
     } catch {}
     setLoading(false)
   }
+  useEffect(() => { load() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { load() }, [])
+  const byAccount = data?.byAccount || {}
+  const amt  = id => byAccount[id]
+  const tree = (type, scope) => computeTotals(coa.filter(a => a.type === type && a.scope === scope), amt)
+
+  const pInc = tree('income', 'personal'), pExp = tree('expense', 'personal')
+  const bInc = tree('income', 'business'), bExp = tree('expense', 'business')
+  const pIncT = rootTotal(pInc), pExpT = rootTotal(pExp)
+  const bIncT = rootTotal(bInc), bExpT = rootTotal(bExp)
+  const overallNet = (pIncT + bIncT) - (pExpT + bExpT)
+  const empty = (pIncT + pExpT + bIncT + bExpT) === 0
+
+  const rows = (node, calc, depth, color) => {
+    const total = calc.totals[node.id] || 0
+    if (!showZero && total === 0) return null
+    const kids = calc.kids[node.id] || []
+    const isGroup = kids.length > 0
+    return (
+      <Fragment key={node.id}>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:12, padding:'4px 0', paddingLeft:depth * 16, borderBottom:'0.5px solid var(--border)', fontSize:13 }}>
+          <span style={{ fontWeight: isGroup ? 600 : 400, color: isGroup ? 'var(--text-primary)' : 'var(--text-secondary)' }}>{node.name}</span>
+          <span style={{ fontWeight: isGroup ? 600 : 400, color, fontVariantNumeric:'tabular-nums' }}>{fd(total)}</span>
+        </div>
+        {kids.map(c => rows(c, calc, depth + 1, color))}
+      </Fragment>
+    )
+  }
+  const groupsOf = (calc) => { const root = (calc.kids['__root'] || [])[0]; return root ? (calc.kids[root.id] || []) : [] }
+  const totalRow = (label, val, color, weight = 600, border = '0.5px solid var(--border)') => (
+    <div style={{ display:'flex', justifyContent:'space-between', padding:'6px 0', fontSize:13, fontWeight:weight, borderTop:border }}>
+      <span>{label}</span><span style={{ color }}>{fd(val)}</span>
+    </div>
+  )
+  const subHead = (label, color, margin) => (
+    <p style={{ fontSize:11, fontWeight:600, color, margin, textTransform:'uppercase', letterSpacing:'0.5px' }}>{label}</p>
+  )
+  const renderScope = (key, label, incomeLabel, netLabel, incTree, expTree, incT, expT) => {
+    if (!showZero && incT === 0 && expT === 0) return null
+    const net = incT - expT
+    return (
+      <div key={key} style={{ marginBottom:18 }}>
+        <p style={{ fontSize:14, fontWeight:700, margin:'0 0 2px', paddingBottom:4, borderBottom:'2px solid var(--text-muted)' }}>{label}</p>
+        {subHead(incomeLabel, 'var(--green)', '8px 0 2px')}
+        {groupsOf(incTree).map(g => rows(g, incTree, 0, 'var(--green)'))}
+        {totalRow(`Total ${incomeLabel}`, incT, 'var(--green)')}
+        {subHead('Expenses', 'var(--coral)', '14px 0 2px')}
+        {groupsOf(expTree).map(g => rows(g, expTree, 0, 'var(--coral)'))}
+        {totalRow('Total Expenses', expT, 'var(--coral)')}
+        {totalRow(netLabel, net, net >= 0 ? 'var(--teal)' : 'var(--coral)', 700, '1px solid var(--border)')}
+      </div>
+    )
+  }
 
   return (
     <div>
-      <div style={{ display:'flex', gap:10, alignItems:'flex-end', marginBottom:20, flexWrap:'wrap' }}>
+      {/* Date range */}
+      <div style={{ display:'flex', gap:10, alignItems:'flex-end', marginBottom:18, flexWrap:'wrap' }}>
         <div>
           <label style={{fontSize:11,color:'var(--text-secondary)',display:'block',marginBottom:4}}>From</label>
           <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={{fontSize:12}}/>
@@ -227,172 +338,215 @@ function PLReport() {
           <label style={{fontSize:11,color:'var(--text-secondary)',display:'block',marginBottom:4}}>To</label>
           <input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} style={{fontSize:12}}/>
         </div>
-        <div>
-          <label style={{fontSize:11,color:'var(--text-secondary)',display:'block',marginBottom:4}}>Property</label>
-          <select value={propFilter} onChange={e=>setPropFilter(e.target.value)} style={{fontSize:12}}>
-            <option value="">All properties</option>
-            {PROPS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </div>
         <button onClick={load} disabled={loading} style={{fontSize:12,background:'var(--blue-light)',color:'var(--blue)',borderColor:'var(--blue)'}}>
           <i className={`ti ${loading?'ti-loader-2 spin':'ti-refresh'}`} aria-hidden="true"/> Run report
         </button>
+        <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, color:'var(--text-secondary)', marginLeft:'auto', cursor:'pointer' }}>
+          <input type="checkbox" checked={showZero} onChange={e=>setShowZero(e.target.checked)}/> Show empty categories
+        </label>
       </div>
 
       {data && (
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
-          {[['Total Income','var(--green)',data.income?.total],['Total Expenses','var(--coral)',data.expenses?.total],
-            ['Net Income',data.netIncome>=0?'var(--teal)':'var(--coral)',data.netIncome],
-            ['Properties',null,null]].map(([label,color,val],i) => (
-            <div key={i} className="metric-card">
-              <p style={{fontSize:11,color:'var(--text-secondary)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.5px',fontSize:10}}>{label}</p>
-              {val !== null ? <p style={{fontSize:20,fontWeight:500,margin:0,color:color||'var(--text-primary)'}}>{fd(val||0)}</p>
-                : <p style={{fontSize:13,color:'var(--text-muted)',margin:0}}>{data.propertyPL?.length} tracked</p>}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {data && (
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
-          {/* Income */}
-          <div className="card">
-            <p style={{fontSize:13,fontWeight:500,color:'var(--green)',margin:'0 0 12px'}}>Income</p>
-            {Object.entries(data.income?.byCategory || {}).sort((a,b)=>b[1]-a[1]).map(([cat,amt]) => (
-              <div key={cat} style={{display:'flex',justifyContent:'space-between',padding:'7px 0',borderBottom:'0.5px solid var(--border)',fontSize:13}}>
-                <span style={{color:'var(--text-secondary)'}}>{cat}</span>
-                <span style={{color:'var(--green)',fontWeight:500}}>{fd(amt)}</span>
-              </div>
-            ))}
-            {!Object.keys(data.income?.byCategory||{}).length && <p style={{fontSize:12,color:'var(--text-muted)'}}>No income in this period</p>}
-            <div style={{display:'flex',justifyContent:'space-between',padding:'9px 0 0',fontSize:13,fontWeight:600}}>
-              <span>Total Income</span><span style={{color:'var(--green)'}}>{fd(data.income?.total||0)}</span>
-            </div>
+        <div className="card" style={{ maxWidth:560 }}>
+          <div style={{ textAlign:'center', marginBottom:14 }}>
+            <p style={{ fontSize:14, fontWeight:600, margin:0 }}>Profit &amp; Loss</p>
+            <p style={{ fontSize:11, color:'var(--text-muted)', margin:'2px 0 0' }}>
+              {new Date(data.period.start).toLocaleDateString()} – {new Date(data.period.end).toLocaleDateString()}
+            </p>
           </div>
 
-          {/* Expenses */}
-          <div className="card">
-            <p style={{fontSize:13,fontWeight:500,color:'var(--coral)',margin:'0 0 12px'}}>Expenses</p>
-            {Object.entries(data.expenses?.byCategory || {}).sort((a,b)=>b[1]-a[1]).map(([cat,amt]) => (
-              <div key={cat} style={{display:'flex',justifyContent:'space-between',padding:'7px 0',borderBottom:'0.5px solid var(--border)',fontSize:13}}>
-                <span style={{color:'var(--text-secondary)'}}>{cat}</span>
-                <span style={{color:'var(--coral)',fontWeight:500}}>{fd(amt)}</span>
+          {empty ? (
+            <p style={{ fontSize:13, color:'var(--text-muted)', textAlign:'center', padding:'20px 0' }}>
+              No transactions in this period.
+            </p>
+          ) : (
+            <>
+              {renderScope('personal', 'Personal', 'Income', 'Net Surplus / (Deficit)', pInc, pExp, pIncT, pExpT)}
+              {renderScope('business', 'Business', 'Revenue', 'Net Income', bInc, bExp, bIncT, bExpT)}
+              <div style={{ display:'flex', justifyContent:'space-between', padding:'10px 0 2px', marginTop:4, fontSize:15, fontWeight:700, borderTop:'2px solid var(--text-muted)' }}>
+                <span>Net Income (All)</span><span style={{ color: overallNet>=0?'var(--teal)':'var(--coral)' }}>{fd(overallNet)}</span>
               </div>
-            ))}
-            {!Object.keys(data.expenses?.byCategory||{}).length && <p style={{fontSize:12,color:'var(--text-muted)'}}>No expenses in this period</p>}
-            <div style={{display:'flex',justifyContent:'space-between',padding:'9px 0 0',fontSize:13,fontWeight:600}}>
-              <span>Total Expenses</span><span style={{color:'var(--coral)'}}>{fd(data.expenses?.total||0)}</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Property NOI */}
-      {data?.propertyPL?.length > 0 && (
-        <div className="card" style={{marginTop:16}}>
-          <p style={{fontSize:13,fontWeight:500,margin:'0 0 12px'}}>Property Performance (annualized)</p>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:8}}>
-            {data.propertyPL.map(p => (
-              <div key={p.id} style={{background:'var(--bg-secondary)',borderRadius:'var(--radius-md)',padding:'10px 12px'}}>
-                <p style={{fontSize:12,fontWeight:500,margin:'0 0 6px'}}>{p.name}</p>
-                {[['Income',fd(p.rentalIncome),'var(--green)'],['Expenses',fd(p.expenses),'var(--coral)'],['NOI',fd(p.noi),p.noi>=0?'var(--teal)':'var(--coral)'],['ROI',p.roi+'%','var(--blue)']].map(([l,v,c])=>(
-                  <div key={l} style={{display:'flex',justifyContent:'space-between',fontSize:11,marginBottom:2}}>
-                    <span style={{color:'var(--text-muted)'}}>{l}</span>
-                    <span style={{color:c,fontWeight:500}}>{v}</span>
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
+            </>
+          )}
         </div>
       )}
     </div>
   )
 }
 
-// ── Balance Sheet ─────────────────────────────────────────────────────
+// ── Balance Sheet (hierarchical: linked accounts + properties + fixed assets + manual) ──
 function BalanceSheet() {
-  const [data, setData] = useState(null)
-  useEffect(() => { axios.get(`${API}/balance-sheet`).then(r=>setData(r.data)).catch(()=>{}) }, [])
-  if (!data) return <div style={{color:'var(--text-muted)',fontSize:13}}>Loading…</div>
-  const { assets, liabilities, equity } = data
+  const [coa, setCoa]             = useState([])
+  const [balances, setBalances]   = useState({})     // manual category balances
+  const [live, setLive]           = useState(null)    // { asOf, byLeaf, totals }
+  const [expanded, setExpanded]   = useState({})
+  const [editing, setEditing]     = useState(null)
+  const [draft, setDraft]         = useState('')
+  const [showEmpty, setShowEmpty] = useState(false)
+  const [loading, setLoading]     = useState(true)
+
+  const load = async () => {
+    try {
+      const [c, b, l] = await Promise.all([
+        axios.get(`${API}/coa`),
+        axios.get(`${API}/category-balances`),
+        axios.get(`${API}/balance-sheet`),
+      ])
+      setCoa(Array.isArray(c.data) ? c.data : [])
+      setBalances(b.data && typeof b.data === 'object' && !Array.isArray(b.data) ? b.data : {})
+      setLive(l.data && typeof l.data === 'object' ? l.data : null)
+    } catch {}
+    setLoading(false)
+  }
+  useEffect(() => { load() }, [])
+
+  // Each leaf's amount = linked balance (accounts / properties / capitalized buys) + manual entry.
+  const byLeaf   = (live && live.byLeaf) || {}
+  const manualOf = id => (balances[id]?.amount || 0)
+  const amountOf = id => (byLeaf[id]?.linked || 0) + manualOf(id)
+
+  const assets      = computeTotals(coa.filter(a => a.type === 'asset'),     amountOf)
+  const liabilities = computeTotals(coa.filter(a => a.type === 'liability'), amountOf)
+  const equity      = computeTotals(coa.filter(a => a.type === 'equity'),    amountOf)
+
+  const totalAssets = rootTotal(assets)
+  const totalLiab   = rootTotal(liabilities)
+  const netWorth    = totalAssets - totalLiab
+
+  const saveBalance = async (id) => {
+    const amt = parseFloat(draft)
+    try {
+      const { data } = await axios.put(`${API}/category-balances/${id}`, { amount: isNaN(amt) ? 0 : amt })
+      setBalances(data && typeof data === 'object' && !Array.isArray(data) ? data : {})
+    } catch {}
+    setEditing(null); setDraft('')
+  }
+
+  const isExp = (id, depth) => expanded[id] ?? (depth === 0)
+
+  const renderNode = (node, calc, depth) => {
+    const kids  = calc.kids[node.id] || []
+    const total = calc.totals[node.id] || 0
+    if (kids.length > 0) {
+      if (!showEmpty && total === 0) return null
+      const exp = isExp(node.id, depth)
+      return (
+        <Fragment key={node.id}>
+          <div onClick={() => setExpanded(p => ({ ...p, [node.id]: !isExp(node.id, depth) }))}
+            style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 0', paddingLeft:depth*16, borderBottom:'0.5px solid var(--border)', cursor:'pointer' }}>
+            <i className={`ti ${exp ? 'ti-chevron-down' : 'ti-chevron-right'}`} style={{ fontSize:12, color:'var(--text-muted)', width:14 }} aria-hidden="true"/>
+            <span style={{ flex:1, fontSize:13, fontWeight: depth === 0 ? 600 : 500 }}>{node.name}</span>
+            <span style={{ fontSize:13, fontWeight:600, fontVariantNumeric:'tabular-nums' }}>{fd(total)}</span>
+          </div>
+          {exp && kids.map(c => renderNode(c, calc, depth + 1))}
+        </Fragment>
+      )
+    }
+    // Leaf: header (linked + manual total, click to edit the manual part) + itemized linked rows.
+    const accts     = byLeaf[node.id]?.accounts || []
+    const manual    = manualOf(node.id)
+    const leafTotal = amountOf(node.id)
+    if (!showEmpty && leafTotal === 0 && accts.length === 0) return null
+    const ed = editing === node.id
+    return (
+      <Fragment key={node.id}>
+        <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 0', paddingLeft:depth*16 + 20, borderBottom:'0.5px solid var(--border)' }}>
+          <span style={{ flex:1, fontSize:12, color:'var(--text-secondary)' }}>{node.name}</span>
+          {ed ? (
+            <input autoFocus type="number" value={draft} onChange={e => setDraft(e.target.value)}
+              onBlur={() => saveBalance(node.id)} onKeyDown={e => { if (e.key === 'Enter') saveBalance(node.id); if (e.key === 'Escape') { setEditing(null); setDraft('') } }}
+              placeholder="0.00" style={{ width:120, fontSize:12, textAlign:'right', padding:'3px 6px' }}/>
+          ) : (
+            <span onClick={() => { setEditing(node.id); setDraft(manual ? String(manual) : '') }}
+              title={accts.length ? 'Click to add a manual adjustment on top of the linked balance' : 'Click to enter a manual balance'}
+              style={{ fontSize:12, cursor:'pointer', minWidth:84, textAlign:'right', color: leafTotal ? 'var(--text-primary)' : 'var(--text-muted)', borderBottom:'1px dashed var(--border)', fontVariantNumeric:'tabular-nums' }}>
+              {leafTotal ? fd(leafTotal) : '+ add'}
+            </span>
+          )}
+        </div>
+        {accts.map((a, i) => (
+          <div key={i} style={{ display:'flex', alignItems:'center', gap:6, padding:'2px 0', paddingLeft:depth*16 + 38 }}>
+            <i className="ti ti-link" style={{ fontSize:10, color:'var(--teal)' }} aria-hidden="true"/>
+            <span style={{ flex:1, fontSize:11, color:'var(--text-muted)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+              {a.name}{a.last4 ? ` ••${a.last4}` : ''}
+            </span>
+            {a.needsReview && <span style={{ fontSize:9, fontWeight:600, color:'var(--amber)', background:'var(--amber-light)', border:'0.5px solid var(--amber)', borderRadius:99, padding:'0 6px' }}>review</span>}
+            <span style={{ fontSize:11, color:'var(--text-muted)', minWidth:72, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{fd(a.balance)}</span>
+          </div>
+        ))}
+        {manual !== 0 && accts.length > 0 && (
+          <div style={{ display:'flex', alignItems:'center', gap:6, padding:'2px 0', paddingLeft:depth*16 + 38 }}>
+            <i className="ti ti-pencil" style={{ fontSize:10, color:'var(--text-muted)' }} aria-hidden="true"/>
+            <span style={{ flex:1, fontSize:11, color:'var(--text-muted)' }}>Manual adjustment</span>
+            <span style={{ fontSize:11, color:'var(--text-muted)', minWidth:72, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{fd(manual)}</span>
+          </div>
+        )}
+      </Fragment>
+    )
+  }
+
+  const renderTree = (calc) => {
+    const roots = (calc.kids['__root'] || []).filter(r => showEmpty || (calc.totals[r.id] || 0) !== 0)
+    if (roots.length === 0) return <p style={{ fontSize:12, color:'var(--text-muted)', margin:'4px 0' }}>Nothing yet — connect accounts, or tick “Show empty categories” to add a manual balance.</p>
+    return roots.map(r => renderNode(r, calc, 0))
+  }
+
+  if (loading) return <div style={{ color:'var(--text-muted)', fontSize:13 }}>Loading…</div>
+
+  const hasEquityRows = (equity.kids['__root'] || []).some(r => (equity.totals[r.id] || 0) !== 0)
+
   return (
     <div>
-      <p style={{fontSize:12,color:'var(--text-muted)',marginBottom:16}}>As of {new Date(data.asOf).toLocaleDateString()}</p>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
-        <div>
-          <div className="card" style={{marginBottom:12,borderLeft:'3px solid var(--blue)'}}>
-            <p style={{fontSize:13,fontWeight:600,color:'var(--blue)',margin:'0 0 12px'}}>ASSETS</p>
-            {[
-              ['Cash & Checking', assets.cash.total, assets.cash.accounts],
-              ['Investments & Brokerage', assets.investments.total, assets.investments.accounts],
-              ['Crypto', assets.crypto.total, assets.crypto.accounts],
-            ].map(([label, total, accts]) => total > 0 && (
-              <div key={label} style={{marginBottom:12}}>
-                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,fontWeight:500,marginBottom:5}}>
-                  <span style={{color:'var(--text-secondary)'}}>{label}</span>
-                  <span>{fd(total)}</span>
-                </div>
-                {accts?.map(a => (
-                  <div key={a.id||a.name} style={{display:'flex',justifyContent:'space-between',fontSize:11,padding:'2px 0 2px 12px',color:'var(--text-muted)'}}>
-                    <span>{a.name}</span><span>{fd(a.balance||0)}</span>
-                  </div>
-                ))}
-              </div>
-            ))}
-            <div style={{marginBottom:12}}>
-              <div style={{display:'flex',justifyContent:'space-between',fontSize:12,fontWeight:500,marginBottom:5}}>
-                <span style={{color:'var(--text-secondary)'}}>Real Estate (equity)</span>
-                <span>{fd(assets.realEstate.equity)}</span>
-              </div>
-              {assets.realEstate.properties?.map(p => (
-                <div key={p.id||p.name} style={{display:'flex',justifyContent:'space-between',fontSize:11,padding:'2px 0 2px 12px',color:'var(--text-muted)'}}>
-                  <span>{p.name}</span><span>{fd((p.value||0)-(p.mortgage||0))}</span>
-                </div>
-              ))}
-            </div>
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:13,fontWeight:700,borderTop:'0.5px solid var(--border)',paddingTop:10}}>
-              <span style={{color:'var(--blue)'}}>Total Assets</span><span style={{color:'var(--blue)'}}>{fd(assets.total)}</span>
-            </div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12, gap:12, flexWrap:'wrap' }}>
+        <p style={{ fontSize:12, color:'var(--text-muted)', margin:0, flex:1, minWidth:240 }}>
+          As of {new Date(live?.asOf || Date.now()).toLocaleDateString()} · linked balances come from connected accounts, properties &amp; capitalized purchases; click any category to add a manual balance.
+        </p>
+        <label style={{ fontSize:11, color:'var(--text-secondary)', display:'flex', alignItems:'center', gap:6, cursor:'pointer', whiteSpace:'nowrap' }}>
+          <input type="checkbox" checked={showEmpty} onChange={e => setShowEmpty(e.target.checked)}/> Show empty categories
+        </label>
+      </div>
+
+      {/* Grand totals */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, marginBottom:18 }}>
+        {[['Total Assets','var(--blue)',totalAssets],['Total Liabilities','var(--coral)',totalLiab],['Net Worth',netWorth>=0?'var(--teal)':'var(--coral)',netWorth]].map(([label,color,val])=>(
+          <div key={label} className="metric-card">
+            <p style={{fontSize:10,color:'var(--text-secondary)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.5px'}}>{label}</p>
+            <p style={{fontSize:20,fontWeight:500,margin:0,color}}>{fd(val)}</p>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, alignItems:'start' }}>
+        {/* Assets */}
+        <div className="card" style={{ borderLeft:'3px solid var(--blue)' }}>
+          <p style={{ fontSize:13, fontWeight:600, color:'var(--blue)', margin:'0 0 12px' }}>ASSETS</p>
+          {renderTree(assets)}
+          <div style={{ display:'flex', justifyContent:'space-between', fontSize:13, fontWeight:700, borderTop:'1px solid var(--border)', paddingTop:10, marginTop:8 }}>
+            <span style={{ color:'var(--blue)' }}>Total Assets</span><span style={{ color:'var(--blue)' }}>{fd(totalAssets)}</span>
           </div>
         </div>
 
-        <div>
-          <div className="card" style={{marginBottom:12,borderLeft:'3px solid var(--coral)'}}>
-            <p style={{fontSize:13,fontWeight:600,color:'var(--coral)',margin:'0 0 12px'}}>LIABILITIES</p>
-            <div style={{marginBottom:12}}>
-              <div style={{display:'flex',justifyContent:'space-between',fontSize:12,fontWeight:500,marginBottom:5}}>
-                <span style={{color:'var(--text-secondary)'}}>Mortgages</span>
-                <span>{fd(liabilities.mortgages.total)}</span>
-              </div>
-              {liabilities.mortgages.properties?.map(p => (
-                <div key={p.name} style={{display:'flex',justifyContent:'space-between',fontSize:11,padding:'2px 0 2px 12px',color:'var(--text-muted)'}}>
-                  <span>{p.name}</span><span>{fd(p.balance||0)}</span>
-                </div>
-              ))}
-            </div>
-            {liabilities.creditCards.total > 0 && (
-              <div style={{marginBottom:12}}>
-                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,fontWeight:500,marginBottom:5}}>
-                  <span style={{color:'var(--text-secondary)'}}>Credit Cards</span>
-                  <span>{fd(liabilities.creditCards.total)}</span>
-                </div>
-                {liabilities.creditCards.accounts?.map(a => (
-                  <div key={a.id||a.name} style={{display:'flex',justifyContent:'space-between',fontSize:11,padding:'2px 0 2px 12px',color:'var(--text-muted)'}}>
-                    <span>{a.name}</span><span>{fd(Math.abs(a.balance||0))}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:13,fontWeight:700,borderTop:'0.5px solid var(--border)',paddingTop:10}}>
-              <span style={{color:'var(--coral)'}}>Total Liabilities</span><span style={{color:'var(--coral)'}}>{fd(liabilities.total)}</span>
+        {/* Liabilities + Equity */}
+        <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+          <div className="card" style={{ borderLeft:'3px solid var(--coral)' }}>
+            <p style={{ fontSize:13, fontWeight:600, color:'var(--coral)', margin:'0 0 12px' }}>LIABILITIES</p>
+            {renderTree(liabilities)}
+            <div style={{ display:'flex', justifyContent:'space-between', fontSize:13, fontWeight:700, borderTop:'1px solid var(--border)', paddingTop:10, marginTop:8 }}>
+              <span style={{ color:'var(--coral)' }}>Total Liabilities</span><span style={{ color:'var(--coral)' }}>{fd(totalLiab)}</span>
             </div>
           </div>
 
-          <div className="card" style={{borderLeft:'3px solid var(--teal)'}}>
-            <p style={{fontSize:13,fontWeight:600,color:'var(--teal)',margin:'0 0 10px'}}>EQUITY</p>
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:700}}>
-              <span>Net Worth</span><span style={{color:equity>=0?'var(--teal)':'var(--coral)'}}>{fd(equity)}</span>
+          <div className="card" style={{ borderLeft:'3px solid var(--teal)' }}>
+            <p style={{ fontSize:13, fontWeight:600, color:'var(--teal)', margin:'0 0 12px' }}>EQUITY / NET WORTH</p>
+            {hasEquityRows && <div style={{ marginBottom:8 }}>{renderTree(equity)}</div>}
+            <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--text-secondary)', padding:'2px 0' }}>
+              <span>Total Assets</span><span style={{ fontVariantNumeric:'tabular-nums' }}>{fd(totalAssets)}</span>
+            </div>
+            <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--text-secondary)', padding:'2px 0' }}>
+              <span>− Total Liabilities</span><span style={{ fontVariantNumeric:'tabular-nums' }}>{fd(totalLiab)}</span>
+            </div>
+            <div style={{ display:'flex', justifyContent:'space-between', fontSize:16, fontWeight:700, borderTop:'1px solid var(--border)', paddingTop:10, marginTop:8 }}>
+              <span>Net Worth</span><span style={{ color: netWorth>=0?'var(--teal)':'var(--coral)' }}>{fd(netWorth)}</span>
             </div>
           </div>
         </div>
@@ -403,9 +557,10 @@ function BalanceSheet() {
 
 // ── Invoices ──────────────────────────────────────────────────────────
 function Invoices() {
+  const PROPS = useProperties()
   const [invoices, setInvoices] = useState([])
   const [modal, setModal]   = useState(false)
-  const [form, setForm]     = useState({ propertyId:'haas', tenantName:'', amount:'', dueDate:'', issueDate:new Date().toISOString().split('T')[0], notes:'', recurring:false })
+  const [form, setForm]     = useState({ propertyId:'', tenantName:'', amount:'', dueDate:'', issueDate:new Date().toISOString().split('T')[0], notes:'', recurring:false })
 
   const load = () => axios.get(`${API}/invoices`).then(r=>setInvoices(r.data)).catch(()=>{})
   useEffect(() => { load() }, [])
@@ -501,6 +656,7 @@ function Invoices() {
 
 // ── Bills ─────────────────────────────────────────────────────────────
 function Bills() {
+  const PROPS = useProperties()
   const [bills, setBills]   = useState([])
   const [vendors, setVendors] = useState([])
   const [modal, setModal]   = useState(false)
@@ -691,13 +847,11 @@ function Vendors() {
 }
 
 // ── Main Accounting Component ─────────────────────────────────────────
+// Only P&L + Balance Sheet for now. Invoices/Bills/Vendors/ChartOfAccounts components
+// remain defined below and can be re-added here when needed.
 const TABS = [
-  { id:'pl',       label:'P&L',             icon:'ti-chart-bar'           },
-  { id:'bs',       label:'Balance Sheet',   icon:'ti-scale'               },
-  { id:'invoices', label:'Invoices',         icon:'ti-file-invoice'        },
-  { id:'bills',    label:'Bills',            icon:'ti-receipt'             },
-  { id:'vendors',  label:'Vendors',          icon:'ti-building-community'  },
-  { id:'coa',      label:'Chart of Accounts',icon:'ti-list-tree'           },
+  { id:'pl', label:'P&L',           icon:'ti-chart-bar' },
+  { id:'bs', label:'Balance Sheet', icon:'ti-scale'     },
 ]
 
 export default function Accounting() {
@@ -715,12 +869,8 @@ export default function Accounting() {
           </button>
         ))}
       </div>
-      {tab === 'pl'       && <PLReport/>}
-      {tab === 'bs'       && <BalanceSheet/>}
-      {tab === 'invoices' && <Invoices/>}
-      {tab === 'bills'    && <Bills/>}
-      {tab === 'vendors'  && <Vendors/>}
-      {tab === 'coa'      && <ChartOfAccounts/>}
+      {tab === 'pl' && <PLReport/>}
+      {tab === 'bs' && <BalanceSheet/>}
     </div>
   )
 }

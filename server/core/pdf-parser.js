@@ -17,7 +17,18 @@ const PDFParser = require('pdf2json');
 
 // ── Text extraction ───────────────────────────────────────────────────────────
 
-async function extractItems(buffer) {
+// pdf2json keeps MODULE-LEVEL global state, so two parses running concurrently in
+// the same process corrupt each other (one returns the other's data, or empty).
+// Serialize every parse through one queue: callers (classify / extract-stats /
+// metadata) can fan out freely, but the actual pdf2json work runs one at a time.
+let _pdfQueue = Promise.resolve();
+function extractItems(buffer) {
+  const run = _pdfQueue.then(() => _extractItems(buffer), () => _extractItems(buffer));
+  _pdfQueue = run.then(() => {}, () => {});   // keep the chain alive regardless of outcome
+  return run;
+}
+
+async function _extractItems(buffer) {
   // pdf2json intermittently fires pdfParser_dataError on some pdfkit-generated PDFs
   // (e.g. Invalid XRef stream) even though the file is valid — retry up to 3 times.
   // verbose=1 silences noisy console output; the resolved guard prevents a late
@@ -49,7 +60,7 @@ async function extractItems(buffer) {
         .map(r => { try { return decodeURIComponent(r.T); } catch { return r.T; } })
         .join('')
         .trim();
-      if (text) items.push({ text, x: el.x, y: el.y, page: p });
+      if (text) items.push({ text, x: el.x, y: el.y, w: el.w || 0, page: p });
     }
   }
   return items;
@@ -74,6 +85,41 @@ function groupRows(items, tolerance = 0.38) {
     }
   }
   return rows.map(r => r.sort((a, b) => a.x - b.x));
+}
+
+// ── Page text assembly with split-word gluing ─────────────────────────────────
+// pdf2json splits words into fragments on kerning ("Statement" → "St" + "atement");
+// a blind space-join turns them into separate words ("St atement"), which corrupts
+// pattern matching (that fake "St" token is how junk like "Mortgage Loan Statement St"
+// got matched as a street address). Same-word fragments continue at (almost) the
+// previous fragment's end position — but item widths over-report on some PDFs,
+// making COLUMN-adjacent items look glued too ("…KOBE PL" + "If payment…" →
+// "PLIf"). So a near-zero gap is necessary but NOT sufficient: the join must also
+// look like a word continuation —
+//   lower→lower  ("Woodw"+"ard", "St"+"atement")          → glue
+//   single CAP→lower ("K"+"obe", "P"+"ostal")             → glue
+//   digit→digit, →UPPER, digit→letter, token→lower (etc.) → keep the space
+function glueOk(prevText, nextText) {
+  const a = prevText[prevText.length - 1] || '';
+  const b = nextText[0] || '';
+  if (/[a-z]/.test(a) && /[a-z]/.test(b)) return true;             // word continuation
+  const lastTok = prevText.split(/\s+/).pop();
+  if (/^[A-Z]$/.test(lastTok) && /[A-Za-z]/.test(b)) return true;  // "K"+"obe", "K"+"OBE"
+  return false;
+}
+function assemblePages(items) {
+  const pageMap = new Map();
+  for (const row of groupRows(items)) {
+    let line = row[0].text;
+    for (let k = 1; k < row.length; k++) {
+      const prev = row[k - 1];
+      const gap  = prev.w > 0 ? row[k].x - (prev.x + prev.w) : Infinity;
+      line += (gap < 0.05 && glueOk(prev.text, row[k].text) ? '' : ' ') + row[k].text;
+    }
+    const p = row[0].page;
+    pageMap.set(p, (pageMap.get(p) || '') + line + '\n');
+  }
+  return [...pageMap.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t);
 }
 
 // ── Date parsing ─────────────────────────────────────────────────────────────
@@ -466,21 +512,313 @@ function extractAccountName(text) {
 const MONTH_NAMES = ['january','february','march','april','may','june',
                      'july','august','september','october','november','december'];
 
-function extractPeriod(text) {
-  const t = text.toLowerCase();
-  // "January 2024" or "January 1, 2024"
-  for (let i = 0; i < MONTH_NAMES.length; i++) {
-    const re = new RegExp(`${MONTH_NAMES[i]}\\s+(?:\\d{1,2}[,\\s]+)?(20\\d{2})`);
-    const m = t.match(re);
-    if (m) return { year: parseInt(m[1]), month: i + 1 };
+// Word-month alternation — full names, 3-letter abbreviations, and "Sept".
+const MONTH_WORD = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
+function monthFromWord(w) {
+  const k = String(w).toLowerCase().replace(/\./g, '').slice(0, 3);
+  const i = MONTH_NAMES.findIndex(n => n.startsWith(k));
+  return i < 0 ? null : i + 1;
+}
+
+// Parse "Month DD, YYYY" into {year, month, day}, or null. Accepts abbreviations.
+function parseWordDate(monthWord, day, year) {
+  const m = monthFromWord(monthWord);
+  return m == null ? null : { year: parseInt(year), month: m, day: parseInt(day) };
+}
+
+// Validate + normalize a calendar date. Rejects impossible days (e.g. 04/31).
+function makeYMD(year, month, day) {
+  const y = parseInt(year), m = parseInt(month), d = parseInt(day);
+  if (!y || !m || !d || y < 2000 || y > 2040 || m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return (dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d) ? { year: y, month: m, day: d } : null;
+}
+const epochDays = (x) => Date.UTC(x.year, x.month - 1, x.day) / 86400000;
+const fullYear  = (y) => String(y).length === 2 ? 2000 + parseInt(y) : parseInt(y);
+
+// Find the statement DATE RANGE (start → end) in the page text. Handles:
+//   "April 16, 2026 through May 15, 2026"   (word months, incl. Apr/Sept-style abbreviations)
+//   "Dec 16 - Jan 15, 2027"                 (year only on the end date; start year rolls back)
+//   "04/16/2026 - 05/15/2026"               (numeric, 2- or 4-digit year)
+//   "Payment history (04/03/2026 - 05/11/2026)"
+// Every match in the text is scored — a label like "statement/billing/period/history"
+// just before it and a plausible monthly span beat a bare unlabeled range — and
+// implausibly long spans (annual disclosures) are rejected outright.
+const RANGE_SEP = '(?:through|thru|to|[-–—])';
+function extractDateRange(text) {
+  const candidates = [];
+  const consider = (idx, s, e) => {
+    const start = makeYMD(s.year, s.month, s.day);
+    const end   = makeYMD(e.year, e.month, e.day);
+    if (!start || !end) return;
+    const span = epochDays(end) - epochDays(start);
+    if (span < 0 || span > 95) return;       // statement cycles top out around a quarter
+    let score = 0;
+    const before = text.slice(Math.max(0, idx - 60), idx);
+    if (/(statement|billing|activity|history|period|cycle|service)[^.]{0,60}$/i.test(before)) score += 2;
+    if (span >= 20 && span <= 70) score += 1; // looks like a monthly cycle
+    candidates.push({ start, end, score, idx });
+  };
+
+  const reWordFull = new RegExp(`${MONTH_WORD}\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(20\\d{2})\\s*${RANGE_SEP}\\s*${MONTH_WORD}\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(20\\d{2})`, 'gi');
+  for (const m of text.matchAll(reWordFull)) {
+    consider(m.index, { year: m[3], month: monthFromWord(m[1]), day: m[2] },
+                      { year: m[6], month: monthFromWord(m[4]), day: m[5] });
   }
-  // MM/DD/YYYY or MM/YYYY
+  const reWordShared = new RegExp(`${MONTH_WORD}\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\s*${RANGE_SEP}\\s*${MONTH_WORD}\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(20\\d{2})`, 'gi');
+  for (const m of text.matchAll(reWordShared)) {
+    const sm = monthFromWord(m[1]), em = monthFromWord(m[3]), ey = parseInt(m[5]);
+    consider(m.index, { year: sm > em ? ey - 1 : ey, month: sm, day: m[2] },
+                      { year: ey, month: em, day: m[4] });
+  }
+  const reNumFull = new RegExp(`\\b(\\d{1,2})[/\\-](\\d{1,2})[/\\-](20\\d{2}|\\d{2})\\s*${RANGE_SEP}\\s*(\\d{1,2})[/\\-](\\d{1,2})[/\\-](20\\d{2}|\\d{2})\\b`, 'gi');
+  for (const m of text.matchAll(reNumFull)) {
+    consider(m.index, { year: fullYear(m[3]), month: m[1], day: m[2] },
+                      { year: fullYear(m[6]), month: m[4], day: m[5] });
+  }
+  const reNumShared = new RegExp(`\\b(\\d{1,2})/(\\d{1,2})\\s*${RANGE_SEP}\\s*(\\d{1,2})/(\\d{1,2})/(20\\d{2}|\\d{2})\\b`, 'gi');
+  for (const m of text.matchAll(reNumShared)) {
+    const sm = parseInt(m[1]), em = parseInt(m[3]), ey = fullYear(m[5]);
+    consider(m.index, { year: sm > em ? ey - 1 : ey, month: sm, day: m[2] },
+                      { year: ey, month: em, day: m[4] });
+  }
+
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.score - a.score || a.idx - b.idx);
+  return { start: candidates[0].start, end: candidates[0].end };
+}
+
+// ── Date probing: collect every date on the page, in any common format ────────
+// Each hit: { year, month, day, idx, due } — `due` marks dates whose preceding
+// context looks like a due/owed/pay-by label (those are excluded from clustering,
+// since a due date sits outside the statement period).
+const DUE_CTX = /(due|owe[ds]?|payable|pay\s*by|received\s+after|paid\s+after|deadline|expir)/i;
+function collectDates(text, fallbackYear = null) {
+  const out = [];
+  const taken = [];
+  const overlaps = (a, b) => taken.some(([s, e]) => a < e && b > s);
+  const add = (m, ymd) => {
+    const v = makeYMD(ymd.year, ymd.month, ymd.day);
+    if (!v) return;
+    const s = m.index, e = m.index + m[0].length;
+    if (overlaps(s, e)) return;
+    taken.push([s, e]);
+    out.push({ ...v, idx: s, due: DUE_CTX.test(text.slice(Math.max(0, s - 40), s)) });
+  };
+
+  for (const m of text.matchAll(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/g))
+    add(m, { year: m[1], month: m[2], day: m[3] });
+  for (const m of text.matchAll(/\b(\d{1,2})[/\-](\d{1,2})[/\-](20\d{2})\b/g))
+    add(m, { year: m[3], month: m[1], day: m[2] });
+  for (const m of text.matchAll(/\b(\d{1,2})\/(\d{1,2})\/(\d{2})\b/g))
+    add(m, { year: 2000 + parseInt(m[3]), month: m[1], day: m[2] });
+  const reWordMDY = new RegExp(`\\b${MONTH_WORD}\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(20\\d{2})\\b`, 'gi');
+  for (const m of text.matchAll(reWordMDY)) add(m, { year: m[3], month: monthFromWord(m[1]), day: m[2] });
+  const reDWordY = new RegExp(`\\b(\\d{1,2})\\s+${MONTH_WORD}\\.?,?\\s+(20\\d{2})\\b`, 'gi');
+  for (const m of text.matchAll(reDWordY)) add(m, { year: m[3], month: monthFromWord(m[2]), day: m[1] });
+
+  // No-year forms ("04/03", "Apr 3") — common in payment-history tables; the year
+  // comes from the dominant 4-digit year elsewhere on the page.
+  if (fallbackYear) {
+    const reWordMD = new RegExp(`\\b${MONTH_WORD}\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'gi');
+    for (const m of text.matchAll(reWordMD)) add(m, { year: fallbackYear, month: monthFromWord(m[1]), day: m[2] });
+    for (const m of text.matchAll(/\b(\d{1,2})\/(\d{1,2})\b(?!\s*\/)/g))
+      add(m, { year: fallbackYear, month: m[1], day: m[2] });
+  }
+  return out;
+}
+
+// Densest 45-day window over the collected dates = the statement period.
+// Dates outside the window (and due-labeled dates) are outliers — typically the
+// payment due date or a late-fee deadline. Needs a real concentration to fire:
+// at least 3 dates, holding at least 40% of everything found.
+function clusterDates(dates, { windowDays = 45, minCount = 3 } = {}) {
+  const usable = dates.filter(d => !d.due);
+  if (usable.length < minCount) return null;
+  const pts = usable.map(d => ({ ...d, ep: epochDays(d) })).sort((a, b) => a.ep - b.ep);
+  let best = null;
+  for (let i = 0, j = 0; i < pts.length; i++) {
+    if (j < i) j = i;
+    while (j + 1 < pts.length && pts[j + 1].ep - pts[i].ep <= windowDays) j++;
+    const count = j - i + 1;
+    if (!best || count > best.count) best = { i, j, count };
+  }
+  if (!best || best.count < minCount || best.count < usable.length * 0.4) return null;
+  const s = pts[best.i], e = pts[best.j];
+  return { start: { year: s.year, month: s.month, day: s.day },
+           end:   { year: e.year, month: e.month, day: e.day },
+           count: best.count };
+}
+
+// Most frequent 4-digit year on the page — used to date no-year rows like "04/03".
+function inferYearFromText(text) {
+  const m = text.match(/\b(20[1-3]\d)\b/g);
+  if (!m) return null;
+  const freq = {};
+  for (const y of m) freq[y] = (freq[y] || 0) + 1;
+  return parseInt(Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0]);
+}
+
+// Which month does a statement "belong to"? Name it after its CLOSING month if the
+// period runs through at least the middle (the 15th) of that month; otherwise it only
+// barely entered the close month and the bulk of the transactions are in the opening
+// month, so use that. The 15th pivot keeps a normal "16th-to-15th" bank cycle naming
+// every statement by its closing month, uniformly. Examples:
+//   "Apr 16 – May 15"  → May    (closes on the 15th → close month)
+//   "Apr 1  – May 1"   → Apr    (only 1 day into May → opening month)
+//   "Dec 16 – Jan 15"  → Jan    (closes on the 15th → close month, year rolls forward)
+function periodFromRange(range) {
+  const { start, end } = range;
+  if (start.year === end.year && start.month === end.month) return { year: end.year, month: end.month };
+  return end.day >= 15
+    ? { year: end.year, month: end.month }
+    : { year: start.year, month: start.month };
+}
+
+function extractPeriod(text) {
+  // 1) An explicit, plausible statement date range beats everything — e.g.
+  //    "Statement period 04/01/2026 to 04/30/2026" or "Payment history (04/03/2026 - 05/11/2026)".
+  const range = extractDateRange(text);
+  if (range) return periodFromRange(range);
+
+  // 2) Otherwise probe EVERY date on the page (all formats, word months included)
+  //    and use the concentrated cluster — transaction/payment-history rows — with
+  //    due dates and outliers excluded.
+  const cluster = clusterDates(collectDates(text, inferYearFromText(text)));
+  if (cluster) return periodFromRange(cluster);
+
+  // 3) Single month-name + year (full or abbreviated), then numeric fallbacks.
+  const mw = text.match(new RegExp(`\\b${MONTH_WORD}\\.?\\s+(?:\\d{1,2}(?:st|nd|rd|th)?[,\\s]+)?(20\\d{2})\\b`, 'i'));
+  if (mw) return { year: parseInt(mw[2]), month: monthFromWord(mw[1]) };
   const m2 = text.match(/\b(\d{1,2})\/(?:\d{1,2}\/)?(20\d{2})\b/);
   if (m2) return { year: parseInt(m2[2]), month: parseInt(m2[1]) };
-  // YYYY-MM
   const m3 = text.match(/\b(20\d{2})[\/\-](\d{2})\b/);
   if (m3) return { year: parseInt(m3[1]), month: parseInt(m3[2]) };
   return { year: null, month: null };
+}
+
+// ── Property address detection (mortgage statements) ─────────────────────────
+// A street address is identified by CORROBORATING signals, not shape alone — a
+// bare "<number> <words> <suffix>" match isn't enough (loan numbers + document
+// titles can look address-shaped). The signals, and what they're worth:
+//   +4  a "Property Address:" / "Subject Property" / "Premises" label right before
+//   +3  "<STATE> <ZIP>" within 80 chars after (city/state/zip line structure)
+//   +1  a bare 5-digit ZIP after, or an Apt/Unit/Ste designator right after
+//   +2  the same address repeats on 2+ pages (statement headers repeat the property)
+//   +1  near the top of page 1
+// Hard rejects: street-name words from statement vocabulary (Mortgage/Loan/
+// Statement/…), single-letter fragments (except N/S/E/W), a house number that is
+// really the tail of a longer number or a ZIP following a state abbreviation,
+// and remit-payment context (the servicer's own address). Total < 2 → no address.
+const STREET_SUFFIX = '(?:st|street|ave|avenue|blvd|boulevard|dr|drive|ln|lane|ct|court|rd|road|way|pl|place|cir|circle|ter|terrace|pkwy|parkway|hwy|highway|trl|trail|loop|aly|alley|bnd|bend|cv|cove|xing|crossing|cmn|commons|sq|square|pt|point|pike|path|row|run|walk)';
+const ADDR_RE_SRC = `(\\d{1,6})\\s+([A-Za-z][A-Za-z.'\\-]*(?:\\s+[A-Za-z.'\\-]+){0,4}?)\\s+(${STREET_SUFFIX})\\b\\.?`;
+const STATE_ABBRS = 'AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC';
+// Statement vocabulary that can never be part of a street name. This is what
+// rejects "9175 Mortgage Loan Statement St"-style junk outright.
+const DOC_WORDS = new Set([
+  'mortgage','loan','statement','account','payment','payments','escrow','interest',
+  'principal','balance','amount','total','page','summary','history','notice','date',
+  'customer','service','contact','questions','insurance','tax','taxes','period',
+  'activity','transaction','transactions','disclosure','information','important',
+  'overdue','fee','fees','charge','charges','breakdown','detail','details','number',
+  'online','autopay','due','past','box',
+]);
+
+function plausibleStreetName(name) {
+  for (const w of String(name).trim().split(/\s+/)) {
+    const lw = w.toLowerCase().replace(/[.']/g, '');
+    if (DOC_WORDS.has(lw)) return false;
+    if (lw.length === 1 && !/^[nsew]$/.test(lw)) return false; // stray split fragment ("K Obe")
+  }
+  return true;
+}
+
+// Is this string a believable "<number> <street name> <suffix>"? Used to sanity-
+// check stored street tags.
+function looksLikeStreet(s) {
+  if (!s || typeof s !== 'string') return false;
+  const m = s.trim().match(new RegExp(`^${ADDR_RE_SRC}$`, 'i'));
+  return !!m && plausibleStreetName(m[2]);
+}
+
+function findPropertyAddress(pages) {
+  const tc  = (w) => /^\d/.test(w) ? w : w[0].toUpperCase() + w.slice(1).toLowerCase();
+  const fmt = (m) => {
+    const name   = m[2].trim().split(/\s+/).map(tc).join(' ');
+    const suffix = tc(m[3].replace(/\.$/, ''));
+    return { address: `${m[1]} ${name} ${suffix}`, streetName: `${name} ${suffix}` };
+  };
+
+  // Split house numbers arrive as separate fragments ("89"+"62 KOBE PL" → the
+  // regex sees "62"). Absorb 1-3 digit fragments sitting right before the match —
+  // never a 4+ digit run (that's a ZIP or loan number), never across a line break,
+  // and never past 6 total digits.
+  const repairNumber = (page, m) => {
+    let num = m[1], cursor = m.index;
+    for (;;) {
+      const tail = page.slice(Math.max(0, cursor - 8), cursor);
+      const frag = tail.match(/(?:^|[^\d.,$\-])(\d{1,3}) $/);
+      if (!frag || num.length + frag[1].length > 6) break;
+      num = frag[1] + num;
+      cursor -= frag[1].length + 1;
+    }
+    return num;
+  };
+
+  const byKey = new Map(); // normalized address → best occurrence + page spread
+  pages.forEach((page, pi) => {
+    for (const m of page.matchAll(new RegExp(ADDR_RE_SRC, 'gi'))) {
+      // Hard rejects — things that merely look address-shaped
+      if (!plausibleStreetName(m[2])) continue;
+      const prevCh = m.index > 0 ? page[m.index - 1] : '';
+      if (/[\d#]/.test(prevCh)) continue;                       // tail of a longer number
+      const before = page.slice(Math.max(0, m.index - 35), m.index);
+      if (new RegExp(`\\b(?:${STATE_ABBRS})[,\\s]+$`).test(before)) continue; // "… OH 44181 …" → ZIP, not house number
+      if (/(remit|send\s+payment|mail\s+(?:payment|to)|p\.?\s*o\.?\s*box|payment\s+processing)/i.test(before)) continue;
+      // A company name right before = the servicer's own address, not the property
+      if (/\b(?:llc|inc|n\.?a|corp|servicing|cooper|bank|company)\b[.,]?\s*$/i.test(before)) continue;
+
+      // Corroboration. The label check looks back 60 chars (not just adjacent) —
+      // statements often put "PROPERTY ADDRESS" a line above, with the amount-due
+      // column's text landing in between.
+      let score = 0, labeled = false;
+      const labelCtx = page.slice(Math.max(0, m.index - 60), m.index);
+      if (/(property\s*(?:address|location)|subject\s+property|premises)/i.test(labelCtx)) { score += 4; labeled = true; }
+      const after = page.slice(m.index + m[0].length, m.index + m[0].length + 80);
+      if (new RegExp(`\\b(?:${STATE_ABBRS})\\s*,?\\s*\\d{5}(?:-\\d{4})?\\b`).test(after)) score += 3;
+      else if (/\b\d{5}(?:-\d{4})?\b/.test(after)) score += 1;
+      if (/^\s*[,#]?\s*(?:apt|unit|ste|suite|#)\b/i.test(after)) score += 1;
+      if (pi === 0 && m.index < page.length * 0.4) score += 1;  // near the top of page 1
+
+      const num = repairNumber(page, m);
+      const key = `${num} ${m[2]} ${m[3]}`.toLowerCase().replace(/\s+/g, ' ');
+      const cur = byKey.get(key);
+      if (!cur) byKey.set(key, { m, num, pi, idx: m.index, pages: new Set([pi]), score, labeled });
+      else {
+        cur.pages.add(pi);
+        if (score > cur.score) cur.score = score;
+        cur.labeled = cur.labeled || labeled;
+      }
+    }
+  });
+  if (!byKey.size) return null;
+
+  // The repeat bonus only counts the first two pages: the property repeats on the
+  // summary/coupon pages, while the servicer's address repeats in the disclosure
+  // boilerplate on every later page.
+  const ranked = [...byKey.values()]
+    .map(c => ({ ...c, final: c.score + ([...c.pages].filter(p => p <= 1).length >= 2 ? 2 : 0) }))
+    .sort((a, b) => b.final - a.final || (b.labeled - a.labeled) || a.pi - b.pi || a.idx - b.idx);
+  if (ranked[0].final < 2) return null;
+  const best = fmt(ranked[0].m);
+  const addr = `${ranked[0].num} ${best.streetName}`;
+  return { address: addr, streetName: best.streetName };
+}
+
+// Items → glued per-page text (see assemblePages) → findPropertyAddress.
+function extractPropertyAddress(items) {
+  if (!items.length) return null;
+  return findPropertyAddress(assemblePages(items));
 }
 
 function extractClosingBalance(text) {
@@ -530,23 +868,27 @@ async function extractStatementMeta(buffer) {
   const items = await extractItems(buffer);
   // Raw PDF-internal order (for institution/period/balance — mostly robust)
   const rawText = items.map(i => i.text).join(' ');
-  // Reading order (sorted page → Y → X) — required for position-sensitive patterns
-  // where one token (e.g. "Account Number:") must precede the value token
-  const readingText = [...items]
-    .sort((a, b) =>
-      a.page !== b.page ? a.page - b.page :
-      Math.abs(a.y - b.y) < 0.5 ? a.x - b.x : a.y - b.y
-    )
-    .map(i => i.text)
-    .join(' ');
+  // Reading order with split-word fragments glued back together — required for
+  // position-sensitive patterns (label before value) and so words pdf2json split
+  // ("St"+"atement") don't corrupt matching.
+  const pages       = assemblePages(items);
+  const readingText = pages.join('\n');
 
   const institution    = detectInstitution(rawText);
   const last4          = extractLast4(readingText);      // reading order: label before value
   const accountName    = extractAccountName(readingText); // reading order: name before SUMMARY
-  const { year, month} = extractPeriod(rawText);
+  // Period from page CONTENT (range string → date cluster → single-date fallbacks).
+  // Reading order first — ranges/labels need tokens in human order; raw order as retry.
+  let period = extractPeriod(readingText);
+  if (!period.year || !period.month) {
+    const p2 = extractPeriod(rawText);
+    if (p2.year && p2.month) period = p2;
+  }
   const closingBalance = extractClosingBalance(rawText);
+  const property       = pages.length ? findPropertyAddress(pages) : null;  // mortgage statements
 
-  return { institution, accountName, last4, year, month, closingBalance };
+  return { institution, accountName, last4, year: period.year, month: period.month, closingBalance,
+           propertyAddress: property?.address || null, propertyStreet: property?.streetName || null };
 }
 
 // ── Raw text extraction (for similarity comparison) ───────────────────────────
@@ -562,4 +904,10 @@ async function extractRawText(buffer) {
     .join(' ');
 }
 
-module.exports = { parsePDFTransactions, extractStatementMeta, guessAccountTypeSubtype, extractRawText };
+module.exports = {
+  parsePDFTransactions, extractStatementMeta, guessAccountTypeSubtype, extractRawText,
+  // date-probe + address primitives (exported for the mortgage flow and tests)
+  extractPeriod, extractDateRange, collectDates, clusterDates, periodFromRange,
+  inferYearFromText, findPropertyAddress, extractPropertyAddress, looksLikeStreet,
+  assemblePages,
+};

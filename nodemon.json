@@ -1,0 +1,11 @@
+{
+  "watch": ["server"],
+  "ext": "js,cjs,mjs,json",
+  "ignore": [
+    "server/scrapers/*/**",
+    "server/scraper-fixtures/**",
+    "server/**/__pycache__/**",
+    "server/**/*.pyc",
+    "server/**/*.log"
+  ]
+}

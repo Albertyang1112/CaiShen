@@ -1,0 +1,834 @@
+date,description,amount,source_file
+2021-01-25,Online Transfer From Chk ...3122 Transaction#: 11056468891,1000.00,9092 Statement Jan 2021.pdf
+2021-01-27,Card Purchase 01/26 Mbs Direct 800-325-3252 MO Card 5058 -,-39.99,9092 Statement Jan 2021.pdf
+2021-01-27,Card Purchase 01/27 Apple.Com/Bill 866-712-7753 CA Card 5058 -,-9.99,9092 Statement Jan 2021.pdf
+2021-01-29,Card Purchase 01/28 Mbs Direct 800-325-3252 MO Card 5058 -,-37.57,9092 Statement Jan 2021.pdf
+2021-04-20,"Card Purchase 04/20 Thrift Books Global, 253-275-2241 WA Card -",-30.40,9092 Statement Apr 2021.pdf
+2021-04-26,"Card Purchase 04/24 Univ CA, Santa Barb On 800-3398131 CA Card -",-32.50,9092 Statement Apr 2021.pdf
+2021-04-26,"Card Purchase 04/24 Univ CA, Santa Barb On 800-3398131 CA Card -",-0.89,9092 Statement Apr 2021.pdf
+2021-07-22,Card Purchase 07/21 Mihoyo Limited Hong Kong Card 5058 -,-4.99,9092 Statement Jul 2021.pdf
+2021-07-27,Card Purchase 07/26 Amazon.Com*2E4E22Uy0 Amzn.Com/Bill WA -,-62.42,9092 Statement Jul 2021.pdf
+2021-09-14,Card Purchase 09/13 Af*Blue Horizon Manag 805-586-2583 CA Card -,-40.00,9092 Statement Aug 2021.pdf
+2021-09-15,Online Transfer From Chk ...3122 Transaction#: 12597705366,6000.00,9092 Statement Aug 2021.pdf
+2021-09-16,Uc Santa Barbara Schoolfees 01917046 Web ID: 9560061451 -,-5899.66,9092 Statement Aug 2021.pdf
+2021-09-23,Online Transfer From Sav ...2257 Transaction#: 12647663070,5000.00,9092 Statement Sep 2021.pdf
+2021-09-24,Card Purchase 09/24 Extempore App Httpsextempor MN Card 5058 -,-12.99,9092 Statement Sep 2021.pdf
+2021-09-27,Card Purchase 09/25 Carls Jr 1100427 Goleta CA Card 5058 -,-13.34,9092 Statement Sep 2021.pdf
+2021-09-27,Card Purchase 09/26 Jack IN The Box 0159 Goleta CA Card 5058 -,-7.42,9092 Statement Sep 2021.pdf
+2021-09-28,Ucsb Ucsb Eref PPD ID: 5956006145,1000.00,9092 Statement Sep 2021.pdf
+2021-09-28,Card Purchase 09/27 Jack IN The Box 0159 Goleta CA Card 5058 -,-6.35,9092 Statement Sep 2021.pdf
+2021-09-28,Card Purchase 09/28 Jack IN The Box 0159 Goleta CA Card 5058 -,-8.62,9092 Statement Sep 2021.pdf
+2021-09-28,Card Purchase With Pin 09/28 Ucsb Univ Ctr Bookst Santa Barbara CA -,-211.38,9092 Statement Sep 2021.pdf
+2021-09-29,Card Purchase 09/28 Mhe*Mcgraw-Hill Ecomm 800-648-3045 NY -,-62.99,9092 Statement Sep 2021.pdf
+2021-09-29,Card Purchase 09/28 Uber Eats Help.Uber.Com CA Card 5058 -,-6.36,9092 Statement Sep 2021.pdf
+2021-09-29,Card Purchase 09/28 Uber Eats Help.Uber.Com CA Card 5058 -,-3.13,9092 Statement Sep 2021.pdf
+2021-09-29,Recurring Card Purchase 09/28 Discord* Nitromonthl Httpsdiscord. CA Card -,-9.99,9092 Statement Sep 2021.pdf
+2021-10-04,Card Purchase 10/03 Uber Eats Help.Uber.Com CA Card 5058 -,-20.72,9092 Statement Sep 2021.pdf
+2021-10-04,Card Purchase 10/03 Uber Eats Help.Uber.Com CA Card 5058 -,-3.00,9092 Statement Sep 2021.pdf
+2021-10-04,Card Purchase 10/03 Carls Jr 1100427 Goleta CA Card 5058 -,-13.34,9092 Statement Sep 2021.pdf
+2021-10-06,Card Purchase 10/05 Carls Jr 1100427 Goleta CA Card 5058 -,-13.34,9092 Statement Sep 2021.pdf
+2021-10-08,Card Purchase 10/06 IN N Out Burger 108 Goleta CA Card 5058 -,-7.33,9092 Statement Sep 2021.pdf
+2021-10-12,Card Purchase 10/07 Meunfan Thai Cafe Goleta CA Card 5058 -,-13.95,9092 Statement Sep 2021.pdf
+2021-10-12,Card Purchase 10/08 IN N Out Burger 108 Goleta CA Card 5058 -,-7.33,9092 Statement Sep 2021.pdf
+2021-10-12,Card Purchase 10/10 IN N Out Burger 108 Goleta CA Card 5058 -,-7.33,9092 Statement Sep 2021.pdf
+2021-10-12,Card Purchase 10/11 Uber Eats Help.Uber.Com CA Card 5058 -,-18.29,9092 Statement Sep 2021.pdf
+2021-10-12,Card Purchase 10/11 Uber Eats Help.Uber.Com CA Card 5058 -,-4.00,9092 Statement Sep 2021.pdf
+2021-10-13,Card Purchase 10/12 Meunfan Thai Cafe 805-681-0588 CA Card -,-10.60,9092 Statement Sep 2021.pdf
+2021-10-13,Card Purchase 10/12 IN N Out Burger 108 Goleta CA Card 5058 -,-7.33,9092 Statement Sep 2021.pdf
+2021-10-14,Online Transfer From Sav ...2257 Transaction#: 12796781234,4820.00,9092 Statement Sep 2021.pdf
+2021-10-15,Payment Sent 10/14 Cash App*Vivek Shir 8774174551 CA Card -,-476.58,9092 Statement Sep 2021.pdf
+2021-10-18,Card Purchase 10/18 Uber Eats Help.Uber.Com CA Card 5058 -,-18.53,9092 Statement Sep 2021.pdf
+2021-10-18,Card Purchase 10/18 Uber Eats Help.Uber.Com CA Card 5058 -,-3.00,9092 Statement Sep 2021.pdf
+2021-10-19,Card Purchase 10/18 Ops* Coinmach Sunnysi 516-349-8555 NY -,-50.00,9092 Statement Oct 2021.pdf
+2021-10-19,Check OR Supply Order PPD ID: 1410216800 -,-20.00,9092 Statement Oct 2021.pdf
+2021-10-22,Card Purchase 10/21 Mihoyo Limited Hong Kong Card 5058 -,-4.99,9092 Statement Oct 2021.pdf
+2021-10-22,Card Purchase 10/22 Domino's 7816 805-564-4303 CA Card 5058 -,-23.74,9092 Statement Oct 2021.pdf
+2021-10-25,Card Purchase 10/21 IN N Out Burger 108 Goleta CA Card 5058 -,-9.59,9092 Statement Oct 2021.pdf
+2021-10-27,Card Purchase 10/26 Carls Jr 1100427 Goleta CA Card 5058 -,-13.34,9092 Statement Oct 2021.pdf
+2021-10-28,Card Purchase 10/27 Ucsb Univ Cntr Arb Q Santa Barbara CA Card -,-7.90,9092 Statement Oct 2021.pdf
+2021-10-29,Card Purchase 10/28 Ucsb Univ Cntr Arb Q Santa Barbara CA Card -,-4.35,9092 Statement Oct 2021.pdf
+2021-10-29,Recurring Card Purchase 10/28 Discord* Nitromonthl Httpsdiscord. CA Card -,-9.99,9092 Statement Oct 2021.pdf
+2021-11-02,Card Purchase 11/01 Af*Recreate Property 805-419-5568 CA Card -,-1209.99,9092 Statement Oct 2021.pdf
+2021-11-03,Card Purchase With Pin 11/03 Fairview Fuel D Goleta CA Card 5058 -,-40.00,9092 Statement Oct 2021.pdf
+2021-11-05,Card Purchase 11/04 Ucsb Univ Cntr Arb Q Santa Barbara CA Card -,-4.35,9092 Statement Oct 2021.pdf
+2021-11-08,Card Purchase 11/05 IN N Out Burger 108 Goleta CA Card 5058 -,-9.59,9092 Statement Oct 2021.pdf
+2021-11-08,Card Purchase 11/07 Uber* Eats Httpswww.Uber CA Card 5058 -,-19.07,9092 Statement Oct 2021.pdf
+2021-11-08,Card Purchase 11/07 Uber Eats Help.Uber.Com CA Card 5058 -,-3.00,9092 Statement Oct 2021.pdf
+2021-11-08,Card Purchase 11/08 Uber Eats Help.Uber.Com CA Card 5058 -,-13.65,9092 Statement Oct 2021.pdf
+2021-11-08,Card Purchase 11/08 Uber Eats Help.Uber.Com CA Card 5058 -,-3.00,9092 Statement Oct 2021.pdf
+2021-11-12,Card Purchase 11/11 Carls Jr 1100427 Goleta CA Card 5058 -,-13.66,9092 Statement Oct 2021.pdf
+2021-11-12,Card Purchase With Pin 11/11 Chevron/Csi-093005/186 Carpinteria CA -,-45.29,9092 Statement Oct 2021.pdf
+2021-11-15,Card Purchase 11/15 Gong Cha Cerritos Cerritos CA Card 5058 -,-6.75,9092 Statement Oct 2021.pdf
+2021-11-15,Card Purchase With Pin 11/14 Chevron/Sigma Petroleu Cerritos CA Card -,-40.00,9092 Statement Oct 2021.pdf
+2021-11-16,Card Purchase 11/15 Ucsb Univ Cntr Arb Q Santa Barbara CA Card -,-5.55,9092 Statement Oct 2021.pdf
+2021-11-17,Card Purchase 11/17 Domino's 7816 805-564-4303 CA Card 5058 -,-10.42,9092 Statement Nov 2021.pdf
+2021-11-18,Card Purchase 11/17 Ucsb Univ Cntr Arb Q Santa Barbara CA Card -,-5.75,9092 Statement Nov 2021.pdf
+2021-11-19,Card Purchase 11/18 Sp * Customenvy.Com Www.Putacaseo OH -,-31.98,9092 Statement Nov 2021.pdf
+2021-11-22,Card Purchase 11/19 Mihoyo Limited Hong Kong Card 5058 -,-4.99,9092 Statement Nov 2021.pdf
+2021-11-22,Card Purchase 11/20 Domino's 7816 805-564-4303 CA Card 5058 -,-20.41,9092 Statement Nov 2021.pdf
+2021-11-22,Card Purchase 11/20 Ops* Coinmach Sunnysi 516-349-8555 NY -,-50.00,9092 Statement Nov 2021.pdf
+2021-11-24,Card Purchase With Pin 11/24 Stop & Shop Santa Barbara CA Card 5058 -,-40.00,9092 Statement Nov 2021.pdf
+2021-11-26,Card Purchase 11/24 Chick-Fil-A #04524 Yucaipa CA Card 5058 -,-9.36,9092 Statement Nov 2021.pdf
+2021-11-26,Card Purchase With Pin 11/25 Walgreens Store 60 N H Banning CA Card -,-7.26,9092 Statement Nov 2021.pdf
+2021-11-29,Card Purchase 11/28 IN N Out Burger 355 Beaumont CA Card 5058 -,-7.33,9092 Statement Nov 2021.pdf
+2021-11-29,Recurring Card Purchase 11/28 Discord* Nitromonthl Httpsdiscord. CA Card -,-9.99,9092 Statement Nov 2021.pdf
+2021-12-02,Recurring Card Purchase 12/01 Af*Recreate Property 805-419-5568 CA -,-1209.99,9092 Statement Nov 2021.pdf
+2021-12-14,Card Purchase 12/14 Ucsb Tps Ecomm Sales 805-893-4258 CA Card -,-48.00,9092 Statement Nov 2021.pdf
+2022-01-04,Card Purchase 01/04 Awl*Pearson Education Prsoncs.Com NJ Card -,-74.99,9092 Statement Jan 2022.pdf
+2022-02-16,Card Purchase 02/15 Ucsb Univ Cntr Arb Q Santa Barbara CA Card -,-0.34,9092 Statement Feb 2022.pdf
+2022-02-17,Card Purchase 02/17 Dd Doordash Chick-Fil 855-973-1040 CA Card -,-22.64,9092 Statement Feb 2022.pdf
+2022-02-22,Card Purchase 02/20 Dd Doordash Chick-Fil 855-973-1040 CA Card -,-22.45,9092 Statement Feb 2022.pdf
+2022-02-22,Card Purchase 02/22 Dd Doordash Eureka 855-973-1040 CA Card -,-17.87,9092 Statement Feb 2022.pdf
+2022-02-23,Card Purchase 02/23 Dd Doordash Chick-Fil 855-973-1040 CA Card -,-18.05,9092 Statement Feb 2022.pdf
+2022-02-24,Card Purchase 02/24 Dd Doordash Hanakitch 855-973-1040 CA Card -,-15.87,9092 Statement Feb 2022.pdf
+2022-02-28,Card Purchase 02/28 Dd Doordash Galangath 855-973-1040 CA -,-17.87,9092 Statement Feb 2022.pdf
+2022-02-28,Card Purchase 02/26 Dd Doordash Chick-Fil 855-973-1040 CA Card -,-16.48,9092 Statement Feb 2022.pdf
+2022-02-28,Card Purchase 02/27 Dd Doordash Galangath 855-973-1040 CA -,-17.87,9092 Statement Feb 2022.pdf
+2022-03-02,Recurring Card Purchase 03/01 Af*Recreate Property 805-765-1335 CA -,-1209.99,9092 Statement Feb 2022.pdf
+2022-03-04,Card Purchase 03/03 Dd Doordash Eureka 855-973-1040 CA Card -,-21.62,9092 Statement Feb 2022.pdf
+2022-03-04,Card Purchase 03/04 Dd Doordash Hanakitch 855-973-1040 CA Card -,-16.31,9092 Statement Feb 2022.pdf
+2022-03-07,Card Purchase 03/05 Dd Doordash Hanakitch 855-973-1040 CA Card -,-15.88,9092 Statement Feb 2022.pdf
+2022-03-07,Card Purchase 03/05 Dd Doordash Hanakitch 855-973-1040 CA Card -,-9.24,9092 Statement Feb 2022.pdf
+2022-03-07,Card Purchase 03/06 Dd Doordash Hanakitch 855-973-1040 CA Card -,-15.65,9092 Statement Feb 2022.pdf
+2022-03-07,Card Purchase 03/06 Dd Doordash Hanakitch 855-973-1040 CA Card -,-15.53,9092 Statement Feb 2022.pdf
+2022-03-08,Card Purchase With Pin 03/08 World Oil #104 Goleta CA Card 5058 -,-50.00,9092 Statement Feb 2022.pdf
+2022-03-08,Card Purchase 03/07 Uber Eats Help.Uber.Com CA Card 5058 -,-5.65,9092 Statement Feb 2022.pdf
+2022-03-08,Card Purchase 03/07 Uber Eats Help.Uber.Com CA Card 5058 -,-2.00,9092 Statement Feb 2022.pdf
+2022-03-08,Card Purchase 03/08 Dd Doordash Hanakitch 855-973-1040 CA Card -,-15.65,9092 Statement Feb 2022.pdf
+2022-03-09,Card Purchase 03/09 Dd Doordash Hanakitch 855-973-1040 CA Card -,-15.65,9092 Statement Feb 2022.pdf
+2022-03-09,Recurring Card Purchase 03/09 Doordash Dashpass Www.Doordash. CA -,-9.99,9092 Statement Feb 2022.pdf
+2022-03-10,Card Purchase 03/10 Dd Doordash Hanakitch 855-973-1040 CA Card -,-15.65,9092 Statement Feb 2022.pdf
+2022-03-10,Card Purchase 03/10 Dd Doordash Chick-Fil 855-973-1040 CA Card -,-16.43,9092 Statement Feb 2022.pdf
+2022-03-14,Card Purchase 03/14 Dd Doordash Rudysmexi 855-973-1040 CA -,-13.85,9092 Statement Feb 2022.pdf
+2022-03-14,Card Purchase 03/12 Dd Doordash Rudysmexi 855-973-1040 CA -,-15.65,9092 Statement Feb 2022.pdf
+2022-03-14,Card Purchase 03/13 Dd Doordash Rudysmexi 855-973-1040 CA -,-15.65,9092 Statement Feb 2022.pdf
+2022-03-15,Card Purchase 03/15 Dd Doordash Chick-Fil 855-973-1040 CA Card -,-16.43,9092 Statement Feb 2022.pdf
+2022-03-15,Card Purchase 03/15 Dd Doordash Rudysmexi 855-973-1040 CA -,-13.85,9092 Statement Feb 2022.pdf
+2022-03-16,Card Purchase 03/16 Dd Doordash Eureka 855-973-1040 CA Card -,-21.62,9092 Statement Mar 2022.pdf
+2022-03-16,Card Purchase 03/16 Dd Doordash Galangath 855-973-1040 CA -,-17.87,9092 Statement Mar 2022.pdf
+2022-03-17,Card Purchase 03/16 Parchment-Univ Docs 480-719-1646 AZ Card -,-16.00,9092 Statement Mar 2022.pdf
+2022-03-21,Card Purchase 03/19 MT. San Jacinto Colleg 951-4873040 CA Card -,-169.00,9092 Statement Mar 2022.pdf
+2022-03-28,Card Purchase With Pin 03/27 Best Buy 00014415 Beaumont CA Card -,-10.76,9092 Statement Mar 2022.pdf
+2022-04-06,Recurring Card Purchase 04/06 Uber Pass Help.Uber.Com CA Card 5058 -,-9.99,9092 Statement Mar 2022.pdf
+2022-04-08,Card Purchase 04/08 Dd Doordash Wendys 855-973-1040 CA Card -,-18.82,9092 Statement Mar 2022.pdf
+2022-04-11,Card Purchase Return 04/10 Best Buy 00014415 Beaumont CA Card,10.76,9092 Statement Mar 2022.pdf
+2022-04-11,Card Purchase 04/11 Dd Doordash Wendys 855-973-1040 CA Card -,-18.82,9092 Statement Mar 2022.pdf
+2022-04-11,Recurring Card Purchase 04/09 Doordash Dashpass Www.Doordash. CA -,-9.99,9092 Statement Mar 2022.pdf
+2022-04-15,Card Purchase 04/14 Laptop Masters Upland CA Card 5058 -,-123.10,9092 Statement Mar 2022.pdf
+2022-04-25,Card Purchase 04/23 Steamgames.Com 4259522 425-8899642 WA -,-9.99,9092 Statement Apr 2022.pdf
+2022-04-26,Card Purchase 04/25 Domino's 8431 951-769-5777 CA Card 5058 -,-19.96,9092 Statement Apr 2022.pdf
+2022-05-09,Recurring Card Purchase 05/07 Uber Pass Help.Uber.Com CA Card 5058 -,-9.99,9092 Statement Apr 2022.pdf
+2022-05-09,Recurring Card Purchase 05/09 Doordash Dashpass Www.Doordash. CA -,-9.99,9092 Statement Apr 2022.pdf
+2022-05-11,Remote Online Deposit 1,1091.85,9092 Statement Apr 2022.pdf
+2022-05-12,Card Purchase 05/11 Resume-Now.Com 844-351-7484 Card 5058 -,-2.85,9092 Statement Apr 2022.pdf
+2022-05-17,Card Purchase 05/17 Dd Doordash Jackinthe 855-973-1040 CA Card -,-15.67,9092 Statement May 2022.pdf
+2022-05-17,Card Purchase 05/16 Domino's 8431 951-769-5777 CA Card 5058 -,-18.11,9092 Statement May 2022.pdf
+2022-05-18,Card Purchase 05/17 MT. San Jacinto Colleg 951-4873040 CA Card -,-437.00,9092 Statement May 2022.pdf
+2022-05-27,Card Purchase 05/26 Resume-Now.Com 844-351-7484 Card 5058 -,-23.85,9092 Statement May 2022.pdf
+2022-05-27,Card Purchase 05/26 East Wall Chinese Resta Beaumont CA Card -,-51.96,9092 Statement May 2022.pdf
+2022-06-03,Card Purchase 06/03 Dd Doordash Burgerkin 855-973-1040 CA Card -,-16.65,9092 Statement May 2022.pdf
+2022-06-06,Card Purchase With Pin 06/06 Shell Service Station Murrieta CA Card 5058 -,-53.20,9092 Statement May 2022.pdf
+2022-06-08,Card Purchase 06/07 Domino's 8431 951-769-5777 CA Card 5058 -,-9.38,9092 Statement May 2022.pdf
+2022-06-09,Recurring Card Purchase 06/09 Doordash Dashpass Www.Doordash. CA -,-9.99,9092 Statement May 2022.pdf
+2022-06-13,Card Purchase 06/12 Zybook College Txtbo Httpswww.Zybo CA Card -,-58.00,9092 Statement May 2022.pdf
+2022-07-22,Card Purchase 07/21 Resume-Now.Com 844-351-7484 Card 5058 -,-23.85,9092 Statement Jul 2022.pdf
+2022-07-25,Card Purchase 07/24 Chegg Order 855-440-1323 CA Card 5058 -,-15.95,9092 Statement Jul 2022.pdf
+2022-07-28,Card Purchase 07/28 Dd Doordash Kfc 855-973-1040 CA Card 5058 -,-18.05,9092 Statement Jul 2022.pdf
+2022-08-03,Card Purchase 08/03 Dd Doordash Burgerkin 855-973-1040 CA Card -,-17.10,9092 Statement Jul 2022.pdf
+2022-08-05,Card Purchase 08/04 MT. San Jacinto Colleg 951-4873040 CA Card -,-316.00,9092 Statement Jul 2022.pdf
+2022-08-05,Card Purchase 08/05 Dd Doordash Kfc 855-973-1040 CA Card 5058 -,-17.55,9092 Statement Jul 2022.pdf
+2022-08-09,Recurring Card Purchase 08/09 Doordash Dashpass Www.Doordash. CA -,-9.99,9092 Statement Jul 2022.pdf
+2022-08-11,Card Purchase 08/11 Dd Doordash Kfc 855-973-1040 CA Card 5058 -,-17.55,9092 Statement Jul 2022.pdf
+2022-08-12,Card Purchase 08/12 Dd Doordash Kfc 855-973-1040 CA Card 5058 -,-17.55,9092 Statement Jul 2022.pdf
+2022-08-17,Card Purchase With Pin 08/17 Wal-Mart #5156 Beaumont CA Card 5058 -,-52.68,9092 Statement Aug 2022.pdf
+2022-08-17,Card Purchase With Pin 08/17 Wal-Mart #5156 Beaumont CA Card 5058 -,-13.74,9092 Statement Aug 2022.pdf
+2022-08-19,Card Purchase 08/18 Resume-Now.Com 844-351-7484 Card 5058 -,-23.85,9092 Statement Aug 2022.pdf
+2022-08-23,Recurring Card Purchase 08/23 Chegg Order 855-440-1323 CA Card 5058 -,-4.95,9092 Statement Aug 2022.pdf
+2022-08-24,Card Purchase 08/23 Bnc Services 800-325-3252 MO Card 5058 -,-31.84,9092 Statement Aug 2022.pdf
+2022-08-25,Card Purchase 08/24 MT. San Jacinto Colleg 951-4873040 CA Card -,-138.00,9092 Statement Aug 2022.pdf
+2022-08-30,Card Purchase With Pin 08/30 Wal-Mart #5156 Beaumont CA Card 5058 -,-8.76,9092 Statement Aug 2022.pdf
+2022-08-30,Card Purchase With Pin 08/30 Staterbro 1661 E 6th S Beaumont CA Card -,-2.62,9092 Statement Aug 2022.pdf
+2022-09-01,Card Purchase 09/01 Steam Purchase 425-9522985 WA Card 5058 -,-19.99,9092 Statement Aug 2022.pdf
+2022-09-02,Card Purchase 09/01 MT. San Jacinto Colleg 951-4873040 CA Card -,-138.00,9092 Statement Aug 2022.pdf
+2022-09-06,Card Purchase 09/03 IN N Out Burger 355 Beaumont CA Card 5058 -,-9.75,9092 Statement Aug 2022.pdf
+2022-09-07,Card Purchase 09/07 Dd Doordash Fiveguysb 855-973-1040 CA Card -,-24.82,9092 Statement Aug 2022.pdf
+2022-09-08,Card Purchase 09/06 IN N Out Burger 355 Beaumont CA Card 5058 -,-9.75,9092 Statement Aug 2022.pdf
+2022-09-09,Recurring Card Purchase 09/09 Doordash Dashpass Www.Doordash. CA -,-9.99,9092 Statement Aug 2022.pdf
+2022-09-12,Card Purchase 09/10 Dd Doordash Panerabre 855-973-1040 CA -,-15.30,9092 Statement Aug 2022.pdf
+2022-09-12,Card Purchase 09/10 Dd Doordash Popeyes 855-973-1040 CA Card -,-17.72,9092 Statement Aug 2022.pdf
+2022-09-16,Card Purchase 09/15 Resume-Now.Com 844-351-7484 Card 5058 -,-23.85,9092 Statement Aug 2022.pdf
+2022-09-16,Monthly Service Fee -,-12.00,9092 Statement Aug 2022.pdf
+2022-09-19,Payment Sent 09/16 Apple Cash 1Infiniteloop CA Card 5058 -,-20.00,9092 Statement Sep 2022.pdf
+2022-09-23,Recurring Card Purchase 09/23 Chegg Order 855-440-1323 CA Card 5058 -,-15.95,9092 Statement Sep 2022.pdf
+2022-09-26,Card Purchase 09/23 IN N Out Burger 355 Beaumont CA Card 5058 -,-9.75,9092 Statement Sep 2022.pdf
+2022-09-26,Card Purchase 09/23 Sugoi Sushi Beaumont CA Card 5058 -,-18.26,9092 Statement Sep 2022.pdf
+2022-09-26,Card Purchase 09/24 Tst* Domenicos - Beaumo Beaumont CA Card -,-18.26,9092 Statement Sep 2022.pdf
+2022-09-27,Card Purchase With Pin 09/27 Big 5 Sporting Goods 4 Banning CA Card -,-26.93,9092 Statement Sep 2022.pdf
+2022-09-27,Card Purchase With Pin 09/27 Wm Superc Wal-Mart Sup Beaumont CA -,-4.48,9092 Statement Sep 2022.pdf
+2022-09-29,Card Purchase With Pin 09/29 Wm Superc Wal-Mart Sup Beaumont CA -,-7.96,9092 Statement Sep 2022.pdf
+2022-09-29,Card Purchase With Pin 09/29 Petco 1171 Beaumont CA Card 5058 -,-53.09,9092 Statement Sep 2022.pdf
+2022-10-11,Recurring Card Purchase 10/09 Doordash Dashpass Www.Doordash. CA -,-9.99,9092 Statement Sep 2022.pdf
+2022-10-11,Card Purchase With Pin 10/11 Wal-Mart Super Center Beaumont CA Card -,-21.81,9092 Statement Sep 2022.pdf
+2022-10-11,Card Purchase 10/10 Tst* Domenicos - Beaumo Beaumont CA Card -,-18.26,9092 Statement Sep 2022.pdf
+2022-10-11,Card Purchase 10/09 Cognosphere Pte. Ltd Singapore Card 5058 -,-9.99,9092 Statement Sep 2022.pdf
+2022-10-14,Card Purchase 10/13 Resume-Now.Com 844-351-7484 Card 5058 -,-23.85,9092 Statement Sep 2022.pdf
+2022-10-18,Monthly Service Fee -,-12.00,9092 Statement Sep 2022.pdf
+2022-10-19,Card Purchase 10/19 Dd Doordash Domenicos 855-973-1040 CA -,-22.11,9092 Statement Oct 2022.pdf
+2022-10-19,Card Purchase 10/17 IN N Out Burger 355 Beaumont CA Card 5058 -,-9.75,9092 Statement Oct 2022.pdf
+2022-10-20,Card Purchase With Pin 10/19 Wal-Mart #5156 Beaumont CA Card 5058 -,-21.35,9092 Statement Oct 2022.pdf
+2022-10-21,Card Purchase 10/20 Parchment-Univ Docs 480-719-1646 AZ Card -,-4.15,9092 Statement Oct 2022.pdf
+2022-10-24,Card Purchase 10/22 Dd Doordash Domenicos 855-973-1040 CA -,-22.11,9092 Statement Oct 2022.pdf
+2022-10-24,Recurring Card Purchase 10/23 Chegg Order 855-440-1323 CA Card 5058 -,-15.95,9092 Statement Oct 2022.pdf
+2022-11-01,Card Purchase 10/30 IN N Out Burger 355 Beaumont CA Card 5058 -,-9.75,9092 Statement Oct 2022.pdf
+2022-11-04,"Card Purchase 11/03 Univ CA, Santa Barb On 800-3398131 CA Card -",-53.00,9092 Statement Oct 2022.pdf
+2022-11-04,"Card Purchase 11/03 Univ CA, Santa Barb On 800-3398131 CA Card -",-1.46,9092 Statement Oct 2022.pdf
+2022-11-14,Card Purchase 11/10 Resume-Now.Com 844-351-7484 Card 5058 -,-23.85,9092 Statement Oct 2022.pdf
+2022-11-14,Card Purchase Return 11/14 Chegg Order 855-868-1054 CA Card 5058,15.95,9092 Statement Oct 2022.pdf
+2022-11-16,Monthly Service Fee -,-12.00,9092 Statement Oct 2022.pdf
+2022-12-01,Card Purchase 12/01 Univ Cal Undergrad Ad 800-207-1710 CA Card -,-280.00,9092 Statement Nov 2022.pdf
+2022-12-05,Card Purchase 12/04 Paypal *Mtsanjacint 951-487-3172 CA Card -,-6.12,9092 Statement Nov 2022.pdf
+2022-12-05,Card Purchase 12/04 Pp*Apple.Com/Bill 402-935-7733 CA Card 5058 -,-2.99,9092 Statement Nov 2022.pdf
+2022-12-08,Online Transfer From Chk ...3122 Transaction#: 15989757960,3000.00,9092 Statement Nov 2022.pdf
+2022-12-09,Card Purchase 12/09 Dd Doordash Kfc 855-973-1040 CA Card 5058 -,-23.35,9092 Statement Nov 2022.pdf
+2022-12-09,Card Purchase 12/08 MT. San Jacinto Colleg 951-4873040 CA Card -,-546.00,9092 Statement Nov 2022.pdf
+2022-12-13,Card Purchase 12/12 MT. San Jacinto Colleg 951-4873040 CA Card -,-138.00,9092 Statement Nov 2022.pdf
+2022-12-14,Card Purchase 12/14 Dd Doordash Kfc 855-973-1040 CA Card 5058 -,-23.35,9092 Statement Nov 2022.pdf
+2022-12-15,Monthly Service Fee -,-12.00,9092 Statement Nov 2022.pdf
+2022-12-24,"Card Purchase 12/23 Univ CA, Santa Barb On 800-3398131 CA Card -",-1644.66,9092 Statement Jan 2022.pdf
+2022-12-24,"Card Purchase 12/23 Univ CA, Santa Barb On 800-3398131 CA Card -",-45.23,9092 Statement Jan 2022.pdf
+2022-12-29,Recurring Card Purchase 12/28 Discord* Nitromonthl Httpsdiscord. CA Card -,-9.99,9092 Statement Jan 2022.pdf
+2023-01-26,Card Purchase 01/25 MT. San Jacinto Colleg 951-4873040 CA Card -,-138.00,9092 Statement Jan 2023.pdf
+2023-01-30,Card Purchase With Pin 01/29 Wm Superc Wal-Mart Sup Beaumont CA -,-9.02,9092 Statement Jan 2023.pdf
+2023-01-30,Card Purchase 01/26 IN N Out Burger 355 Beaumont CA Card 5058 -,-10.29,9092 Statement Jan 2023.pdf
+2023-01-30,Card Purchase 01/28 Awl*Pearson Education Prsoncs.Com NJ Card -,-64.99,9092 Statement Jan 2023.pdf
+2023-02-01,Card Purchase With Pin 02/01 Shell Service Station Beaumont CA Card -,-43.70,9092 Statement Jan 2023.pdf
+2023-02-06,Recurring Card Purchase 02/05 Cko*Patreon* Membershi 833-9728766 CA -,-6.00,9092 Statement Jan 2023.pdf
+2023-02-06,Card Purchase 02/04 Pp*Apple.Com/Bill 402-935-7733 CA Card 5058 -,-2.99,9092 Statement Jan 2023.pdf
+2023-02-08,Card Purchase 02/08 Raising Cane's 470 Beaumont CA Card 5058 -,-18.16,9092 Statement Jan 2023.pdf
+2023-02-09,Card Purchase 02/09 Raising Cane's 470 Beaumont CA Card 5058 -,-18.16,9092 Statement Jan 2023.pdf
+2023-02-13,Card Purchase 02/12 Dd Doordash Domenicos 855-973-1040 CA -,-28.25,9092 Statement Jan 2023.pdf
+2023-02-15,Card Purchase With Pin 02/15 Tramway Fuel Palm Springs CA Card 5058 -,-45.00,9092 Statement Jan 2023.pdf
+2023-02-15,Monthly Service Fee -,-12.00,9092 Statement Jan 2023.pdf
+2023-02-17,Payment Sent 02/17 Cash App*Chaz 8774174551 CA Card 5058 -,-2.00,9092 Statement Feb 2023.pdf
+2023-02-21,Card Purchase 02/19 Microsoft*Store 425-6816830 WA Card 5058 -,-1.00,9092 Statement Feb 2023.pdf
+2023-02-21,Card Purchase Return 02/19 Microsoft*Store 425-6816830 WA Card 5058,4.99,9092 Statement Feb 2023.pdf
+2023-02-21,Card Purchase 02/19 Microsoft*Store 425-6816830 WA Card 5058 -,-4.99,9092 Statement Feb 2023.pdf
+2023-02-23,Card Purchase 02/22 Dd Doordash Popeyes 855-973-1040 CA Card -,-17.92,9092 Statement Feb 2023.pdf
+2023-02-23,Payment Sent 02/22 Cash App*Chaz 8774174551 CA Card 5058 -,-20.00,9092 Statement Feb 2023.pdf
+2023-02-27,Card Purchase With Pin 02/26 Wm Superc Wal-Mart Sup Beaumont CA -,-3.48,9092 Statement Feb 2023.pdf
+2023-02-27,Card Purchase 02/27 Dd Doordash Popeyes 855-973-1040 CA Card -,-17.92,9092 Statement Feb 2023.pdf
+2023-02-27,Card Purchase With Pin 02/26 Albertsons #351 Banning CA Card 5058 -,-5.99,9092 Statement Feb 2023.pdf
+2023-03-01,Card Purchase With Pin 03/01 Arco #42610 Hemet CA Card 5058 -,-50.35,9092 Statement Feb 2023.pdf
+2023-03-01,Card Purchase 03/01 Chegg Order 855-440-1323 CA Card 5058 -,-15.95,9092 Statement Feb 2023.pdf
+2023-03-02,Card Purchase 03/02 Raising Cane's 470 Beaumont CA Card 5058 -,-10.76,9092 Statement Feb 2023.pdf
+2023-03-03,Card Purchase With Pin 03/03 Wal-Mart #5156 Beaumont CA Card 5058 -,-29.58,9092 Statement Feb 2023.pdf
+2023-03-06,Card Purchase 03/04 Pp*Apple.Com/Bill 402-935-7733 CA Card 5058 -,-2.99,9092 Statement Feb 2023.pdf
+2023-03-09,Card Purchase 03/08 Carls Jr 1100605 Banning CA Card 5058 -,-12.91,9092 Statement Feb 2023.pdf
+2023-03-10,Card Purchase With Pin 03/10 Staterbro 1661 E 6th S Beaumont CA Card -,-2.78,9092 Statement Feb 2023.pdf
+2023-03-13,Recurring Card Purchase 03/10 Cko*Patreon* Membershi 833-9728766 CA -,-6.00,9092 Statement Feb 2023.pdf
+2023-03-15,Monthly Service Fee -,-12.00,9092 Statement Feb 2023.pdf
+2023-03-17,Card Purchase 03/17 Steam Purchase 425-9522985 WA Card 5058 -,-5.00,9092 Statement Mar 2023.pdf
+2023-03-17,Card Purchase 03/15 IN N Out Burger 355 Beaumont CA Card 5058 -,-5.55,9092 Statement Mar 2023.pdf
+2023-03-22,Card Purchase With Pin 03/22 Arco #42405 Ampm Beaumont CA Card -,-50.35,9092 Statement Mar 2023.pdf
+2023-03-22,Card Purchase 03/21 Domino's 8431 951-769-5777 CA Card 5058 -,-22.40,9092 Statement Mar 2023.pdf
+2023-03-23,Card Purchase 03/22 Carls Jr 1100605 Banning CA Card 5058 -,-8.07,9092 Statement Mar 2023.pdf
+2023-03-27,Card Purchase 03/26 Domino's 8431 951-769-5777 CA Card 5058 -,-18.09,9092 Statement Mar 2023.pdf
+2023-03-28,Recurring Card Purchase 03/28 Chegg Order 855-440-1323 CA Card 5058 -,-15.95,9092 Statement Mar 2023.pdf
+2023-03-29,Card Purchase 03/29 Dd Doordash Popeyes 855-973-1040 CA Card -,-18.92,9092 Statement Mar 2023.pdf
+2023-04-03,Card Purchase 03/31 Domino's 8431 951-769-5777 CA Card 5058 -,-21.17,9092 Statement Mar 2023.pdf
+2023-04-06,Card Purchase 04/05 Pp*Apple.Com/Bill 402-935-7733 CA Card 5058 -,-2.99,9092 Statement Mar 2023.pdf
+2023-04-06,Card Purchase With Pin 04/05 Albertsons #351 Banning CA Card 5058 -,-9.98,9092 Statement Mar 2023.pdf
+2023-04-07,Card Purchase 04/06 Permit/Citation Prkgs 805-562-8200 CA Card -,-35.00,9092 Statement Mar 2023.pdf
+2023-04-07,Card Purchase 04/06 Permit/Citation Prkgs 805-562-8200 CA Card -,-34.00,9092 Statement Mar 2023.pdf
+2023-04-10,Card Purchase 04/10 Dd Doordash Themeltdo 855-973-1040 CA -,-35.90,9092 Statement Mar 2023.pdf
+2023-04-14,Card Purchase With Pin 04/14 Arco #42405 Ampm Beaumont CA Card -,-49.16,9092 Statement Mar 2023.pdf
+2023-04-17,Monthly Service Fee -,-12.00,9092 Statement Mar 2023.pdf
+2023-04-18,Card Purchase 04/17 Coding Dojo Inc. Httpswww.Codi CA Card 5058 -,-141.50,9092 Statement Apr 2023.pdf
+2023-04-19,Online Transfer From Sav ...2257 Transaction#: 17132821902,6000.00,9092 Statement Apr 2023.pdf
+2023-04-19,Card Purchase 04/17 Cg Laundry Towson Univ 804-7846100 MD -,-10.00,9092 Statement Apr 2023.pdf
+2023-04-28,Card Purchase 04/27 Domino's 8431 951-769-5777 CA Card 5058 -,-22.40,9092 Statement Apr 2023.pdf
+2023-04-28,Recurring Card Purchase 04/28 Chegg Order 855-440-1323 CA Card 5058 -,-15.95,9092 Statement Apr 2023.pdf
+2023-05-04,Card Purchase 05/04 Dd Doordash Domenicos 855-973-1040 CA -,-27.25,9092 Statement Apr 2023.pdf
+2023-05-04,Card Purchase 05/03 Numerade 833-6863723 CA Card 5058 -,-6.99,9092 Statement Apr 2023.pdf
+2023-05-04,Card Purchase 05/04 Pp*Apple.Com/Bill 402-935-7733 CA Card 5058 -,-2.99,9092 Statement Apr 2023.pdf
+2023-05-09,Card Purchase 05/08 Domino's 8431 951-769-5777 CA Card 5058 -,-23.38,9092 Statement Apr 2023.pdf
+2023-05-10,Card Purchase 05/10 Dd Doordash Popeyeslo 855-973-1040 CA -,-17.57,9092 Statement Apr 2023.pdf
+2023-05-11,Card Purchase 05/10 Raising Canes 0470 Beaumont CA Card 5058 -,-10.76,9092 Statement Apr 2023.pdf
+2023-05-15,Card Purchase 05/15 Dd Doordash Popeyeslo 855-973-1040 CA -,-16.58,9092 Statement Apr 2023.pdf
+2023-05-15,Card Purchase 05/12 Domino's 8431 951-769-5777 CA Card 5058 -,-11.18,9092 Statement Apr 2023.pdf
+2023-05-15,Card Purchase 05/15 Pp*Apple.Com/Bill 402-935-7733 CA Card 5058 -,-4.99,9092 Statement Apr 2023.pdf
+2023-05-15,Card Purchase With Pin 05/15 Petco 1171 Beaumont CA Card 5058 -,-27.94,9092 Statement Apr 2023.pdf
+2023-06-20,Card Purchase With Pin 06/17 Wm Superc Wal-Mart Sup Beaumont CA -,-81.24,9092 Statement Jun 2023.pdf
+2023-07-03,Card Purchase 07/01 Dd Doordash Popeyeslo 855-973-1040 CA -,-18.77,9092 Statement Jun 2023.pdf
+2023-07-03,Card Purchase 07/02 Dd Doordash Tacobell 855-973-1040 CA Card -,-16.55,9092 Statement Jun 2023.pdf
+2023-07-05,Card Purchase 07/05 Dd Doordash Popeyeslo 855-973-1040 CA -,-18.77,9092 Statement Jun 2023.pdf
+2023-07-05,Card Purchase 07/04 Pp*Apple.Com/Bill 402-935-7733 CA Card 5058 -,-2.99,9092 Statement Jun 2023.pdf
+2023-07-05,Card Purchase 07/04 Dd Doordash Tacobell 855-973-1040 CA Card -,-15.74,9092 Statement Jun 2023.pdf
+2023-07-05,Recurring Card Purchase 07/05 Doordash Dashpass Www.Doordash. CA -,-4.99,9092 Statement Jun 2023.pdf
+2023-07-07,Online Transfer From Chk ...3122 Transaction#: 17828436724,5000.00,9092 Statement Jun 2023.pdf
+2023-07-10,Mia Share Mia Share I9Xj844Gw Web ID: 945440567 -,-3847.75,9092 Statement Jun 2023.pdf
+2023-07-12,Recurring Card Purchase 07/12 Doordash Dashpass Www.Doordash. CA -,-96.00,9092 Statement Jun 2023.pdf
+2023-07-12,Card Purchase 07/12 Shockbyte Pty Ltd 0423137366 Card 5058 -,-10.00,9092 Statement Jun 2023.pdf
+2023-07-12,Card Purchase 07/12 Dd Doordash Popeyeslo 855-973-1040 CA -,-18.77,9092 Statement Jun 2023.pdf
+2023-07-13,Card Purchase 07/13 Dd Doordash Albertosm 855-973-1040 CA Card -,-21.65,9092 Statement Jun 2023.pdf
+2023-07-14,Card Purchase 07/14 Dd Doordash Domenicos 855-973-1040 CA -,-24.38,9092 Statement Jun 2023.pdf
+2023-07-17,Card Purchase 07/16 Dd Doordash Domenicos 855-973-1040 CA -,-24.38,9092 Statement Jun 2023.pdf
+2023-07-17,Card Purchase 07/15 Dd Doordash Albertosm 855-973-1040 CA Card -,-20.53,9092 Statement Jun 2023.pdf
+2023-07-17,Card Purchase 07/15 Dd Doordash Wingstop 855-973-1040 CA Card -,-19.58,9092 Statement Jun 2023.pdf
+2023-07-17,Card Purchase 07/17 Dd Doordash Onohawaii 855-973-1040 CA -,-22.16,9092 Statement Jun 2023.pdf
+2023-07-18,Card Purchase 07/18 Doordash*Albertos ME Www.Doordash. CA -,-21.53,9092 Statement Jun 2023.pdf
+2023-07-19,Card Purchase 07/19 Dd Doordash Popeyeslo 855-973-1040 CA -,-16.57,9092 Statement Jul 2023.pdf
+2023-07-20,Card Purchase 07/20 Dd Doordash Popeyeslo 855-973-1040 CA -,-16.57,9092 Statement Jul 2023.pdf
+2023-07-21,Card Purchase 07/20 Xsolla *Voicemod Xsolla.Com CA Card 5058 -,-36.00,9092 Statement Jul 2023.pdf
+2023-07-24,Card Purchase 07/24 Dd Doordash Domenicos 855-973-1040 CA -,-34.19,9092 Statement Jul 2023.pdf
+2023-07-31,Card Purchase 07/30 Dd Doordash Albertosm 855-973-1040 CA Card -,-17.15,9092 Statement Jul 2023.pdf
+2023-08-04,Card Purchase 08/04 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Jul 2023.pdf
+2023-08-04,Card Purchase 08/04 Dd Doordash Wingstop 855-973-1040 CA Card -,-19.63,9092 Statement Jul 2023.pdf
+2023-08-07,Card Purchase With Pin 08/06 Albertsons #351 Banning CA Card 5058 -,-13.97,9092 Statement Jul 2023.pdf
+2023-08-07,Online Transfer From Sav ...2257 Transaction#: 18105102458,8000.00,9092 Statement Jul 2023.pdf
+2023-08-07,Card Purchase With Pin 08/06 Petco 1171 Beaumont CA Card 5058 -,-47.88,9092 Statement Jul 2023.pdf
+2023-08-07,Card Purchase With Pin 08/06 Wm Superc Wal-Mart Sup Beaumont CA -,-14.14,9092 Statement Jul 2023.pdf
+2023-08-08,Card Purchase 08/07 Raising Canes 0470 Beaumont CA Card 5058 -,-18.58,9092 Statement Jul 2023.pdf
+2023-08-08,Mia Share Mia Share IV8Jygren Web ID: 945440567 -,-3847.75,9092 Statement Jul 2023.pdf
+2023-08-09,Card Purchase 08/09 Dd Doordash Onohawaii 855-973-1040 CA -,-37.69,9092 Statement Jul 2023.pdf
+2023-08-09,Card Purchase 08/09 Dd Doordash Wingstop 855-973-1040 CA Card -,-18.71,9092 Statement Jul 2023.pdf
+2023-08-09,Card Purchase With Pin 08/09 Wal-Mart #5156 Beaumont CA Card 5058 -,-59.10,9092 Statement Jul 2023.pdf
+2023-08-10,Card Purchase 08/09 Sq *California Skin Ins Beaumont CA Card -,-108.00,9092 Statement Jul 2023.pdf
+2023-08-10,Card Purchase 08/10 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Jul 2023.pdf
+2023-08-11,Card Purchase 08/10 Raising Canes 0470 Beaumont CA Card 5058 -,-12.68,9092 Statement Jul 2023.pdf
+2023-08-14,Card Purchase 08/13 Dd Doordash Popeyeslo 855-973-1040 CA -,-20.49,9092 Statement Jul 2023.pdf
+2023-08-14,Card Purchase 08/12 Dd Doordash Popeyeslo 855-973-1040 CA -,-16.78,9092 Statement Jul 2023.pdf
+2023-08-14,Card Purchase 08/14 Dd Doordash Gusjrno7 855-973-1040 CA Card -,-17.66,9092 Statement Jul 2023.pdf
+2023-08-16,Card Purchase 08/16 Dd Doordash Gusjrno7 855-973-1040 CA Card -,-17.66,9092 Statement Aug 2023.pdf
+2023-08-16,Card Purchase 08/16 Dd Doordash Mcdonalds 855-973-1040 CA -,-18.26,9092 Statement Aug 2023.pdf
+2023-08-18,Card Purchase 08/18 Dd Doordash Mcdonalds 855-973-1040 CA -,-17.03,9092 Statement Aug 2023.pdf
+2023-08-21,Card Purchase 08/19 Dd Doordash Wingstop 855-973-1040 CA Card -,-18.71,9092 Statement Aug 2023.pdf
+2023-08-21,Card Purchase 08/18 Dd Doordash Mcdonalds 855-973-1040 CA -,-18.26,9092 Statement Aug 2023.pdf
+2023-08-22,Card Purchase 08/22 Dd Doordash Toplittle 855-973-1040 CA Card -,-18.76,9092 Statement Aug 2023.pdf
+2023-08-23,Card Purchase 08/22 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Aug 2023.pdf
+2023-08-24,Card Purchase 08/22 IN N Out Burger 355 Beaumont CA Card 5058 -,-10.29,9092 Statement Aug 2023.pdf
+2023-08-25,Card Purchase 08/23 IN N Out Burger 355 Beaumont CA Card 5058 -,-10.29,9092 Statement Aug 2023.pdf
+2023-08-29,Card Purchase 08/29 Dd Doordash Mcdonalds 855-973-1040 CA -,-18.26,9092 Statement Aug 2023.pdf
+2023-09-06,Card Purchase 09/06 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Aug 2023.pdf
+2023-09-07,Card Purchase 09/07 Dd Doordash Albertosm 855-973-1040 CA Card -,-18.15,9092 Statement Aug 2023.pdf
+2023-09-08,Mia Share Mia Share I9X9Vkgy7 Web ID: 945440567 -,-3847.75,9092 Statement Aug 2023.pdf
+2023-09-11,Card Purchase 09/11 Dd Doordash Wingstop 855-973-1040 CA Card -,-18.71,9092 Statement Aug 2023.pdf
+2023-09-13,Card Purchase 09/13 Dd Doordash Wingstop 855-973-1040 CA Card -,-18.71,9092 Statement Aug 2023.pdf
+2023-09-13,Card Purchase With Pin 09/13 Wm Superc Wal-Mart Sup Beaumont CA -,-47.38,9092 Statement Aug 2023.pdf
+2023-09-18,Card Purchase 09/18 Dd Doordash Popeyeslo 855-973-1040 CA -,-17.47,9092 Statement Aug 2023.pdf
+2023-09-18,Card Purchase 09/18 Wl *Steam Purchase 425-9522985 WA Card -,-9.99,9092 Statement Aug 2023.pdf
+2023-09-18,Card Purchase 09/15 Dd Doordash Wingstop 855-973-1040 CA Card -,-18.71,9092 Statement Aug 2023.pdf
+2023-09-18,Card Purchase 09/16 Dd Doordash Popeyeslo 855-973-1040 CA -,-17.47,9092 Statement Aug 2023.pdf
+2023-09-20,Card Purchase 09/20 Dd Doordash Domenicos 855-973-1040 CA -,-24.38,9092 Statement Sep 2023.pdf
+2023-09-22,Card Purchase 09/22 Dd Doordash Domenicos 855-973-1040 CA -,-25.87,9092 Statement Sep 2023.pdf
+2023-09-22,Card Purchase 09/21 Dd Doordash Mcdonalds 855-973-1040 CA -,-18.26,9092 Statement Sep 2023.pdf
+2023-09-25,Card Purchase 09/23 Dd Doordash Wingstop 855-973-1040 CA Card -,-19.54,9092 Statement Sep 2023.pdf
+2023-09-28,Card Purchase With Pin 09/28 Arco #42405 Ampm Beaumont CA Card -,-54.65,9092 Statement Sep 2023.pdf
+2023-10-03,Card Purchase 10/02 Dd Doordash Wingstop 855-973-1040 CA Card -,-19.85,9092 Statement Sep 2023.pdf
+2023-10-06,Card Purchase 10/05 Dd Doordash Wingstop 855-973-1040 CA Card -,-21.36,9092 Statement Sep 2023.pdf
+2023-10-06,Card Purchase 10/06 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Sep 2023.pdf
+2023-10-10,Card Purchase 10/09 Hoyoverse Singapore Card 5058 -,-4.99,9092 Statement Sep 2023.pdf
+2023-10-10,Card Purchase 10/07 Dd Doordash Wingstop 855-973-1040 CA Card -,-19.85,9092 Statement Sep 2023.pdf
+2023-10-10,Card Purchase 10/08 Dd Doordash Popeyeslo 855-973-1040 CA -,-18.35,9092 Statement Sep 2023.pdf
+2023-10-12,Card Purchase With Pin 10/12 Arco #42405 Ampm Beaumont CA Card -,-59.16,9092 Statement Sep 2023.pdf
+2023-10-16,Card Purchase With Pin 10/15 Wal-Mart Super Center Beaumont CA Card -,-34.83,9092 Statement Sep 2023.pdf
+2023-10-16,Card Purchase 10/13 IN N Out Burger 355 Beaumont CA Card 5058 -,-10.29,9092 Statement Sep 2023.pdf
+2023-10-16,Card Purchase With Pin 10/15 Wm Superc Wal-Mart Sup Beaumont CA -,-16.36,9092 Statement Sep 2023.pdf
+2023-10-16,Card Purchase With Pin 10/15 Walgreens Store 60 N H Banning CA Card -,-7.33,9092 Statement Sep 2023.pdf
+2023-10-23,Card Purchase With Pin 10/23 Wm Superc Wal-Mart Sup Beaumont CA -,-8.72,9092 Statement Oct 2023.pdf
+2023-10-23,Card Purchase 10/20 Dd Doordash Popeyeslo 855-973-1040 CA -,-18.35,9092 Statement Oct 2023.pdf
+2023-10-23,Card Purchase 10/21 Dd Doordash Domenicos 855-973-1040 CA -,-25.00,9092 Statement Oct 2023.pdf
+2023-10-25,Card Purchase 10/25 Dd Doordash Wingstop 855-973-1040 CA Card -,-21.36,9092 Statement Oct 2023.pdf
+2023-10-30,Recurring Card Purchase 10/28 Chess.Com Chess.Com 800-3182827 CA -,-119.99,9092 Statement Oct 2023.pdf
+2023-11-01,Card Purchase Return 10/31 Chess.Com Chess.Com 800-3182827 CA,119.99,9092 Statement Oct 2023.pdf
+2023-11-06,Card Purchase With Pin 11/06 Petco 1171 Beaumont CA Card 5058 -,-45.88,9092 Statement Oct 2023.pdf
+2023-11-06,Card Purchase 11/06 Wl *Steam Purchase 425-9522985 WA Card -,-22.49,9092 Statement Oct 2023.pdf
+2023-11-06,Card Purchase 11/03 Dd Doordash Wingstop 855-973-1040 CA Card -,-19.85,9092 Statement Oct 2023.pdf
+2023-11-06,Card Purchase 11/06 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Oct 2023.pdf
+2023-11-06,Card Purchase 11/06 Dd Doordash Popeyeslo 855-973-1040 CA -,-18.93,9092 Statement Oct 2023.pdf
+2023-11-08,Card Purchase 11/07 Domino's 8431 951-769-5777 CA Card 5058 -,-23.38,9092 Statement Oct 2023.pdf
+2023-11-10,Card Purchase 11/08 Hoyoverse Singapore Card 5058 -,-4.99,9092 Statement Oct 2023.pdf
+2023-11-13,Card Purchase 11/12 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.97,9092 Statement Oct 2023.pdf
+2023-11-16,Card Purchase 11/16 Dd Doordash Wingstop 855-973-1040 CA Card -,-20.30,9092 Statement Nov 2023.pdf
+2023-11-17,Card Purchase 11/16 Dd Doordash Popeyeslo 855-973-1040 CA -,-18.93,9092 Statement Nov 2023.pdf
+2023-11-20,Card Purchase 11/17 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Nov 2023.pdf
+2023-11-20,Card Purchase 11/18 Dd Doordash Albertosm 855-973-1040 CA Card -,-5.44,9092 Statement Nov 2023.pdf
+2023-11-22,Card Purchase 11/21 Domino's 8431 951-769-5777 CA Card 5058 -,-20.00,9092 Statement Nov 2023.pdf
+2023-11-24,Card Purchase 11/22 Raising Canes 0470 Beaumont CA Card 5058 -,-12.91,9092 Statement Nov 2023.pdf
+2023-11-27,Card Purchase 11/26 Dd Doordash Wingstop 855-973-1040 CA Card -,-22.65,9092 Statement Nov 2023.pdf
+2023-11-27,Card Purchase 11/24 Domino's 8431 951-769-5777 CA Card 5058 -,-17.46,9092 Statement Nov 2023.pdf
+2023-11-29,Recurring Card Purchase 11/29 Linkedin Pre 895763307 855-6535653 CA -,-39.99,9092 Statement Nov 2023.pdf
+2023-12-04,Card Purchase 12/04 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Nov 2023.pdf
+2023-12-05,Card Purchase 12/05 Dd Doordash Popeyeslo 855-973-1040 CA -,-19.43,9092 Statement Nov 2023.pdf
+2023-12-11,Card Purchase 12/11 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Nov 2023.pdf
+2023-12-12,Card Purchase 12/12 Dd Doordash Popeyeslo 855-973-1040 CA -,-19.43,9092 Statement Nov 2023.pdf
+2023-12-13,Card Purchase 12/13 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Nov 2023.pdf
+2023-12-14,Card Purchase With Pin 12/14 Wal-Mart #5156 Beaumont CA Card 5058 -,-41.79,9092 Statement Nov 2023.pdf
+2023-12-15,Card Purchase 12/14 IN-N-Out Beaumont Beaumont CA Card 5058 -,-13.79,9092 Statement Nov 2023.pdf
+2024-01-02,Card Purchase 12/29 Dd Doordash Popeyeslo 855-973-1040 CA -,-19.75,9092 Statement Jan 2024.pdf
+2024-01-03,Card Purchase 01/03 Steamgames.Com 4259522 425-8899642 WA -,-29.99,9092 Statement Jan 2024.pdf
+2024-01-04,Card Purchase With Pin 01/04 Arco #42405 Ampm Beaumont CA Card -,-58.63,9092 Statement Jan 2024.pdf
+2024-01-04,Card Purchase 01/04 Steamgames.Com 4259522 425-8899642 WA -,-29.99,9092 Statement Jan 2024.pdf
+2024-01-04,Card Purchase 01/02 Chick-Fil-A #04524 Yucaipa CA Card 5058 -,-12.75,9092 Statement Jan 2024.pdf
+2024-01-08,Card Purchase 01/07 Steamgames.Com 4259522 425-8899642 WA -,-0.99,9092 Statement Jan 2024.pdf
+2024-01-08,Card Purchase 01/08 Dd Doordash Domenicos 855-973-1040 CA -,-25.49,9092 Statement Jan 2024.pdf
+2024-01-08,Card Purchase 01/06 Dd Doordash Domenicos 855-973-1040 CA -,-25.00,9092 Statement Jan 2024.pdf
+2024-01-08,Card Purchase 01/06 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Jan 2024.pdf
+2024-01-17,Monthly Service Fee -,-12.00,9092 Statement Jan 2024.pdf
+2024-02-20,Card Purchase 02/17 Rite Aid 05671 Banning CA Card 5058 -,-6.00,9092 Statement Feb 2024.pdf
+2024-02-26,Card Purchase 02/24 Dd Doordash Popeyeslo 855-973-1040 CA -,-18.72,9092 Statement Feb 2024.pdf
+2024-02-28,Card Purchase 02/28 Dd Doordash Wingstop 855-973-1040 CA Card -,-23.14,9092 Statement Feb 2024.pdf
+2024-02-29,Recurring Card Purchase 02/29 Linkedin Pre 928019465 855-6535653 CA -,-39.99,9092 Statement Feb 2024.pdf
+2024-03-01,Card Purchase With Pin 03/01 Wm Superc Wal-Mart Sup Beaumont CA -,-18.48,9092 Statement Feb 2024.pdf
+2024-03-01,ATM Cash Deposit 03/01 1693 E 2ND St Beaumont CA Card 5058,880.00,9092 Statement Feb 2024.pdf
+2024-03-01,ATM Cash Deposit 03/01 1693 E 2ND St Beaumont CA Card 5058,1080.00,9092 Statement Feb 2024.pdf
+2024-03-04,Card Purchase 03/03 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Feb 2024.pdf
+2024-03-05,Card Purchase 03/05 Dd Doordash Popeyeslo 855-973-1040 CA -,-18.72,9092 Statement Feb 2024.pdf
+2024-03-06,Card Purchase 03/06 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Feb 2024.pdf
+2024-03-13,ATM Cash Deposit 03/13 1693 E 2ND St Beaumont CA Card 5058,2000.00,9092 Statement Feb 2024.pdf
+2024-03-15,Card Purchase 03/14 Dd Doordash Wingstop 855-973-1040 CA Card -,-23.14,9092 Statement Feb 2024.pdf
+2024-03-15,Monthly Service Fee -,-12.00,9092 Statement Feb 2024.pdf
+2024-03-18,Card Purchase 03/17 Dd Doordash Wingstop 855-973-1040 CA Card -,-21.00,9092 Statement Mar 2024.pdf
+2024-03-19,Card Purchase 03/19 Dd Doordash Popeyeslo 855-973-1040 CA -,-18.72,9092 Statement Mar 2024.pdf
+2024-03-22,Card Purchase 03/22 Dd Doordash Fuegocrav 855-973-1040 CA -,-20.93,9092 Statement Mar 2024.pdf
+2024-03-25,Card Purchase 03/22 Parchment-Univ Docs 480-719-1646 AZ Card -,-5.00,9092 Statement Mar 2024.pdf
+2024-03-25,Card Purchase 03/23 Dd Doordash Domenicos 855-973-1040 CA -,-25.49,9092 Statement Mar 2024.pdf
+2024-03-25,Card Purchase 03/22 Calstateapply 857-3042087 CA Card 5058 -,-70.00,9092 Statement Mar 2024.pdf
+2024-03-27,Card Purchase 03/27 Dd Doordash Popeyeslo 855-973-1040 CA -,-14.73,9092 Statement Mar 2024.pdf
+2024-03-29,So Cal Edison CO Bill Paymt 700788111001 Web ID: 4951240335 -,-6000.00,9092 Statement Mar 2024.pdf
+2024-03-29,Recurring Card Purchase 03/29 Linkedin Pre 951043567 855-6535653 CA -,-39.99,9092 Statement Mar 2024.pdf
+2024-04-01,Card Purchase 03/30 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Mar 2024.pdf
+2024-04-08,Card Purchase 04/07 Dd Doordash Wingstop 855-973-1040 CA Card -,-21.24,9092 Statement Mar 2024.pdf
+2024-04-08,Card Purchase 04/06 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Mar 2024.pdf
+2024-04-11,Card Purchase 04/10 Cal Poly Humboldt 800-3398131 CA Card 5058 -,-1.32,9092 Statement Mar 2024.pdf
+2024-04-11,Card Purchase 04/10 Cal Poly Humboldt 800-3398131 CA Card 5058 -,-50.00,9092 Statement Mar 2024.pdf
+2024-04-15,Card Purchase 04/13 Dd Doordash Popeyeslo 855-973-1040 CA -,-19.26,9092 Statement Mar 2024.pdf
+2024-04-15,Monthly Service Fee -,-12.00,9092 Statement Mar 2024.pdf
+2024-04-23,Card Purchase 04/22 Wingstop 835 Olo Olo.Com CA Card 5058 -,-23.00,9092 Statement Apr 2024.pdf
+2024-04-23,Card Purchase 04/22 The Eviction Center ( 951-845-5499 CA Card -,-100.00,9092 Statement Apr 2024.pdf
+2024-04-25,Card Purchase 04/24 Dd Doordash Wingstop 855-973-1040 CA Card -,-22.64,9092 Statement Apr 2024.pdf
+2024-04-26,Card Purchase 04/25 Cal Poly Humboldt 800-3398131 CA Card 5058 -,-100.00,9092 Statement Apr 2024.pdf
+2024-04-26,Card Purchase 04/25 Cal Poly Humboldt 800-3398131 CA Card 5058 -,-2.65,9092 Statement Apr 2024.pdf
+2024-04-29,Card Purchase 04/27 Dd Doordash Wingstop 855-973-1040 CA Card -,-20.50,9092 Statement Apr 2024.pdf
+2024-04-29,Card Purchase 04/28 Dd Doordash Popeyeslo 855-973-1040 CA -,-19.26,9092 Statement Apr 2024.pdf
+2024-04-29,Recurring Card Purchase 04/29 Linkedin Pre P23092946 855-6535653 CA -,-39.99,9092 Statement Apr 2024.pdf
+2024-04-30,Card Purchase With Pin 04/30 Arco #42327 Ampm Beaumont CA Card -,-55.35,9092 Statement Apr 2024.pdf
+2024-05-01,Card Purchase 05/01 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Apr 2024.pdf
+2024-05-03,Card Purchase With Pin 05/03 Arco #42327 Ampm Beaumont CA Card -,-3.64,9092 Statement Apr 2024.pdf
+2024-05-06,Card Purchase 05/06 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Apr 2024.pdf
+2024-05-06,Card Purchase 05/04 Dd Doordash Wingstop 855-973-1040 CA Card -,-21.24,9092 Statement Apr 2024.pdf
+2024-05-07,Payment Sent 05/07 Cash App*Chaz 800-9691940 CA Card 5058 -,-18.00,9092 Statement Apr 2024.pdf
+2024-05-07,Card Purchase 05/07 Dd Doordash Wingstop 855-973-1040 CA Card -,-19.95,9092 Statement Apr 2024.pdf
+2024-05-08,Card Purchase With Pin 05/07 Arco #42405 Ampm Beaumont CA Card -,-40.35,9092 Statement Apr 2024.pdf
+2024-05-09,Card Purchase 05/08 IN-N-Out Beaumont Beaumont CA Card 5058 -,-8.84,9092 Statement Apr 2024.pdf
+2024-05-10,Online Transfer From Chk ...3122 Transaction#: 20736671202,2000.00,9092 Statement Apr 2024.pdf
+2024-05-10,Card Purchase With Pin 05/10 Wm Superc Wal-Mart Sup Beaumont CA -,-6.25,9092 Statement Apr 2024.pdf
+2024-05-15,Payment Sent 05/15 Cash App*Chaz 800-9691940 CA Card 5058 -,-18.00,9092 Statement Apr 2024.pdf
+2024-05-15,Monthly Service Fee -,-12.00,9092 Statement Apr 2024.pdf
+2024-05-23,Payment Received 05/23 Cash App*Albert*Cash San Francisco CA,-267.32,9092 Statement May 2024.pdf
+2024-05-24,Card Purchase With Pin 05/24 Arco #42405 Ampm Beaumont CA Card -,-52.98,9092 Statement May 2024.pdf
+2024-05-28,Card Purchase 05/27 Wingstop 835 310-097-3152 CA Card 5058 -,-27.23,9092 Statement May 2024.pdf
+2024-05-31,Card Purchase 05/31 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-9.98,9092 Statement May 2024.pdf
+2024-05-31,Card Purchase 05/30 IN-N-Out Beaumont Beaumont CA Card 5058 -,-8.84,9092 Statement May 2024.pdf
+2024-06-03,Card Purchase With Pin 05/31 Papa John 6350 W Ramse Banning CA -,-32.33,9092 Statement May 2024.pdf
+2024-06-03,Card Purchase 06/01 IN-N-Out Beaumont Beaumont CA Card 5058 -,-8.84,9092 Statement May 2024.pdf
+2024-06-03,Card Purchase With Pin 06/02 Arco #42405 Ampm Beaumont CA Card -,-55.05,9092 Statement May 2024.pdf
+2024-06-05,Card Purchase 06/04 Dd Doordash Wingstop 855-973-1040 CA Card -,-18.66,9092 Statement May 2024.pdf
+2024-06-05,Card Purchase 06/04 Ap Score Report 888-2255427 NY Card 5058 -,-15.00,9092 Statement May 2024.pdf
+2024-06-06,Card Purchase 06/06 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement May 2024.pdf
+2024-06-06,Card Purchase 06/06 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement May 2024.pdf
+2024-06-07,ATM Cash Deposit 06/07 1693 E 2ND St Beaumont CA Card 5058,1300.00,9092 Statement May 2024.pdf
+2024-06-10,ATM Cash Deposit 06/08 1693 E 2ND St Beaumont CA Card 5058,990.00,9092 Statement May 2024.pdf
+2024-06-10,Card Purchase 06/07 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-49.99,9092 Statement May 2024.pdf
+2024-06-10,Payment Sent 06/09 Cash App*Chaz 800-9691940 CA Card 5058 -,-50.00,9092 Statement May 2024.pdf
+2024-06-11,Payment Received 06/11 Cash App*Albert*Cash San Francisco CA,18.00,9092 Statement May 2024.pdf
+2024-06-11,ATM Cash Deposit 06/11 1693 E 2ND St Beaumont CA Card 5058,2080.00,9092 Statement May 2024.pdf
+2024-06-17,Card Purchase 06/15 Cal Poly Humboldt 800-3398131 CA Card 5058 -,-111.38,9092 Statement May 2024.pdf
+2024-06-17,Card Purchase 06/15 Cal Poly Humboldt 800-3398131 CA Card 5058 -,-4203.00,9092 Statement May 2024.pdf
+2024-06-17,Card Purchase 06/15 Wingstop 835 310-097-3152 CA Card 5058 -,-19.59,9092 Statement May 2024.pdf
+2024-07-17,Card Purchase 07/16 Farmer Boys - 1077 Beaumont CA Card 5058 -,-22.50,9092 Statement Jul 2024.pdf
+2024-07-17,Card Purchase With Pin 07/16 Wal-Mart #5156 Beaumont CA Card 5058 -,-20.43,9092 Statement Jul 2024.pdf
+2024-07-22,Card Purchase With Pin 07/20 Orkin LLC 002 Atlanta GA Card 5058 -,-366.00,9092 Statement Jul 2024.pdf
+2024-07-22,Card Purchase 07/22 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Jul 2024.pdf
+2024-07-22,Payment Sent 07/22 Cash App*Chaz San Francisco CA Card 5058 -,-40.00,9092 Statement Jul 2024.pdf
+2024-07-25,ATM Cash Deposit 07/25 1693 E 2ND St Beaumont CA Card 5058,820.00,9092 Statement Jul 2024.pdf
+2024-07-29,Card Purchase With Pin 07/27 Arco #42405 Ampm Beaumont CA Card -,-43.48,9092 Statement Jul 2024.pdf
+2024-07-29,Card Purchase With Pin 07/29 Petsmart #3251 Banning CA Card 5058 -,-9.30,9092 Statement Jul 2024.pdf
+2024-07-29,Card Purchase With Pin 07/28 Best Buy 00014415 Beaumont CA Card -,-16.15,9092 Statement Jul 2024.pdf
+2024-07-29,Payment Received 07/29 Cash App*Albert*Cash San Francisco CA,140.00,9092 Statement Jul 2024.pdf
+2024-07-29,Card Purchase 07/26 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-19.99,9092 Statement Jul 2024.pdf
+2024-07-30,Card Purchase 07/30 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Jul 2024.pdf
+2024-07-31,Card Purchase With Pin 07/31 Arco #42327 Ampm Beaumont CA Card -,-45.57,9092 Statement Jul 2024.pdf
+2024-08-01,Card Purchase With Pin 07/31 Wal-Mart #5156 Beaumont CA Card 5058 -,-10.76,9092 Statement Jul 2024.pdf
+2024-08-01,Card Purchase 07/31 Raising Canes 0470 Beaumont CA Card 5058 -,-14.00,9092 Statement Jul 2024.pdf
+2024-08-01,Card Purchase 07/31 Kuro Games Hong Kong Card 5058 -,-4.99,9092 Statement Jul 2024.pdf
+2024-08-02,Card Purchase 08/01 Popeyes 10714 Beaumont CA Card 5058 -,-14.65,9092 Statement Jul 2024.pdf
+2024-08-02,Payment Sent 08/02 Cash App*Chaz San Francisco CA Card 5058 -,-151.00,9092 Statement Jul 2024.pdf
+2024-08-05,Card Purchase 08/02 Calstateapply 857-3042087 CA Card 5058 -,-280.00,9092 Statement Jul 2024.pdf
+2024-08-05,Card Purchase 08/02 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-13.15,9092 Statement Jul 2024.pdf
+2024-08-05,Card Purchase 08/03 Sq *Zen Gosq.Com CA Card 5058 -,-13.47,9092 Statement Jul 2024.pdf
+2024-08-05,Card Purchase 08/04 Wl *Steam Purchase 425-889-9642 WA Card -,-9.74,9092 Statement Jul 2024.pdf
+2024-08-05,Card Purchase 08/03 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-13.20,9092 Statement Jul 2024.pdf
+2024-08-05,Card Purchase With Pin 08/05 Arco #42327 Ampm Beaumont CA Card -,-45.46,9092 Statement Jul 2024.pdf
+2024-08-05,Card Purchase 08/01 Calstateapply 857-3042087 CA Card 5058 -,-70.00,9092 Statement Jul 2024.pdf
+2024-08-06,Card Purchase 08/06 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Jul 2024.pdf
+2024-08-06,Card Purchase 08/05 Albertsons #3512 Banning CA Card 5058 -,-6.49,9092 Statement Jul 2024.pdf
+2024-08-09,Card Purchase 08/08 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-13.20,9092 Statement Jul 2024.pdf
+2024-08-12,Card Purchase With Pin 08/10 Wal-Mart Super Center Beaumont CA Card -,-17.06,9092 Statement Jul 2024.pdf
+2024-09-18,Card Purchase With Pin 09/18 Orkin LLC 002 Atlanta GA Card 5058 -,-56.00,9092 Statement Sep 2024.pdf
+2024-09-20,Card Purchase 09/19 Parchment-Univ Docs 480-719-1646 AZ Card -,-32.00,9092 Statement Sep 2024.pdf
+2024-09-20,Card Purchase 09/19 Parchment-Univ Docs 480-719-1646 AZ Card -,-10.00,9092 Statement Sep 2024.pdf
+2024-09-20,Payment Sent 09/19 Cash App*Skye Walker Oakland CA Card 5058 -,-20.00,9092 Statement Sep 2024.pdf
+2024-09-24,Card Purchase 09/23 Steamgames.Com 4259522 425-8899642 WA -,-9.99,9092 Statement Sep 2024.pdf
+2024-10-01,Card Purchase 10/01 Shockbyte Pty Ltd 0423137366 Card 5058 -,-23.99,9092 Statement Sep 2024.pdf
+2024-10-01,Card Purchase 10/01 CA Dmv Fee 678-7315516 TN Card 5058 -,-0.88,9092 Statement Sep 2024.pdf
+2024-10-01,Card Purchase 10/01 State of Calif Dmv Int 800-7770133 CA Card -,-45.00,9092 Statement Sep 2024.pdf
+2024-10-01,Card Purchase 09/30 Wl *Steam Purchase 425-889-9642 WA Card -,-19.99,9092 Statement Sep 2024.pdf
+2024-10-01,Recurring Card Purchase 10/01 Gradguard-Renters IN Httpsgradguar AZ -,-14.70,9092 Statement Sep 2024.pdf
+2024-10-04,Card Purchase 10/04 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Sep 2024.pdf
+2024-10-07,"Card Purchase 10/06 Csc Serviceworks, Inc. Plainview NY Card 5058 -",-20.00,9092 Statement Sep 2024.pdf
+2024-10-07,Card Purchase 10/07 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Sep 2024.pdf
+2024-10-07,Card Purchase 10/04 Rendezvous Music N Ve Arcata CA Card 5058 -,-2.70,9092 Statement Sep 2024.pdf
+2024-10-10,Card Purchase 10/09 Hsu Bookstore #1268 Arcata CA Card 5058 -,-6.28,9092 Statement Sep 2024.pdf
+2024-10-15,Card Purchase 10/14 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-9.99,9092 Statement Sep 2024.pdf
+2024-10-15,Card Purchase 10/13 Wl *Steam Purchase 425-889-9642 WA Card -,-19.99,9092 Statement Sep 2024.pdf
+2024-10-16,Card Purchase 10/15 Parchment-Univ Docs 480-719-1646 AZ Card -,-16.00,9092 Statement Sep 2024.pdf
+2024-10-16,Card Purchase 10/15 Ap Score Report 888-2255427 NY Card 5058 -,-15.00,9092 Statement Sep 2024.pdf
+2024-10-18,Card Purchase With Pin 10/18 Orkin LLC 002 Atlanta GA Card 5058 -,-56.00,9092 Statement Oct 2024.pdf
+2024-10-21,Card Purchase 10/20 Dd *Doordash Cvs 855-431-0459 CA Card -,-29.36,9092 Statement Oct 2024.pdf
+2024-10-21,Card Purchase 10/17 Safeway #0793 Arcata CA Card 5058 -,-4.87,9092 Statement Oct 2024.pdf
+2024-10-24,"Card Purchase 10/24 Csc Serviceworks, Inc. Plainview NY Card 5058 -",-30.00,9092 Statement Oct 2024.pdf
+2024-11-01,Card Purchase 11/01 Shockbyte Pty Ltd 0423137366 Card 5058 -,-23.99,9092 Statement Oct 2024.pdf
+2024-11-01,Recurring Card Purchase 11/01 Gradguard-Renters IN Gradguard.Com AZ -,-14.70,9092 Statement Oct 2024.pdf
+2024-11-04,Card Purchase 11/01 Dd *Doordash Ralibert 855-431-0459 CA Card -,-24.12,9092 Statement Oct 2024.pdf
+2024-11-05,Card Purchase 11/04 Dd *Doordash Arcatapi 855-431-0459 CA Card -,-30.41,9092 Statement Oct 2024.pdf
+2024-11-06,Card Purchase 11/06 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Oct 2024.pdf
+2024-11-12,Card Purchase 11/09 Dd *Doordash Ralibert 855-431-0459 CA Card -,-30.12,9092 Statement Oct 2024.pdf
+2024-11-12,Card Purchase 11/12 Steamgames.Com 4259522 425-8899642 WA -,-19.98,9092 Statement Oct 2024.pdf
+2024-11-12,Card Purchase 11/11 Dd *Doordash Ralibert 855-431-0459 CA Card -,-23.15,9092 Statement Oct 2024.pdf
+2024-11-18,Card Purchase 11/18 Steamgames.Com 4259522 425-8899642 WA -,-49.99,9092 Statement Oct 2024.pdf
+2024-11-18,Card Purchase 11/16 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Oct 2024.pdf
+2024-11-18,Card Purchase 11/18 Wl *Steam Purchase 425-889-9642 WA Card -,-19.99,9092 Statement Oct 2024.pdf
+2024-11-18,Card Purchase With Pin 11/18 Orkin LLC 002 Atlanta GA Card 5058 -,-56.00,9092 Statement Oct 2024.pdf
+2024-11-19,Card Purchase 11/18 Wl *Steam Purchase 425-9522985 WA Card -,-19.99,9092 Statement Nov 2024.pdf
+2024-11-21,Card Purchase 11/20 Dd *Doordash Tandoori 855-431-0459 CA Card -,-31.43,9092 Statement Nov 2024.pdf
+2024-11-25,Card Purchase With Pin 11/23 Uber *Trip San Francisco CA Card 5058 -,-23.38,9092 Statement Nov 2024.pdf
+2024-11-25,Card Purchase 11/23 United 01644515016 United.Com TX Card -,-40.00,9092 Statement Nov 2024.pdf
+2024-11-25,Card Purchase With Pin 11/23 Uber *Eats San Francisco CA Card 5058 -,-21.78,9092 Statement Nov 2024.pdf
+2024-11-25,Card Purchase 11/23 Rendezvous Music N Ve Arcata CA Card 5058 -,-2.45,9092 Statement Nov 2024.pdf
+2024-11-25,Card Purchase With Pin 11/25 Sharetea Beaumon Beaumont CA Card -,-7.65,9092 Statement Nov 2024.pdf
+2024-11-26,Card Purchase 11/25 IN-N-Out Beaumont Beaumont CA Card 5058 -,-8.84,9092 Statement Nov 2024.pdf
+2024-11-26,Card Purchase 11/26 Wingstop 835 310-097-3152 CA Card 5058 -,-22.39,9092 Statement Nov 2024.pdf
+2024-11-27,Card Purchase 11/27 Dd *Doordash Popeyesl 855-431-0459 CA Card -,-20.10,9092 Statement Nov 2024.pdf
+2024-12-02,Recurring Card Purchase 12/01 Gradguard-Renters IN Gradguard.Com AZ -,-14.70,9092 Statement Nov 2024.pdf
+2024-12-02,Payment Sent 12/01 Cash App*Chaz 800-9691940 CA Card 5058 -,-10.00,9092 Statement Nov 2024.pdf
+2024-12-02,Card Purchase 12/01 United 01644533336 Houston TX Card 5058 -,-40.00,9092 Statement Nov 2024.pdf
+2024-12-02,Card Purchase With Pin 12/01 Uber Trip* Trip San Francisco CA Card 5058 -,-51.69,9092 Statement Nov 2024.pdf
+2024-12-04,Card Purchase 12/04 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-12.98,9092 Statement Nov 2024.pdf
+2024-12-09,Card Purchase 12/07 Dd *Doordash Tandoori 855-431-0459 CA Card -,-25.79,9092 Statement Nov 2024.pdf
+2024-12-09,Card Purchase 12/09 Dd *Doordash Nascarte 855-431-0459 CA Card -,-3.25,9092 Statement Nov 2024.pdf
+2024-12-09,Card Purchase 12/07 Steamgames.Com 4259522 425-8899642 WA -,-19.99,9092 Statement Nov 2024.pdf
+2024-12-09,Card Purchase 12/07 Dd *Doordashdashpass Www.Doordash. CA -,-9.99,9092 Statement Nov 2024.pdf
+2024-12-09,Card Purchase 12/09 Dd *Doordash Pardonmy 855-431-0459 CA -,-26.45,9092 Statement Nov 2024.pdf
+2024-12-11,Card Purchase 12/10 Rendezvous Music N Ve Eureka CA Card 5058 -,-3.45,9092 Statement Nov 2024.pdf
+2024-12-16,Card Purchase 12/16 Dd *Doordash Pardonmy 855-431-0459 CA -,-26.02,9092 Statement Nov 2024.pdf
+2024-12-18,Card Purchase 12/17 Dd Doordash Wingstop 855-973-1040 CA Card -,-22.65,9092 Statement Jan 2024.pdf
+2024-12-18,Card Purchase 12/17 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Jan 2024.pdf
+2024-12-19,Card Purchase 12/18 Raising Canes 0470 Beaumont CA Card 5058 -,-12.92,9092 Statement Jan 2024.pdf
+2024-12-27,Card Purchase 12/27 Wl *Steam Purchase 425-889-9642 WA Card -,-29.99,9092 Statement Jan 2024.pdf
+2024-12-29,Card Purchase 12/29 Dd Doordash Popeyeslo 855-973-1040 CA -,-19.75,9092 Statement Jan 2024.pdf
+2024-12-29,Recurring Card Purchase 12/29 Linkedin Pre 905433749 855-6535653 CA -,-39.99,9092 Statement Jan 2024.pdf
+2025-01-21,ATM Cash Deposit 01/18 1693 E 2ND St Beaumont CA Card 5058,2000.00,9092 Statement Jan 2025.pdf
+2025-01-21,ATM Cash Deposit 01/19 1693 E 2ND St Beaumont CA Card 5058,2000.00,9092 Statement Jan 2025.pdf
+2025-01-21,Card Purchase 01/15 Paypal *Sctradegrou 31154150 Card 5058 -,-29.99,9092 Statement Jan 2025.pdf
+2025-01-21,Payment Sent 01/19 Apple Cash Balance Ad 877-233-8552 CA Card -,-13.20,9092 Statement Jan 2025.pdf
+2025-01-21,Card Purchase With Pin 01/18 Wal-Mart #5156 Beaumont CA Card 5058 -,-7.00,9092 Statement Jan 2025.pdf
+2025-01-21,Card Purchase 01/20 Wl *Steam Purchase 425-889-9642 WA Card -,-3.98,9092 Statement Jan 2025.pdf
+2025-01-21,Card Purchase With Pin 01/19 Sharetea Beaumon Beaumont CA Card -,-7.32,9092 Statement Jan 2025.pdf
+2025-01-21,Card Purchase With Pin 01/21 7-Eleven San Bernardin CA Card 5058 -,-20.06,9092 Statement Jan 2025.pdf
+2025-01-22,Card Purchase 01/21 Csusb 800-3398131 CA Card 5058 -,-4228.04,9092 Statement Jan 2025.pdf
+2025-01-22,Card Purchase With Pin 01/22 Arco #42405 Ampm Beaumont CA Card -,-25.61,9092 Statement Jan 2025.pdf
+2025-01-22,Card Purchase 01/21 Csusb 800-3398131 CA Card 5058 -,-112.04,9092 Statement Jan 2025.pdf
+2025-01-23,Card Purchase 01/23 Shockbyte Pty Ltd 0423137366 Card 5058 -,-19.99,9092 Statement Jan 2025.pdf
+2025-01-24,Card Purchase 01/23 Csusb Parking 909-5375912 CA Card 5058 -,-8.47,9092 Statement Jan 2025.pdf
+2025-01-27,Card Purchase 01/24 Csusb 800-3398131 CA Card 5058 -,-193.50,9092 Statement Jan 2025.pdf
+2025-01-27,Card Purchase 01/25 Dd *Doordash Wingstop Doordash.Com CA -,-20.72,9092 Statement Jan 2025.pdf
+2025-01-29,ATM Cash Deposit 01/29 1693 E 2ND St Beaumont CA Card 5058,1400.00,9092 Statement Jan 2025.pdf
+2025-01-29,Card Purchase 01/28 Wushiland - San Gabrie San Gabriel CA Card -,-6.05,9092 Statement Jan 2025.pdf
+2025-01-29,Card Purchase With Pin 01/28 99 Ranch #1208 San Gabriel CA Card 5058 -,-26.96,9092 Statement Jan 2025.pdf
+2025-01-29,Card Purchase 01/27 Carls Jr 1100653 Sn Bernrdno CA Card 5058 -,-15.88,9092 Statement Jan 2025.pdf
+2025-01-31,Payment Sent 01/30 Apple Cash Balance Ad 877-233-8552 CA Card -,-54.00,9092 Statement Jan 2025.pdf
+2025-01-31,Payment Sent 01/30 Apple Cash Balance Ad 877-233-8552 CA Card -,-10.00,9092 Statement Jan 2025.pdf
+2025-01-31,Card Purchase 01/30 Csusb 800-3398131 CA Card 5058 -,-54.00,9092 Statement Jan 2025.pdf
+2025-01-31,Card Purchase 01/30 Csusb 800-3398131 CA Card 5058 -,-1.43,9092 Statement Jan 2025.pdf
+2025-02-03,Recurring Card Purchase 02/01 Gradguard-Renters IN Gradguard.Com AZ -,-14.70,9092 Statement Jan 2025.pdf
+2025-02-03,Card Purchase 02/03 Tm *Ticketmaster 800-653-8000 CA Card 5058 -,-380.41,9092 Statement Jan 2025.pdf
+2025-02-03,Card Purchase 02/02 Allianz Event Ins Allianzins.US VA Card 5058 -,-44.00,9092 Statement Jan 2025.pdf
+2025-02-04,Card Purchase 02/04 Steamgames.Com 4259522 425-8899642 WA -,-4.99,9092 Statement Jan 2025.pdf
+2025-02-06,Card Purchase 02/06 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Jan 2025.pdf
+2025-02-07,Card Purchase 02/07 Dd *Doordashdashpass Www.Doordash. CA -,-9.99,9092 Statement Jan 2025.pdf
+2025-02-10,Card Purchase 02/08 Dd *Doordash Wingstop 855-431-0459 CA Card -,-20.72,9092 Statement Jan 2025.pdf
+2025-02-13,Card Purchase 02/13 Apple.Com/Bill 866-712-7753 CA Card 5058 -,-4.99,9092 Statement Jan 2025.pdf
+2025-02-18,Card Purchase 02/17 Dd *Doordash Popeyesl 855-431-0459 CA Card -,-19.40,9092 Statement Jan 2025.pdf
+2025-02-18,Monthly Service Fee -,-12.00,9092 Statement Jan 2025.pdf
+2025-02-19,Card Purchase 02/18 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-12.20,9092 Statement Feb 2025.pdf
+2025-02-20,Card Purchase 02/19 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-14.01,9092 Statement Feb 2025.pdf
+2025-02-21,Card Purchase With Pin 02/21 Sharetea Beaumon Beaumont CA Card -,-6.82,9092 Statement Feb 2025.pdf
+2025-02-21,Card Purchase With Pin 02/21 Wal Wal-Mart #5156 000 Beaumont CA -,-35.83,9092 Statement Feb 2025.pdf
+2025-02-24,Card Purchase 02/23 Shockbyte Pty Ltd 0423137366 Card 5058 -,-19.99,9092 Statement Feb 2025.pdf
+2025-02-26,Card Purchase With Pin 02/26 Arco #42405 Ampm Beaumont CA Card -,-50.20,9092 Statement Feb 2025.pdf
+2025-02-26,Card Purchase 02/25 Wingstop 835 310-097-3152 CA Card 5058 -,-14.63,9092 Statement Feb 2025.pdf
+2025-03-03,Card Purchase 03/03 Kuro Games Hong Kong Card 5058 -,-4.99,9092 Statement Feb 2025.pdf
+2025-03-03,Recurring Card Purchase 03/01 Gradguard-Renters IN Gradguard.Com AZ -,-14.70,9092 Statement Feb 2025.pdf
+2025-03-05,Card Purchase With Pin 03/05 Arco #42405 Ampm Beaumont CA Card -,-45.35,9092 Statement Feb 2025.pdf
+2025-03-05,Card Purchase 03/05 Wl *Steam Purchase 425-9522985 WA Card -,-5.00,9092 Statement Feb 2025.pdf
+2025-03-07,Card Purchase 03/07 Dd *Doordashdashpass Doordash.Com CA -,-9.99,9092 Statement Feb 2025.pdf
+2025-03-10,Card Purchase 03/08 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Feb 2025.pdf
+2025-03-10,Card Purchase 03/08 Jersey Mikes 20299 Beaumont CA Card 5058 -,-19.14,9092 Statement Feb 2025.pdf
+2025-03-10,Card Purchase 03/08 Dd *Doordash Popeyesl 855-431-0459 CA Card -,-19.69,9092 Statement Feb 2025.pdf
+2025-03-12,Card Purchase 03/12 IN-N-Out Beaumont Beaumont CA Card 5058 -,-9.10,9092 Statement Feb 2025.pdf
+2025-03-13,Card Purchase With Pin 03/13 Arco #42405 Ampm Beaumont CA Card -,-44.15,9092 Statement Feb 2025.pdf
+2025-03-14,Card Purchase 03/12 IN-N-Out Beaumont Beaumont CA Card 5058 -,-9.10,9092 Statement Feb 2025.pdf
+2025-03-17,Card Purchase With Pin 03/16 Shell Service Station Glen Avon CA Card -,-20.00,9092 Statement Feb 2025.pdf
+2025-03-17,Card Purchase 03/14 Little Caesars 1232-0 951-845-1777 CA Card -,-10.76,9092 Statement Feb 2025.pdf
+2025-03-17,Card Purchase 03/17 IN-N-Out Beaumont Beaumont CA Card 5058 -,-11.69,9092 Statement Feb 2025.pdf
+2025-03-17,Monthly Service Fee -,-12.00,9092 Statement Feb 2025.pdf
+2025-03-17,Card Purchase 03/14 Hoyoverse Singapore Card 5058 -,-4.99,9092 Statement Feb 2025.pdf
+2025-03-18,Card Purchase 03/18 Wl *Steam Purchase 425-9522985 WA Card -,-8.99,9092 Statement Mar 2025.pdf
+2025-03-18,Card Purchase 03/16 LA Live Parking Los Angeles CA Card 5058 -,-40.00,9092 Statement Mar 2025.pdf
+2025-03-19,Card Purchase With Pin 03/19 Arco #42405 Ampm Beaumont CA Card -,-40.56,9092 Statement Mar 2025.pdf
+2025-03-24,Card Purchase 03/23 Shockbyte Pty Ltd 0423137366 Card 5058 -,-19.99,9092 Statement Mar 2025.pdf
+2025-03-25,Card Purchase With Pin 03/25 Arco #42405 Ampm Beaumont CA Card -,-4.16,9092 Statement Mar 2025.pdf
+2025-03-26,Card Purchase 03/25 Wingstop 835 310-097-3152 CA Card 5058 -,-14.00,9092 Statement Mar 2025.pdf
+2025-03-27,Card Purchase With Pin 03/27 Wal-Mart #5156 Beaumont CA Card 5058 -,-26.74,9092 Statement Mar 2025.pdf
+2025-03-28,Card Purchase 03/27 Dd *Doordash Chipotle 855-431-0459 CA Card -,-19.44,9092 Statement Mar 2025.pdf
+2025-03-31,Card Purchase 03/29 Dd *Doordash Darumaya 855-431-0459 CA -,-76.40,9092 Statement Mar 2025.pdf
+2025-04-01,Recurring Card Purchase 04/01 Gradguard-Renters IN Gradguard.Com AZ -,-14.70,9092 Statement Mar 2025.pdf
+2025-04-02,Card Purchase 04/01 Domino's 8431 951-769-5777 CA Card 5058 -,-17.22,9092 Statement Mar 2025.pdf
+2025-04-02,Card Purchase 04/01 Wuthering Waves Hong Kong Card 5058 -,-4.99,9092 Statement Mar 2025.pdf
+2025-04-07,Card Purchase 04/05 Domino's 8431 951-769-5777 CA Card 5058 -,-23.68,9092 Statement Mar 2025.pdf
+2025-04-07,Card Purchase 04/07 Dd *Doordashdashpass Doordash.Com CA -,-9.99,9092 Statement Mar 2025.pdf
+2025-04-08,Card Purchase 04/08 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Mar 2025.pdf
+2025-04-08,Card Purchase 04/06 Hoyoverse Singapore Card 5058 -,-9.99,9092 Statement Mar 2025.pdf
+2025-04-09,Card Purchase With Pin 04/09 Arco #42405 Ampm Beaumont CA Card -,-46.00,9092 Statement Mar 2025.pdf
+2025-04-10,Card Purchase Return 04/08 Gradguard-Renters Ins Phoenix AZ Card,14.70,9092 Statement Mar 2025.pdf
+2025-04-10,Card Purchase 04/09 Hoyoverse Singapore Card 5058 -,-4.99,9092 Statement Mar 2025.pdf
+2025-04-11,Card Purchase 04/11 Daveshotchicken Daveshotchick CA Card 5058 -,-15.21,9092 Statement Mar 2025.pdf
+2025-04-14,Card Purchase 04/12 Raising Canes 0470 Beaumont CA Card 5058 -,-14.43,9092 Statement Mar 2025.pdf
+2025-04-14,Card Purchase 04/13 Domino's 8431 951-769-5777 CA Card 5058 -,-10.76,9092 Statement Mar 2025.pdf
+2025-04-15,Monthly Service Fee -,-12.00,9092 Statement Mar 2025.pdf
+2025-04-15,Card Purchase 04/14 Wingstop 835 310-097-3152 CA Card 5058 -,-8.62,9092 Statement Mar 2025.pdf
+2025-04-17,Card Purchase 04/15 Raising Canes 0470 Beaumont CA Card 5058 -,-12.16,9092 Statement Apr 2025.pdf
+2025-04-21,Card Purchase 04/17 Little Caesars 1232-0 951-845-1777 CA Card -,-9.68,9092 Statement Apr 2025.pdf
+2025-04-21,Card Purchase With Pin 04/21 Arco #42405 Ampm Beaumont CA Card -,-46.50,9092 Statement Apr 2025.pdf
+2025-04-21,Card Purchase 04/18 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-4.99,9092 Statement Apr 2025.pdf
+2025-04-22,Card Purchase With Pin 04/22 Wal-Mart #5156 Beaumont CA Card 5058 -,-12.89,9092 Statement Apr 2025.pdf
+2025-04-23,Card Purchase 04/21 Raising Canes 0470 Beaumont CA Card 5058 -,-4.43,9092 Statement Apr 2025.pdf
+2025-04-28,Card Purchase 04/24 IN-N-Out Beaumont Beaumont CA Card 5058 -,-7.11,9092 Statement Apr 2025.pdf
+2025-04-28,Card Purchase 04/27 IN-N-Out Beaumont Beaumont CA Card 5058 -,-7.11,9092 Statement Apr 2025.pdf
+2025-04-28,Online Transfer From Sav ...2257 Transaction#: 24570205184,10000.00,9092 Statement Apr 2025.pdf
+2025-04-28,Card Purchase 04/27 Dd *Doordash Popeyesl 855-431-0459 CA Card -,-18.54,9092 Statement Apr 2025.pdf
+2025-04-29,Card Purchase With Pin 04/29 Arco #42405 Ampm Beaumont CA Card -,-40.54,9092 Statement Apr 2025.pdf
+2025-04-30,Card Purchase 04/29 Csusb 800-3398131 CA Card 5058 -,-3373.28,9092 Statement Apr 2025.pdf
+2025-04-30,Card Purchase 04/29 Cal Poly Humboldt 800-3398131 CA Card 5058 -,-45.50,9092 Statement Apr 2025.pdf
+2025-04-30,Card Purchase 04/29 Csusb 800-3398131 CA Card 5058 -,-89.39,9092 Statement Apr 2025.pdf
+2025-04-30,Card Purchase 04/29 Cal Poly Humboldt 800-3398131 CA Card 5058 -,-1717.04,9092 Statement Apr 2025.pdf
+2025-05-01,Card Purchase 04/30 Kuro Games Hong Kong Card 5058 -,-4.99,9092 Statement Apr 2025.pdf
+2025-05-05,Card Purchase 05/02 Albertsons #3512 Banning CA Card 5058 -,-25.30,9092 Statement Apr 2025.pdf
+2025-05-06,Card Purchase 05/06 Wl *Steam Purchase 425-9522985 WA Card -,-6.99,9092 Statement Apr 2025.pdf
+2025-05-07,Card Purchase 05/07 Dd *Doordashdashpass Doordash.Com CA -,-9.99,9092 Statement Apr 2025.pdf
+2025-05-08,Card Purchase 05/07 Parchment-Univ Docs 480-719-1646 AZ Card -,-4.00,9092 Statement Apr 2025.pdf
+2025-05-08,Card Purchase 05/07 Chili's 1333 Ecomm Https://Prod. CA Card 5058 -,-44.05,9092 Statement Apr 2025.pdf
+2025-05-12,Card Purchase 05/09 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Apr 2025.pdf
+2025-05-12,Card Purchase Return 05/09 Chili's 1333 Ecomm Beaumont CA Card,44.05,9092 Statement Apr 2025.pdf
+2025-05-12,Card Purchase With Pin 05/09 Wm Supercenter #5156 Beaumont CA Card -,-19.45,9092 Statement Apr 2025.pdf
+2025-05-12,Card Purchase With Pin 05/12 Arco #42405 Ampm Beaumont CA Card -,-44.16,9092 Statement Apr 2025.pdf
+2025-05-13,Card Purchase With Pin 05/13 Sharetea Beaumon Beaumont CA Card -,-7.32,9092 Statement Apr 2025.pdf
+2025-05-14,Card Purchase 05/13 Hoyoverse Singapore Card 5058 -,-4.99,9092 Statement Apr 2025.pdf
+2025-05-14,Card Purchase 05/13 IN-N-Out Beaumont Beaumont CA Card 5058 -,-9.10,9092 Statement Apr 2025.pdf
+2025-05-15,Monthly Service Fee -,-12.00,9092 Statement Apr 2025.pdf
+2025-05-19,Card Purchase 05/19 Raising Canes 0470 Beaumont CA Card 5058 -,-14.91,9092 Statement May 2025.pdf
+2025-05-19,Card Purchase 05/17 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-12.95,9092 Statement May 2025.pdf
+2025-05-20,Card Purchase 05/19 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-12.95,9092 Statement May 2025.pdf
+2025-05-22,Card Purchase 05/22 Raising Canes 0470 Beaumont CA Card 5058 -,-14.91,9092 Statement May 2025.pdf
+2025-05-22,Card Purchase 05/21 IN-N-Out Beaumont Beaumont CA Card 5058 -,-9.10,9092 Statement May 2025.pdf
+2025-05-27,Card Purchase 05/23 Wingstop 835 310-097-3152 CA Card 5058 -,-23.26,9092 Statement May 2025.pdf
+2025-05-27,Card Purchase 05/25 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-12.95,9092 Statement May 2025.pdf
+2025-05-28,Card Purchase 05/27 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-12.95,9092 Statement May 2025.pdf
+2025-05-30,Card Purchase 05/29 Hk Kuro Games Limited Wan Chai Card 5058 -,-9.99,9092 Statement May 2025.pdf
+2025-06-02,Card Purchase 05/30 Wutheringwaves.Kurogam Wanchai Card 5058 -,-4.99,9092 Statement May 2025.pdf
+2025-06-02,Payment Sent 05/31 Cash App*Skye Walker Oakland CA Card 5058 -,-20.00,9092 Statement May 2025.pdf
+2025-06-04,Card Purchase 06/04 Domino's 8431 951-769-5777 CA Card 5058 -,-13.99,9092 Statement May 2025.pdf
+2025-06-06,Card Purchase With Pin 06/06 Wal Wal-Mart #5156 001 Beaumont CA -,-10.17,9092 Statement May 2025.pdf
+2025-06-09,Card Purchase 06/08 Raising Canes 0470 Beaumont CA Card 5058 -,-14.91,9092 Statement May 2025.pdf
+2025-06-09,Card Purchase 06/07 Dd *Doordashdashpass Doordash.Com CA -,-9.99,9092 Statement May 2025.pdf
+2025-06-10,Card Purchase 06/09 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement May 2025.pdf
+2025-06-10,Card Purchase 06/09 Domino's 8431 951-769-5777 CA Card 5058 -,-10.76,9092 Statement May 2025.pdf
+2025-06-10,Card Purchase 06/09 Steamgames.Com 4259522 425-8899642 WA -,-14.99,9092 Statement May 2025.pdf
+2025-06-12,Card Purchase 06/11 Hoyoverse Singapore Card 5058 -,-4.99,9092 Statement May 2025.pdf
+2025-06-16,Card Purchase 06/13 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-12.95,9092 Statement May 2025.pdf
+2025-06-18,Card Purchase 06/17 Csusb 800-3398131 CA Card 5058 -,-114.81,9092 Statement Jun 2025.pdf
+2025-06-18,Card Purchase 06/17 Csusb 800-3398131 CA Card 5058 -,-4332.54,9092 Statement Jun 2025.pdf
+2025-06-20,Card Purchase 06/19 Wingstop 835 310-097-3152 CA Card 5058 -,-10.76,9092 Statement Jun 2025.pdf
+2025-06-20,Card Purchase 06/19 Wl *Steam Purchase 425-9522985 WA Card -,-39.99,9092 Statement Jun 2025.pdf
+2025-06-23,Recurring Card Purchase 06/23 Coursera.Org Coursera.Org CA Card 5058 -,-49.00,9092 Statement Jun 2025.pdf
+2025-06-23,Card Purchase 06/21 Wingstop 835 310-097-3152 CA Card 5058 -,-10.76,9092 Statement Jun 2025.pdf
+2025-06-25,Card Purchase 06/24 IN-N-Out Beaumont Beaumont CA Card 5058 -,-7.11,9092 Statement Jun 2025.pdf
+2025-06-26,Card Purchase 06/26 Che*Chegg Study 855-440-1323 CA Card 5058 -,-15.95,9092 Statement Jun 2025.pdf
+2025-06-27,Card Purchase 06/26 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-12.95,9092 Statement Jun 2025.pdf
+2025-06-30,Card Purchase 06/30 Steamgames.Com 4259522 425-8899642 WA -,-3.49,9092 Statement Jun 2025.pdf
+2025-07-07,Card Purchase 07/03 Hk Kuro Games Limited Wan Chai Card 5058 -,-4.99,9092 Statement Jun 2025.pdf
+2025-07-07,Card Purchase 07/07 Dd *Doordashdashpass Doordash.Com CA -,-9.99,9092 Statement Jun 2025.pdf
+2025-07-07,Card Purchase 07/06 Sq *Zen Banning CA Card 5058 -,-16.16,9092 Statement Jun 2025.pdf
+2025-07-07,Card Purchase 07/06 Popeyes 10714 Beaumont CA Card 5058 -,-11.84,9092 Statement Jun 2025.pdf
+2025-07-08,Card Purchase 07/08 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Jun 2025.pdf
+2025-07-14,Card Purchase With Pin 07/13 The Home Depot #8987 Beaumont CA Card -,-53.85,9092 Statement Jun 2025.pdf
+2025-07-16,Monthly Service Fee -,-12.00,9092 Statement Jun 2025.pdf
+2025-07-21,Card Purchase 07/17 Little Caesars 1232-0 951-845-1777 CA Card -,-9.68,9092 Statement Jul 2025.pdf
+2025-07-24,Card Purchase 07/23 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-12.95,9092 Statement Jul 2025.pdf
+2025-07-25,Card Purchase With Pin 07/25 Wal-Mart #5156 Beaumont CA Card 5058 -,-8.09,9092 Statement Jul 2025.pdf
+2025-07-28,Card Purchase 07/26 Popeyes 10714 Beaumont CA Card 5058 -,-11.84,9092 Statement Jul 2025.pdf
+2025-07-28,Card Purchase With Pin 07/28 Best Buy 00014415 Beaumont CA Card -,-43.08,9092 Statement Jul 2025.pdf
+2025-07-28,Recurring Card Purchase 07/25 Https://Skills.Googl Skills.Google MA Card -,-49.00,9092 Statement Jul 2025.pdf
+2025-07-28,Card Purchase 07/27 Exer Urgent Care - Beau Beaumont CA Card -,-5.00,9092 Statement Jul 2025.pdf
+2025-08-04,Card Purchase With Pin 08/03 Wal-Mart #5156 Beaumont CA Card 5058 -,-2.00,9092 Statement Jul 2025.pdf
+2025-08-04,Card Purchase 08/04 Kuro Games Hong Kong Card 5058 -,-4.99,9092 Statement Jul 2025.pdf
+2025-08-07,Card Purchase 08/07 Dd *Doordashdashpass Doordash.Com CA -,-9.99,9092 Statement Jul 2025.pdf
+2025-08-08,Card Purchase 08/08 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Jul 2025.pdf
+2025-08-15,Monthly Service Fee -,-12.00,9092 Statement Jul 2025.pdf
+2025-08-25,ATM Cash Deposit 08/25 1693 E 2ND St Beaumont CA Card 5058,300.00,9092 Statement Aug 2025.pdf
+2025-08-25,Card Purchase With Pin 08/25 Wal-Mart #5156 Beaumont CA Card 5058 -,-20.66,9092 Statement Aug 2025.pdf
+2025-08-26,Recurring Card Purchase 08/25 Https://Skills.Googl Skills.Google MA Card -,-49.00,9092 Statement Aug 2025.pdf
+2025-08-27,Card Purchase Return 08/26 Https://Skills.Google/ Cambridge MA Card,49.00,9092 Statement Aug 2025.pdf
+2025-08-27,Card Purchase 08/26 Csusb 800-3398131 CA Card 5058 -,-199.50,9092 Statement Aug 2025.pdf
+2025-08-29,Card Purchase 08/28 365 Vend LLC Troy MI Card 5058 -,-2.25,9092 Statement Aug 2025.pdf
+2025-09-02,Card Purchase With Pin 09/02 Arco #42405 Ampm Beaumont CA Card -,-25.55,9092 Statement Aug 2025.pdf
+2025-09-02,Card Purchase 09/01 Kuro Games Hong Kong Card 5058 -,-4.99,9092 Statement Aug 2025.pdf
+2025-09-04,Card Purchase With Pin 09/04 Arco #42405 Ampm Beaumont CA Card -,-35.59,9092 Statement Aug 2025.pdf
+2025-09-08,Card Purchase 09/08 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Aug 2025.pdf
+2025-09-08,Online Transfer From Chk ...3122 Transaction#: 26127955548,500.00,9092 Statement Aug 2025.pdf
+2025-09-08,Card Purchase 09/07 Dd *Doordashdashpass Doordash.Com CA -,-9.99,9092 Statement Aug 2025.pdf
+2025-09-11,Payment Sent 09/11 Cash App*Skye Walker Oakland CA Card 5058 -,-20.00,9092 Statement Aug 2025.pdf
+2025-09-12,Card Purchase 09/12 365 Vend LLC Troy MI Card 5058 -,-2.25,9092 Statement Aug 2025.pdf
+2025-09-12,Card Purchase 09/11 Sq *Generational Exc San Bernardin CA Card -,-10.00,9092 Statement Aug 2025.pdf
+2025-09-12,Card Purchase 09/11 Panda Express #3580 San Bernardin CA Card -,-13.27,9092 Statement Aug 2025.pdf
+2025-09-15,Card Purchase 09/12 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-12.95,9092 Statement Aug 2025.pdf
+2025-09-16,Card Purchase With Pin 09/15 Arco #42327 Ampm Beaumont CA Card -,-10.37,9092 Statement Aug 2025.pdf
+2025-09-16,Monthly Service Fee -,-15.00,9092 Statement Aug 2025.pdf
+2025-09-17,Card Purchase With Pin 09/16 Wm Supercenter #5156 Beaumont CA Card -,-4.71,9092 Statement Sep 2025.pdf
+2025-09-18,Card Purchase 09/16 Carls Jr 1100653 Sn Bernrdno CA Card 5058 -,-15.10,9092 Statement Sep 2025.pdf
+2025-09-19,Card Purchase 09/18 Daveshotchicken Daveshotchick CA Card 5058 -,-17.12,9092 Statement Sep 2025.pdf
+2025-09-26,Card Purchase 09/25 Daveshotchicken Daveshotchick CA Card 5058 -,-17.12,9092 Statement Sep 2025.pdf
+2025-09-29,Card Purchase With Pin 09/28 Wal Wal-Mart #5156 002 Beaumont CA -,-13.78,9092 Statement Sep 2025.pdf
+2025-10-01,Card Purchase 10/01 Kuro Games Hong Kong Card 5058 -,-4.99,9092 Statement Sep 2025.pdf
+2025-10-06,Card Purchase 10/05 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Sep 2025.pdf
+2025-10-06,Card Purchase 10/03 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-12.20,9092 Statement Sep 2025.pdf
+2025-10-07,Card Purchase 10/07 Dd *Doordashdashpass Doordash.Com CA -,-9.99,9092 Statement Sep 2025.pdf
+2025-10-08,Card Purchase 10/07 Farmer Boys - San Be San Bernardin CA Card -,-10.86,9092 Statement Sep 2025.pdf
+2025-10-14,Card Purchase 10/13 Steamgames.Com 4259522 425-8899642 WA -,-5.00,9092 Statement Sep 2025.pdf
+2025-10-14,Card Purchase 10/10 Raising Canes 0470 Beaumont CA Card 5058 -,-11.55,9092 Statement Sep 2025.pdf
+2025-10-15,Card Purchase 10/13 Little Caesars 1232-0 951-845-1777 CA Card -,-8.60,9092 Statement Sep 2025.pdf
+2025-10-16,Monthly Service Fee -,-15.00,9092 Statement Sep 2025.pdf
+2025-10-20,Card Purchase 10/17 Farmer Boys - San Be San Bernardin CA Card -,-13.26,9092 Statement Oct 2025.pdf
+2025-10-23,Card Purchase With Pin 10/23 Wal-Mart #5156 Beaumont CA Card 5058 -,-15.17,9092 Statement Oct 2025.pdf
+2025-10-23,Payment Sent 10/22 Cash App*Chaz Oakland CA Card 5058 -,-10.00,9092 Statement Oct 2025.pdf
+2025-10-27,Online Transfer From Chk ...3122 Transaction#: 26730133176,500.00,9092 Statement Oct 2025.pdf
+2025-10-27,Card Purchase With Pin 10/26 Wm Supercenter #5156 Beaumont CA Card -,-58.31,9092 Statement Oct 2025.pdf
+2025-10-28,Card Purchase 10/27 Popeyes 10714 Beaumont CA Card 5058 -,-11.84,9092 Statement Oct 2025.pdf
+2025-10-28,Payment Received 10/28 Cash App*Albert*Cash O Oakland CA Card,5.00,9092 Statement Oct 2025.pdf
+2025-10-30,Card Purchase 10/30 Raising Canes 0470 Beaumont CA Card 5058 -,-14.75,9092 Statement Oct 2025.pdf
+2025-11-03,Card Purchase 10/31 IN-N-Out Beaumont Beaumont CA Card 5058 -,-7.11,9092 Statement Oct 2025.pdf
+2025-11-03,Card Purchase 10/30 Jersey Mikes 20160 Rialto CA Card 5058 -,-11.95,9092 Statement Oct 2025.pdf
+2025-11-03,Card Purchase 10/30 Little Caesars 1232-0 951-845-1777 CA Card -,-8.60,9092 Statement Oct 2025.pdf
+2025-11-03,Card Purchase 11/03 Wuthering Waves Hong Kong Card 5058 -,-4.99,9092 Statement Oct 2025.pdf
+2025-11-04,Card Purchase 11/04 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Oct 2025.pdf
+2025-11-07,Card Purchase 11/07 Dd *Doordashdashpass Doordash.Com CA -,-9.99,9092 Statement Oct 2025.pdf
+2025-11-10,Card Purchase With Pin 11/09 Wal-Mart #5156 Beaumont CA Card 5058 -,-11.22,9092 Statement Oct 2025.pdf
+2025-11-12,Card Purchase 11/12 Raising Canes 0470 Beaumont CA Card 5058 -,-14.75,9092 Statement Oct 2025.pdf
+2025-11-18,Online Transfer From Chk ...3122 Transaction#: 27002726471,600.00,9092 Statement Oct 2025.pdf
+2025-11-18,Online Transfer From Sav ...2257 Transaction#: 27002692357,4000.00,9092 Statement Oct 2025.pdf
+2025-11-18,Monthly Service Fee -,-15.00,9092 Statement Oct 2025.pdf
+2025-11-20,Online Transfer From Chk ...3122 Transaction#: 27034289499,1000.00,9092 Statement Nov 2025.pdf
+2025-11-21,Card Purchase With Pin 11/21 99 Ranch #1003 Rowland Heigh CA Card -,-36.93,9092 Statement Nov 2025.pdf
+2025-11-24,Card Purchase 11/21 Csusb 800-3398131 CA Card 5058 -,-4486.36,9092 Statement Nov 2025.pdf
+2025-11-24,Card Purchase 11/21 IN-N-Out Beaumont Beaumont CA Card 5058 -,-9.10,9092 Statement Nov 2025.pdf
+2025-11-25,Card Purchase 11/24 IN-N-Out Beaumont Beaumont CA Card 5058 -,-9.43,9092 Statement Nov 2025.pdf
+2025-11-26,Card Purchase 11/25 Csusb 800-3398131 CA Card 5058 -,-1124.02,9092 Statement Nov 2025.pdf
+2025-11-28,Card Purchase 11/26 Wingstop 835 310-097-3152 CA Card 5058 -,-20.46,9092 Statement Nov 2025.pdf
+2025-11-28,Card Purchase 11/26 Wingstop 806 801-068-3400 CA Card 5058 -,-20.46,9092 Statement Nov 2025.pdf
+2025-12-01,Payment Sent 11/30 Cash App*Chaz Oakland CA Card 5058 -,-13.00,9092 Statement Nov 2025.pdf
+2025-12-01,Card Purchase Return 11/28 Wingstop 806 Rialto CA Card 5058,20.46,9092 Statement Nov 2025.pdf
+2025-12-01,Card Purchase 11/28 IN-N-Out Beaumont Beaumont CA Card 5058 -,-7.33,9092 Statement Nov 2025.pdf
+2025-12-01,Card Purchase 11/30 Raising Canes 0470 Beaumont CA Card 5058 -,-14.75,9092 Statement Nov 2025.pdf
+2025-12-02,Card Purchase With Pin 12/02 Wm Supercenter #5156 Beaumont CA Card -,-20.33,9092 Statement Nov 2025.pdf
+2025-12-02,Card Purchase 12/01 Wingstop 835 310-097-3152 CA Card 5058 -,-20.46,9092 Statement Nov 2025.pdf
+2025-12-03,Card Purchase 12/02 IN-N-Out Beaumont Beaumont CA Card 5058 -,-9.43,9092 Statement Nov 2025.pdf
+2025-12-04,Card Purchase 12/03 Papa Johns 3353 951-845-7272 CA Card 5058 -,-16.15,9092 Statement Nov 2025.pdf
+2025-12-04,Card Purchase 12/03 Hk Kuro Games Limited Wan Chai Card 5058 -,-4.99,9092 Statement Nov 2025.pdf
+2025-12-05,Card Purchase 12/04 IN-N-Out Rialto Rialto CA Card 5058 -,-6.84,9092 Statement Nov 2025.pdf
+2025-12-08,Card Purchase 12/08 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Nov 2025.pdf
+2025-12-08,Card Purchase 12/06 Domenico's Italian Kitc Beaumont CA Card -,-19.94,9092 Statement Nov 2025.pdf
+2025-12-08,Card Purchase 12/07 Dd *Doordashdashpass Doordash.Com CA -,-9.99,9092 Statement Nov 2025.pdf
+2025-12-08,Card Purchase 12/07 Papa Johns 3353 951-845-7272 CA Card 5058 -,-11.84,9092 Statement Nov 2025.pdf
+2025-12-10,Card Purchase 12/09 Raising Canes 0470 Beaumont CA Card 5058 -,-14.75,9092 Statement Nov 2025.pdf
+2025-12-11,Card Purchase With Pin 12/11 Petsmart #3251 Banning CA Card 5058 -,-63.56,9092 Statement Nov 2025.pdf
+2025-12-11,Card Purchase 12/10 Wingstop 835 310-097-3152 CA Card 5058 -,-20.46,9092 Statement Nov 2025.pdf
+2025-12-12,Card Purchase 12/12 Dd *Doordash Toplittl 855-431-0459 CA Card -,-11.84,9092 Statement Nov 2025.pdf
+2025-12-15,Monthly Service Fee -,-15.00,9092 Statement Nov 2025.pdf
+2025-12-15,Card Purchase 12/13 Dd *Doordash Toplittl 855-431-0459 CA Card -,-12.37,9092 Statement Nov 2025.pdf
+2025-12-15,Card Purchase 12/13 Raising Canes 0470 Beaumont CA Card 5058 -,-12.49,9092 Statement Nov 2025.pdf
+2025-12-15,Card Purchase 12/15 IN-N-Out Beaumont Beaumont CA Card 5058 -,-9.43,9092 Statement Nov 2025.pdf
+2026-03-18,Online Transfer From Chk ...3122 Transaction#: 28484834470,1000.00,9092 Statement Apr 2026.pdf
+2026-03-23,Card Purchase 03/23 Steamgames.Com 4259522 425-8899642 WA -,-3.74,9092 Statement Apr 2026.pdf
+2026-03-23,Card Purchase 03/21 Wl *Steam Purchase 425-889-9642 WA Card -,-5.99,9092 Statement Apr 2026.pdf
+2026-03-24,Card Purchase 03/23 Daveshotchicken Daveshotchick CA Card 5058 -,-15.83,9092 Statement Apr 2026.pdf
+2026-03-26,Card Purchase With Pin 03/26 Arco #42173 Ampm Cathedral Cit CA Card -,-4.14,9092 Statement Apr 2026.pdf
+2026-03-30,Card Purchase 03/26 Carls Jr 1100731 Palm Springs CA Card 5058 -,-15.72,9092 Statement Apr 2026.pdf
+2026-03-30,Card Purchase 03/27 Popeyes 14465 San Bernardin CA Card 5058 -,-17.39,9092 Statement Apr 2026.pdf
+2026-04-01,Payment Sent 03/31 Cash App*Chaz Oakland CA Card 5058 -,-23.00,9092 Statement Apr 2026.pdf
+2026-04-01,Card Purchase 03/31 Kuro Games Hong Kong Card 5058 -,-4.99,9092 Statement Apr 2026.pdf
+2026-04-02,Card Purchase 04/01 Daveshotchicken Daveshotchick CA Card 5058 -,-15.98,9092 Statement Apr 2026.pdf
+2026-04-02,ATM Check Deposit 04/02 1693 E 2ND St Beaumont CA Card 5058,571.72,9092 Statement Apr 2026.pdf
+2026-04-03,Card Purchase With Pin 04/03 Wal-Mart #5156 Beaumont CA Card 5058 -,-4.17,9092 Statement Apr 2026.pdf
+2026-04-06,Card Purchase With Pin 04/06 Food4Less #0386 1691 E Beaumont CA -,-2.17,9092 Statement Apr 2026.pdf
+2026-04-06,Card Purchase With Pin 04/06 Arco 904944 South Pasaden CA Card 5058 -,-4.74,9092 Statement Apr 2026.pdf
+2026-04-06,Card Purchase With Pin 04/05 Morongo Band of Missio Cabazon CA Card -,-40.35,9092 Statement Apr 2026.pdf
+2026-04-06,Card Purchase 04/05 Darumaya Banning CA Card 5058 -,-45.09,9092 Statement Apr 2026.pdf
+2026-04-06,Card Purchase 04/04 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement Apr 2026.pdf
+2026-04-07,Card Purchase 04/07 Dd *Doordash Kwankitc 855-431-0459 CA Card -,-36.82,9092 Statement Apr 2026.pdf
+2026-04-07,Card Purchase 04/07 Dd *Doordashdashpass Doordash.Com CA -,-9.99,9092 Statement Apr 2026.pdf
+2026-04-07,Card Purchase With Pin 04/07 Wal-Mart #5156 Beaumont CA Card 5058 -,-46.50,9092 Statement Apr 2026.pdf
+2026-04-08,Card Purchase 04/08 Wutheringwaves.Kurogam Wanchai Card 5058 -,-9.99,9092 Statement Apr 2026.pdf
+2026-04-10,Card Purchase With Pin 04/10 Rocket 670 San Bernardin CA Card 5058 -,-3.29,9092 Statement Apr 2026.pdf
+2026-04-13,Card Purchase 04/10 Daveshotchicken Daveshotchick CA Card 5058 -,-15.83,9092 Statement Apr 2026.pdf
+2026-04-13,Card Purchase With Pin 04/11 Arco #42620 Ampm Palm Springs CA Card -,-20.39,9092 Statement Apr 2026.pdf
+2026-04-14,Card Purchase With Pin 04/14 Circle K Dealer # 0201 Indio CA Card 5058 -,-30.00,9092 Statement Apr 2026.pdf
+2026-04-15,Monthly Service Fee -,-15.00,9092 Statement Apr 2026.pdf
+2026-04-15,Card Purchase 04/15 Steamgames.Com 4259522 425-8899642 WA -,-19.99,9092 Statement Apr 2026.pdf
+2026-04-20,Card Purchase 04/19 Tst* Yum Yum Donut - 42 Beaumont CA Card -,-11.25,9092 Statement May 2026.pdf
+2026-04-20,ATM Check Deposit 04/18 1693 E 2ND St Beaumont CA Card 5058,768.47,9092 Statement May 2026.pdf
+2026-04-21,Card Purchase 04/20 Sharetea Beaumont Beaumont CA Card 5058 -,-7.65,9092 Statement May 2026.pdf
+2026-04-23,Card Purchase 04/23 Wl *Steam Purchase 425-889-9642 WA Card -,-59.99,9092 Statement May 2026.pdf
+2026-04-23,Payment Received 04/23 Cash App*Albert*Cash O Oakland CA Card,20.00,9092 Statement May 2026.pdf
+2026-04-23,Card Purchase 04/22 Starbucks 8007827282 800-782-7282 WA Card -,-5.45,9092 Statement May 2026.pdf
+2026-04-27,Card Purchase With Pin 04/27 Wm Supercenter #5156 Beaumont CA Card -,-3.00,9092 Statement May 2026.pdf
+2026-04-27,Card Purchase 04/25 Pacific Dermatology IN Beaumont CA Card -,-8.00,9092 Statement May 2026.pdf
+2026-04-27,Card Purchase 04/25 Raising Canes 0470 Beaumont CA Card 5058 -,-12.49,9092 Statement May 2026.pdf
+2026-04-27,Card Purchase With Pin 04/27 Wm Supercenter #5156 Beaumont CA Card -,-16.68,9092 Statement May 2026.pdf
+2026-04-28,Card Purchase With Pin 04/28 Arco 905016 Palm Springs CA Card 5058 -,-4.14,9092 Statement May 2026.pdf
+2026-04-28,Card Purchase 04/28 Sharetea Beaumont Beaumont CA Card 5058 -,-7.65,9092 Statement May 2026.pdf
+2026-04-29,Card Purchase With Pin 04/29 Sobhy Yousef Banning CA Card 5058 -,-3.39,9092 Statement May 2026.pdf
+2026-04-30,Card Purchase 04/29 Chipotle 3041 Banning CA Card 5058 -,-13.90,9092 Statement May 2026.pdf
+2026-04-30,Card Purchase 04/28 Carls Jr 1100731 Palm Springs CA Card 5058 -,-16.38,9092 Statement May 2026.pdf
+2026-04-30,Card Purchase With Pin 04/30 Wal-Mart #5156 - Beaumont CA Card -,-10.59,9092 Statement May 2026.pdf
+2026-05-01,Card Purchase 04/30 Wuthering Waves Hong Kong Card 5058 -,-4.99,9092 Statement May 2026.pdf
+2026-05-04,Card Purchase 05/02 Wuthering Waves Hong Kong Card 5058 -,-9.99,9092 Statement May 2026.pdf
+2026-05-04,Card Purchase 05/04 Pp*Apple.Com/Bill 800-275-2273 CA Card 5058 -,-2.99,9092 Statement May 2026.pdf
+2026-05-05,Card Purchase 05/04 Chipotle 3041 Banning CA Card 5058 -,-13.90,9092 Statement May 2026.pdf
+2026-05-07,Card Purchase 05/07 Dd *Doordashdashpass Doordash.Com CA -,-9.99,9092 Statement May 2026.pdf
+2026-05-07,Card Purchase With Pin 05/07 Sobhy Yousef Palm Springs CA Card 5058 -,-4.46,9092 Statement May 2026.pdf
+2026-05-07,Card Purchase 05/06 Kuro Games Hk Card 5058 -,-14.99,9092 Statement May 2026.pdf
+2026-05-07,Card Purchase 05/06 Wingstop 835 310-097-3152 CA Card 5058 -,-16.15,9092 Statement May 2026.pdf
+2026-05-08,Card Purchase 05/07 Jersey Mikes Online Https://Prod. NJ Card 5058 -,-12.20,9092 Statement May 2026.pdf
+2026-05-15,Online Transfer From Sav ...2257 Transaction#: 29235808137,3400.00,9092 Statement May 2026.pdf
+2026-05-15,Monthly Service Fee -,-15.00,9092 Statement May 2026.pdf

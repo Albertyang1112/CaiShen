@@ -25,6 +25,24 @@ async function query(sql, params = []) {
   finally { client.release(); }
 }
 
+// Run statements on a single client inside BEGIN/COMMIT (ROLLBACK on error). Used by
+// the full-replace mirrors so DELETE + re-INSERT is atomic — a concurrent reader sees
+// the old OR the new full set via MVCC, never an empty/partial state mid-rewrite.
+async function withTransaction(fn) {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 async function initSchema() {
   // ── Core auth ──────────────────────────────────────────────────────────────
   await query(`
@@ -199,6 +217,7 @@ async function initSchema() {
   console.log('✓ Database connected and schema ready');
   await require('./db-banking-schema').init(query);
   await require('./db-accounts-schema').init(query);
+  await require('./db-remodel-schema').init(query);
 }
 
-module.exports = { query, initSchema };
+module.exports = { query, initSchema, withTransaction };
