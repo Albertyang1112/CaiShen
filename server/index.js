@@ -208,7 +208,7 @@ migrateAdminData();
 
   // 3. Protect all /api routes (except the open ones)
   app.use('/api', (req, res, next) => {
-    const open = ['/auth/login', '/auth/signup', '/auth/verify-2fa', '/auth/me', '/status', '/plaid/webhook', '/events'];
+    const open = ['/auth/login', '/auth/signup', '/auth/verify-2fa', '/auth/me', '/status', '/plaid/webhook', '/events', '/messaging/twilio/webhook'];
     // Exact match or a true sub-path (p + '/') — never a prefix like '/statusX' that would bypass auth.
     if (open.some(p => req.path === p || req.path.startsWith(p + '/'))) return next();
     verifyToken(req, res, (err) => {
@@ -318,6 +318,11 @@ app.use('/api/dev-csv', localhostOnly, require('./banking/dev-csv')());
 app.use('/api/receipts', require('./banking/receipt-routes')(makeIO, DATA_DIR));
 
 // ── Routes: Messaging (Discord/SMS categorizer linking) ───────────────
+// Public Twilio inbound webhook (form-encoded, no JWT — verified by signature in the handler).
+// Registered before the JWT-protected router so it matches first.
+app.post('/api/messaging/twilio/webhook',
+  express.urlencoded({ extended: false }),
+  (req, res) => require('./banking/messaging-bot').twilioWebhook(req, res));
 app.use('/api/messaging', require('./banking/messaging-routes')(makeIO));
 
 // ── Routes: QuickBooks ────────────────────────────────────────────────

@@ -1003,27 +1003,29 @@ function SettingsScreen({ auth }) {
     try { const r = await axios.get(`${API}/messaging/links`); setLinks(r.data || []); return r.data || [] }
     catch { return [] }
   }
-  const connectMessaging = async () => {
+  const connectMessaging = async (channel = 'discord') => {
     setMsgLoading(true); setMsgErr('')
-    try { const r = await axios.post(`${API}/messaging/link-code`, { channel: 'discord' }); setLinkCode(r.data) }
+    try { const r = await axios.post(`${API}/messaging/link-code`, { channel }); setLinkCode(r.data) }
     catch (e) { setMsgErr(e.response?.data?.error || e.message) }
     setMsgLoading(false)
   }
   const checkLinked = async () => {
     setMsgLoading(true); setMsgErr('')
     const arr = await loadLinks()
-    if (arr.find(l => l.channel === 'discord')) setLinkCode(null)
-    else setMsgErr(`Not linked yet — make sure you DM'd the bot:  link ${linkCode?.code || ''}`)
+    const ch = linkCode?.channel || 'discord'
+    if (arr.find(l => l.channel === ch)) setLinkCode(null)
+    else setMsgErr(`Not linked yet — make sure you sent:  link ${linkCode?.code || ''}`)
     setMsgLoading(false)
   }
-  const unlinkMessaging = async () => {
+  const unlinkMessaging = async (channel) => {
     setMsgLoading(true); setMsgErr('')
-    try { await axios.delete(`${API}/messaging/links/discord`); await loadLinks(); setLinkCode(null) }
+    try { await axios.delete(`${API}/messaging/links/${channel}`); await loadLinks(); setLinkCode(null) }
     catch (e) { setMsgErr(e.response?.data?.error || e.message) }
     setMsgLoading(false)
   }
   const copyCode = () => { try { navigator.clipboard.writeText(linkCode.code); setCopied(true); setTimeout(() => setCopied(false), 1500) } catch {} }
   const discordLink = links.find(l => l.channel === 'discord')
+  const smsLink = links.find(l => l.channel === 'sms')
 
   const isTotp = twoFaStatus?.method === 'totp'
 
@@ -1168,7 +1170,7 @@ function SettingsScreen({ auth }) {
       <div className="card" style={{ marginTop: 16 }}>
         <p style={{ fontSize:14, fontWeight:500, margin:'0 0 4px' }}>Transaction categorizer bot</p>
         <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'0 0 16px', lineHeight:1.5 }}>
-          Connect Discord and the bot will DM you about each new transaction so you can confirm or fix its category. (SMS support coming later.)
+          Connect Discord or SMS and the bot will message you about each new transaction so you can confirm or fix its category — and you can text it a photo of a receipt.
         </p>
 
         {msgErr && (
@@ -1177,8 +1179,9 @@ function SettingsScreen({ auth }) {
           </div>
         )}
 
-        {discordLink ? (
-          <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'var(--bg-secondary)', borderRadius:'var(--radius-md)' }}>
+        {/* Connected channels */}
+        {discordLink && (
+          <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'var(--bg-secondary)', borderRadius:'var(--radius-md)', marginBottom:8 }}>
             <i className="ti ti-brand-discord" style={{ fontSize:18, color:'var(--purple)' }} aria-hidden="true"/>
             <div style={{ flex:1 }}>
               <p style={{ fontSize:13, fontWeight:500, margin:0 }}>Discord connected</p>
@@ -1186,15 +1189,33 @@ function SettingsScreen({ auth }) {
                 {discordLink.display_name ? `as ${discordLink.display_name}` : `id ${discordLink.external_id}`}
               </p>
             </div>
-            <button onClick={unlinkMessaging} disabled={msgLoading}
+            <button onClick={() => unlinkMessaging('discord')} disabled={msgLoading}
               style={{ fontSize:12, background:'var(--coral-light)', color:'var(--coral)', borderColor:'var(--coral)' }}>
               Disconnect
             </button>
           </div>
-        ) : linkCode ? (
-          <div>
+        )}
+        {smsLink && (
+          <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'var(--bg-secondary)', borderRadius:'var(--radius-md)', marginBottom:8 }}>
+            <i className="ti ti-message-2" style={{ fontSize:18, color:'var(--teal)' }} aria-hidden="true"/>
+            <div style={{ flex:1 }}>
+              <p style={{ fontSize:13, fontWeight:500, margin:0 }}>SMS connected</p>
+              <p style={{ fontSize:11, color:'var(--text-secondary)', margin:'1px 0 0' }}>{smsLink.external_id}</p>
+            </div>
+            <button onClick={() => unlinkMessaging('sms')} disabled={msgLoading}
+              style={{ fontSize:12, background:'var(--coral-light)', color:'var(--coral)', borderColor:'var(--coral)' }}>
+              Disconnect
+            </button>
+          </div>
+        )}
+
+        {/* Pending link code, or the connect buttons */}
+        {linkCode ? (
+          <div style={{ marginTop:8 }}>
             <p style={{ fontSize:13, color:'var(--text-secondary)', margin:'0 0 8px', lineHeight:1.6 }}>
-              In Discord, open a DM with the <strong>CaiShen</strong> bot and send:
+              {linkCode.channel === 'sms'
+                ? <>From your phone, text this to <strong>{linkCode.smsNumber || 'the CaiShen number'}</strong>:</>
+                : <>In Discord, open a DM with the <strong>CaiShen</strong> bot and send:</>}
             </p>
             <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:10 }}>
               <code style={{ flex:1, fontSize:14, fontFamily:'monospace', background:'var(--bg-secondary)', padding:'10px 12px', borderRadius:'var(--radius-sm)', letterSpacing:1 }}>
@@ -1213,12 +1234,22 @@ function SettingsScreen({ auth }) {
             </button>
           </div>
         ) : (
-          <button onClick={connectMessaging} disabled={msgLoading}
-            style={{ fontSize:13, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
-            {msgLoading
-              ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Generating…</>
-              : <><i className="ti ti-brand-discord" aria-hidden="true"/> Connect Discord</>}
-          </button>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginTop:8 }}>
+            {!discordLink && (
+              <button onClick={() => connectMessaging('discord')} disabled={msgLoading}
+                style={{ fontSize:13, background:'var(--purple-light)', color:'var(--purple)', borderColor:'var(--purple)' }}>
+                {msgLoading
+                  ? <><i className="ti ti-loader-2 spin" aria-hidden="true"/> Generating…</>
+                  : <><i className="ti ti-brand-discord" aria-hidden="true"/> Connect Discord</>}
+              </button>
+            )}
+            {!smsLink && (
+              <button onClick={() => connectMessaging('sms')} disabled={msgLoading}
+                style={{ fontSize:13, background:'var(--teal-light)', color:'var(--teal)', borderColor:'var(--teal)' }}>
+                <i className="ti ti-message-2" aria-hidden="true"/> Connect SMS
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>
