@@ -18,7 +18,11 @@ module.exports = function makeMessagingRouter(/* makeIO */) {
     try {
       const channel = (req.body && req.body.channel) || 'discord';
       const code = await createLinkCode(query, req.user.id, { channel });
-      res.json({ code, channel, expiresInMinutes: 15, instructions: `In Discord, DM the CaiShen bot:  link ${code}` });
+      const smsNumber = process.env.TWILIO_FROM_NUMBER || null;
+      const instructions = channel === 'sms'
+        ? `Text  link ${code}  to ${smsNumber || 'the CaiShen number'} from your phone.`
+        : `In Discord, DM the CaiShen bot:  link ${code}`;
+      res.json({ code, channel, expiresInMinutes: 15, smsNumber: channel === 'sms' ? smsNumber : undefined, instructions });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
