@@ -2,8 +2,7 @@
 // Dev helper: mint a messaging link code for a user and print it.
 // Usage: node server/scripts/messaging-link-code.js [userId] [channel]
 //   defaults: userId = Albert (1779502545957), channel = discord
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+require('./_env');
 const { query } = require('../core/db');
 const { createLinkCode } = require('../banking/messaging-store');
 

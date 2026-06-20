@@ -2,8 +2,7 @@
 // Demo helper: set the stored category of specific transactions THROUGH the running server
 // (PATCH /api/transactions/:id) so the server cache + DB + web UI all stay consistent — then
 // the bot visibly changes them when you reply. Usage: node server/scripts/patch-demo-categories.js
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+require('./_env');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
 const { query } = require('../core/db');

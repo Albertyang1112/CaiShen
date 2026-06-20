@@ -9,14 +9,16 @@ describe('receipt OCR parsing', () => {
     expect(parseOcrJson('not json at all')).toEqual({});
   });
 
-  test('normalizeOcr coerces money strings, supports name/desc, keeps the gate fields', () => {
-    expect(normalizeOcr({ is_receipt: true, doc_type: 'receipt', merchant: 'Walmart', total: '$14.99', date: '2026-06-15', items: [{ name: 'Milk', amount: '3.50' }] }))
-      .toEqual({ is_receipt: true, doc_type: 'receipt', merchant: 'Walmart', total: 14.99, date: '2026-06-15', items: [{ desc: 'Milk', amount: 3.5 }] });
+  const DUP = { time: null, receipt_number: null, order_number: null, invoice_number: null, card_last4: null };
+
+  test('normalizeOcr coerces money strings, supports name/desc, keeps the gate + dedup fields', () => {
+    expect(normalizeOcr({ is_receipt: true, doc_type: 'receipt', merchant: 'Walmart', total: '$14.99', date: '2026-06-15', card_last4: 'xxxx2210', items: [{ name: 'Milk', amount: '3.50' }] }))
+      .toEqual({ is_receipt: true, doc_type: 'receipt', merchant: 'Walmart', total: 14.99, date: '2026-06-15', ...DUP, card_last4: '2210', items: [{ desc: 'Milk', amount: 3.5 }] });
   });
 
   test('normalizeOcr defaults missing fields (is_receipt null when unclassified)', () => {
-    expect(normalizeOcr({})).toEqual({ is_receipt: null, doc_type: null, merchant: null, total: null, date: null, items: [] });
+    expect(normalizeOcr({})).toEqual({ is_receipt: null, doc_type: null, merchant: null, total: null, date: null, ...DUP, items: [] });
     expect(normalizeOcr({ is_receipt: false, doc_type: 'other', total: 'N/A' }))
-      .toEqual({ is_receipt: false, doc_type: 'other', merchant: null, total: null, date: null, items: [] });
+      .toEqual({ is_receipt: false, doc_type: 'other', merchant: null, total: null, date: null, ...DUP, items: [] });
   });
 });

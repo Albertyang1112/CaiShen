@@ -924,7 +924,7 @@ function PlaceholderScreen({label}) {
   )
 }
 
-const AUTH_API = 'http://localhost:3001/api/auth'
+const AUTH_API = '/api/auth'
 
 function SettingsScreen({ auth }) {
   const [twoFaStatus, setTwoFaStatus] = useState(null)

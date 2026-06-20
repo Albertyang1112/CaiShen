@@ -20,12 +20,14 @@ image (or text) is a genuine PROOF OF PURCHASE — a store receipt, invoice, or 
 confirmation. Anything else (a random photo, selfie, a screenshot of an app or website that
 is not an order confirmation, a menu, a flyer, a meme) is NOT a proof of purchase.
 Return ONLY valid JSON (no markdown, no prose) in exactly this shape:
-{"is_receipt": boolean, "doc_type": "receipt"|"invoice"|"order_confirmation"|"other", "merchant": string, "total": number, "date": "YYYY-MM-DD", "items": [{"desc": string, "amount": number}]}
+{"is_receipt": boolean, "doc_type": "receipt"|"invoice"|"order_confirmation"|"other", "merchant": string, "total": number, "date": "YYYY-MM-DD", "time": "HH:MM", "receipt_number": string, "order_number": string, "invoice_number": string, "card_last4": string, "items": [{"desc": string, "amount": number}]}
 Rules:
 - is_receipt is true ONLY for a receipt, invoice, or order/purchase confirmation; otherwise false.
-- If is_receipt is false, set merchant/total/date to null and items to [].
-- total = the final charged amount in dollars (e.g. 14.99). Use null for anything you cannot
-  determine. items may be []. Always return valid JSON.`;
+- If is_receipt is false, set every other field to null and items to [].
+- total = the final charged amount in dollars (e.g. 14.99).
+- time = 24-hour HH:MM if a purchase time is shown; card_last4 = the last 4 digits of the card if shown.
+- receipt_number / order_number / invoice_number = the document's identifier if shown.
+- Use null for anything you cannot determine. items may be []. Always return valid JSON.`;
 
 // ── JSON helpers (exported for tests) ────────────────────────────────────────
 function parseOcrJson(raw) {
@@ -43,12 +45,18 @@ function num(v) {
 }
 function normalizeOcr(o) {
   o = o || {};
+  const s = (v) => (v != null && String(v).trim() ? String(v).trim() : null);
   return {
     is_receipt: typeof o.is_receipt === 'boolean' ? o.is_receipt : null,   // null = model didn't classify
-    doc_type: o.doc_type != null ? String(o.doc_type) : null,
-    merchant: o.merchant != null ? String(o.merchant) : null,
+    doc_type: s(o.doc_type),
+    merchant: s(o.merchant),
     total: num(o.total),
-    date: o.date != null ? String(o.date) : null,
+    date: s(o.date),
+    time: s(o.time),
+    receipt_number: s(o.receipt_number),
+    order_number: s(o.order_number),
+    invoice_number: s(o.invoice_number),
+    card_last4: o.card_last4 != null ? (String(o.card_last4).replace(/\D/g, '').slice(-4) || null) : null,
     items: Array.isArray(o.items)
       ? o.items.map(it => ({ desc: (it && (it.desc ?? it.name)) ?? null, amount: num(it && it.amount) }))
       : [],

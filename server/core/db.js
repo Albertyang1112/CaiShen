@@ -7,9 +7,12 @@ function getPool() {
     if (!process.env.DATABASE_URL) {
       throw new Error('DATABASE_URL not set in .env — create a free Supabase project and paste the connection string');
     }
+    const connectionString = process.env.DATABASE_URL;
+    // Local Postgres doesn't speak SSL; Neon (and other hosted DBs) require it.
+    const isLocal = /localhost|127\.0\.0\.1|::1/.test(connectionString);
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
+      connectionString,
+      ssl: isLocal ? false : { rejectUnauthorized: false },
       max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
@@ -218,6 +221,7 @@ async function initSchema() {
   await require('./db-banking-schema').init(query);
   await require('./db-accounts-schema').init(query);
   await require('./db-remodel-schema').init(query);
+  await require('./db-receipts-schema').init(query);
 }
 
 module.exports = { query, initSchema, withTransaction };

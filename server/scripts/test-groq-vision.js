@@ -2,8 +2,7 @@
 // Smoke-test Groq receipt OCR + the is_receipt gatekeeper end-to-end. Renders a real
 // receipt and a non-receipt image and checks classification + extraction.
 // Usage: node server/scripts/test-groq-vision.js
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+require('./_env');
 const sharp = require('sharp');
 const { ocrReceipt, pickProvider } = require('../banking/receipt-ocr');
 

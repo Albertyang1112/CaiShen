@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import axios from 'axios'
 
-const API = 'http://localhost:3001/api'
+const API = '/api'
 
 // ── Tax calculation helpers ───────────────────────────────────────────
 function calcFederalTax(taxableIncome) {

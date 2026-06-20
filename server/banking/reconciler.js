@@ -22,7 +22,14 @@
  */
 
 const crypto = require('crypto');
-const { parsePDFTransactions } = require('../core/pdf-parser');
+// PDF transactions are parsed in a CHILD PROCESS (pdf-parse-worker.js) for fresh
+// pdf2json state per file — see parsePDFInWorker below. No in-process parse here:
+// parsing many statements back-to-back in one process bleeds pdf2json's global
+// state and returns 0 rows ~20% of the time.
+// extractStatementMeta is used ONLY to classify a 0-transaction result (genuine
+// no-activity month vs. a real parse miss) — that path is reached only for files
+// the worker found no transactions in, i.e. real bank PDFs, never generated ones.
+const { extractStatementMeta } = require('../core/pdf-parser');
 const { findOrCreatePeriod } = require('./periods');
 
 // ── Text normalisation for name similarity ────────────────────────────────────
@@ -155,28 +162,133 @@ function parsePdftotextLines(text, year) {
   return rows;
 }
 
+// ── PDF parse via child process — fresh pdf2json state per file ───────────────
+// pdf2json keeps MODULE-LEVEL global state, so parsing many statements back-to-back
+// in one process bleeds data between files and intermittently returns 0 rows (the
+// documented bug in pdf-parser.js). The vault already isolates each parse in a child
+// process (pdf-parse-worker.js); the reconciler now does too. That worker reads a
+// FILE path, so we stage the buffer to a temp file (exactly as parsePDFWithPdftotext
+// does), run the worker, and clean up. Resolves to the parsed rows (possibly []),
+// or rejects on spawn failure / 30s timeout (a genuine hang) / bad worker output.
+const PDF_WORKER_PATH = require('path').join(__dirname, '..', 'vault', 'pdf-parse-worker.js');
+let _reconTmpSeq = 0;
+function parsePDFInWorker(buffer, year, month) {
+  const { execFile } = require('child_process');
+  const os    = require('os');
+  const fs2   = require('fs');
+  const path2 = require('path');
+  const tmp   = path2.join(os.tmpdir(), `caishen_recon_${process.pid}_${_reconTmpSeq++}.pdf`);
+  fs2.writeFileSync(tmp, buffer);
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      [PDF_WORKER_PATH, tmp, String(year || ''), String(month || '')],
+      { cwd: path2.dirname(PDF_WORKER_PATH), timeout: 30000, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout) => {
+        try { fs2.unlinkSync(tmp); } catch {}
+        if (err) return reject(err);
+        // pdf2json prints "Warning: Setting up fake worker." before the JSON line;
+        // take the last line that starts with '{' (matches the /verify route).
+        const line = String(stdout).split('\n').map(l => l.trim()).filter(l => l.startsWith('{')).pop() || '{}';
+        let out;
+        try { out = JSON.parse(line); }
+        catch (e) { return reject(new Error('worker output not JSON: ' + e.message)); }
+        if (out.error) return reject(new Error(out.error));
+        resolve(out.transactions || []);
+      }
+    );
+  });
+}
+
 // ── Main parse dispatcher ─────────────────────────────────────────────────────
 async function parseStatement(buffer, filename) {
   const ext = (filename || '').toLowerCase().split('.').pop();
   if (ext === 'csv' || ext === 'txt') return parseCSV(buffer.toString('utf8'));
 
-  // PDF path
-  const yearMatch = (filename || '').match(/20\d{2}/);
-  const year = yearMatch ? yearMatch[0] : String(new Date().getFullYear());
-  try {
-    const rows = await parsePDFTransactions(buffer, { year });
-    if (rows.length > 0) return rows;
-    throw new Error('pdf2json returned 0 rows');
-  } catch (e) {
-    // Fallback: use pdftotext (handles pdfkit XRef variants pdf2json can't parse)
-    console.warn('[reconciler] pdf2json failed, trying pdftotext fallback:', e.message || String(e));
+  // PDF path — parse in a child process (fresh pdf2json state). Validation gate:
+  // a clean parse should return rows; if it returns 0 or errors, retry ONCE in a
+  // second fresh process, then fall back to pdftotext, then report unparsed ([]).
+  const yearMatch  = (filename || '').match(/20\d{2}/);
+  const year       = yearMatch ? yearMatch[0] : String(new Date().getFullYear());
+  const monthMatch = (filename || '').match(/Statement\s+([A-Za-z]{3})/i);   // "9092 Statement May 2026.pdf"
+  const month      = monthMatch ? (STMT_MON[monthMatch[1].toLowerCase()] || '') : '';
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await parsePDFWithPdftotext(buffer, year);
-    } catch (e2) {
-      console.error('[reconciler] pdftotext fallback also failed:', e2.message);
-      return [];
+      const rows = await parsePDFInWorker(buffer, year, month);
+      if (rows.length > 0) return rows;
+      console.warn(`[reconciler] worker returned 0 rows (attempt ${attempt}/2) for "${filename}"`);
+    } catch (e) {
+      console.warn(`[reconciler] worker parse failed (attempt ${attempt}/2) for "${filename}":`, e.message || String(e));
     }
   }
+
+  // Fallback: pdftotext (separate binary; handles XRef variants pdf2json can't —
+  // but isn't installed on every machine, so it's a last resort, not the primary).
+  console.warn(`[reconciler] falling back to pdftotext for "${filename}"`);
+  try {
+    const rows = await parsePDFWithPdftotext(buffer, year);
+    if (rows.length > 0) return rows;
+    console.error(`[reconciler] pdftotext also returned 0 rows for "${filename}"`);
+  } catch (e2) {
+    console.error(`[reconciler] pdftotext fallback failed for "${filename}":`, e2.message);
+  }
+  return [];
+}
+
+// ── Statement classification for ingestion ────────────────────────────────────
+// parseStatement returning 0 rows is ambiguous: a dormant account's no-activity
+// month legitimately has zero transactions, while a real statement the parser
+// choked on ALSO yields zero. Treating both as "failed" cries wolf (most of a long
+// history is quiet months). This decides which it is. Returns { rows, kind }:
+//   'ok'         — transactions parsed (rows.length > 0)
+//   'empty'      — readable statement, NO activity (begin==end balance, no
+//                  transaction-detail section): nothing to mirror, NOT a failure
+//   'unparsed'   — readable statement WITH activity/detail but 0 rows parsed
+//                  (a genuine parser miss → candidate for the Groq fallback)
+//   'unreadable' — no extractable text at all (scanned/corrupt → Groq vision)
+const STMT_BAL_RE = (label) => new RegExp(label + '\\s+Balance\\s+\\$?([\\d,]+\\.\\d{2})', 'i');
+const STMT_DETAIL_RE = /TRANSACTION\s+DETAIL|DEPOSITS\s+AND\s+ADDITIONS|ATM\s*&?\s*DEBIT|ELECTRONIC\s+WITHDRAWAL|CHECKS\s+PAID/i;
+// opts.groqFallback (default false): when the deterministic parser misses a PDF that
+// clearly HAS activity ('unparsed'), recover it with the Groq text extractor. The
+// caller gates this on a per-run budget so a bulk upload can't drain the token cap.
+// Result may include method ('parser'|'groq') and groqTried (Groq was attempted).
+async function classifyStatement(buffer, filename, { groqFallback = false } = {}) {
+  const rows = await parseStatement(buffer, filename);
+  if (rows.length > 0) return { rows, kind: 'ok', method: 'parser' };
+
+  // CSV/TXT have no balance summary to corroborate against — a 0-row parse there
+  // is a real miss (bad columns / empty file), not a quiet bank month. (The Groq
+  // fallback reads PDF text layers, so it can't recover a CSV either.)
+  const ext = (filename || '').toLowerCase().split('.').pop();
+  if (ext === 'csv' || ext === 'txt') return { rows: [], kind: 'unparsed' };
+
+  let text = '';
+  try { text = (await extractStatementMeta(buffer)).text || ''; } catch { /* no text → unreadable below */ }
+  if (text.replace(/\s/g, '').length < 50) return { rows: [], kind: 'unreadable' };  // scanned → needs vision, not text Groq
+
+  const begM = text.match(STMT_BAL_RE('Beginning')), endM = text.match(STMT_BAL_RE('Ending'));
+  const beg = begM ? begM[1] : null, end = endM ? endM[1] : null;
+  const hasDetail = STMT_DETAIL_RE.test(text);
+  const txnish = (text.match(/\b\d{1,2}\/\d{1,2}\b[^\n]*\$?\d[\d,]*\.\d{2}/g) || []).length;
+  // No-activity month: balances present and equal, no detail section, no txn lines.
+  if (beg && end && beg === end && !hasDetail && txnish <= 1) return { rows: [], kind: 'empty' };
+
+  // Genuine miss: the statement HAS activity (text layer present) but the positional
+  // parser couldn't read its layout (e.g. a split "- 32.66" sign token). This is the
+  // one case the Groq fallback is for — gated by the caller's per-run budget.
+  if (groqFallback) {
+    try {
+      const { extractTransactions } = require('../vault/ai-extract');   // Groq, rate-limited via groq-client
+      const year  = (filename || '').match(/20\d{2}/)?.[0];
+      const out   = await extractTransactions(buffer, { year });
+      const grows = (out.transactions || []).map(t => ({ date: t.date, desc: t.desc, amount: t.amount }));
+      if (grows.length > 0) return { rows: grows, kind: 'ok', method: 'groq', groqTried: true };
+      console.warn(`[reconciler] groq fallback found no transactions for "${filename}"${out.suspicious ? ' (suspicious — looks like a statement)' : ''}`);
+    } catch (e) { console.warn(`[reconciler] groq fallback failed for "${filename}":`, e.message); }
+    return { rows: [], kind: 'unparsed', groqTried: true };
+  }
+  return { rows: [], kind: 'unparsed' };
 }
 
 // ── Strip PDF column-noise from Chase/BofA statement descriptions ─────────────
@@ -597,4 +709,4 @@ async function getFlagged(query, userId, status) {
   return res.rows;
 }
 
-module.exports = { parseStatement, mirrorStatement, reconcileUser, getStatus, getFlagged, planMatches, aliasMatch, aliasToken, nameSim, parseStmtMeta };
+module.exports = { parseStatement, classifyStatement, mirrorStatement, reconcileUser, getStatus, getFlagged, planMatches, aliasMatch, aliasToken, nameSim, parseStmtMeta };

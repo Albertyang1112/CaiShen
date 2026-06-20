@@ -8,6 +8,9 @@ process.stdout.write = function(data, ...rest) {
 };
 process.env.DOTENV_QUIET = 'true';
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
+// Dev-only override: a gitignored .env.local (if present) wins — e.g. a local
+// DATABASE_URL pointing at local Postgres. Absent in production, so Neon is used there.
+require('dotenv').config({ path: require('path').join(__dirname, '../.env.local'), override: true });
 // Restore stdout (let the tee stream take over below)
 process.stdout.write = _origStdoutWrite;
 

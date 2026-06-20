@@ -2,8 +2,7 @@
 // Dev helper: enqueue categorization questions for a user right now, without waiting for a
 // Plaid sync. The running server's in-process bot will then DM them one at a time.
 // Usage: node server/scripts/enqueue-now.js [userId] [limit]   (defaults: Albert, 3)
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+require('./_env');
 const { query } = require('../core/db');
 const store = require('../core/store');
 const { enqueueQuestions } = require('../banking/categorizer-core');

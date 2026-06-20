@@ -3,8 +3,7 @@
 //   1) one already categorized (bot shows the learned suggestion)
 //   2) one whose suggested category we deliberately override to a "wrong" one
 // Usage: node server/scripts/send-demo.js [userId]
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+require('./_env');
 const crypto = require('crypto');
 const { query } = require('../core/db');
 const store = require('../core/store');

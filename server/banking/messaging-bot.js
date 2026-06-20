@@ -24,6 +24,12 @@ function formatReceiptReply(r) {
       ? "🚫 That doesn't look like a receipt or order confirmation, so I didn't save it. Send a photo of a receipt, invoice, or order confirmation."
       : "📄 I couldn't read that clearly — try a sharper photo of the whole receipt (or send the PDF).";
   }
+  if (r && (r.level === 'hard' || r.level === 'possible')) {
+    const dupflow = require('./receipt-dupflow');
+    return r.level === 'hard'
+      ? dupflow.hardDuplicateMessage(r.existing || {})
+      : dupflow.possibleDuplicateMessage(r.newOcr || {}, r.existing || {});
+  }
   const o = (r && r.ocr) || {};
   if (o.total == null && o.merchant == null) {
     return `📄 Saved your receipt, but I couldn't read the details.`;
@@ -35,7 +41,7 @@ function formatReceiptReply(r) {
 }
 
 // Route one inbound message. Returns { replies: string[], userId? }.
-async function handleInbound({ query, makeIO, parseReply, ingest }, { channel, externalId, text, displayName, attachments }) {
+async function handleInbound({ query, makeIO, parseReply, ingest, groqClassify }, { channel, externalId, text, displayName, attachments }) {
   const userId = await store.userForExternal(query, channel, externalId);
 
   if (!userId) {
@@ -56,9 +62,35 @@ async function handleInbound({ query, makeIO, parseReply, ingest }, { channel, e
       try {
         const res = await ingestReceipt(query, io, userId, { buffer: a.bytes, mimeType: a.contentType, originalName: a.name });
         replies.push(formatReceiptReply(res));
+        // On a flagged duplicate, send the existing receipt photo back for comparison (best-effort).
+        if ((res.level === 'hard' || res.level === 'possible') && res.existingDocId) {
+          try { const bytes = await require('../core/documents').getDocumentBytes(userId, res.existingDocId); if (bytes) replies.push({ file: bytes, name: 'existing-receipt.jpg' }); }
+          catch { /* skip the photo if it can't be fetched */ }
+        }
+        // A saved, unmatched receipt → ask whether it was cash.
+        if (res.level === 'unique' && !res.matched && res.id) {
+          await require('./receipt-match').createCashQuestion(query, userId, res.id);
+          replies.push('Was this a cash purchase? Reply yes or no.');
+        }
       } catch (e) { replies.push('⚠️ Could not process that receipt: ' + e.message); }
     }
     return { replies, userId };
+  }
+
+  // A pending duplicate-resolution question takes priority over categorization.
+  const dupflow = require('./receipt-dupflow');
+  const dq = await dupflow.pendingDedupQuestion(query, userId);
+  if (dq) {
+    const res = await dupflow.handleDedupReply(query, makeIO(userId), userId, dq, text, groqClassify ? { groqClassify } : {});
+    return { replies: res.replies, userId };
+  }
+
+  // Then a pending cash question.
+  const rm = require('./receipt-match');
+  const cq = await rm.pendingCashQuestion(query, userId);
+  if (cq) {
+    const res = await rm.handleCashAnswer(query, makeIO(userId), userId, cq, text);
+    return { replies: res.replies, userId };
   }
 
   const res = await core.handleReply(query, makeIO(userId), userId, text, parseReply ? { parseReply } : {});
@@ -94,7 +126,10 @@ function start({ makeIO, query, intervalMs = 8000 } = {}) {
     try {
       const { replies } = await handleInbound({ query, makeIO }, inbound);
       for (const r of replies) {
-        try { await transport.send(inbound.externalId, r); } catch (e) { console.error('[bot] reply send:', e.message); }
+        try {
+          if (r && typeof r === 'object' && r.file) await transport.sendFile(inbound.externalId, r.file, r.name);
+          else await transport.send(inbound.externalId, r);
+        } catch (e) { console.error('[bot] reply send:', e.message); }
       }
     } catch (e) { console.error('[bot] handleInbound:', e.message); }
   }).then(() => {

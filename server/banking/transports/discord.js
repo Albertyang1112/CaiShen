@@ -60,6 +60,10 @@ function makeDiscordTransport(token) {
       const user = await client.users.fetch(externalId);
       await user.send(text);
     },
+    async sendFile(externalId, bytes, filename) {
+      const user = await client.users.fetch(externalId);
+      await user.send({ files: [{ attachment: bytes, name: filename || 'receipt.jpg' }] });
+    },
     async stop() { try { await client.destroy(); } catch { /* best effort */ } },
   };
 }
