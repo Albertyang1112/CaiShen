@@ -1,8 +1,7 @@
 'use strict';
 // Dev helper: clear the categorizer question queue (txn_messages) for a user. Links kept.
 // Usage: node server/scripts/messaging-reset.js [userId]
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+require('./_env');
 const { query } = require('../core/db');
 
 (async () => {

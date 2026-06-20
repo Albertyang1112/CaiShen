@@ -887,8 +887,16 @@ async function extractStatementMeta(buffer) {
   const closingBalance = extractClosingBalance(rawText);
   const property       = pages.length ? findPropertyAddress(pages) : null;  // mortgage statements
 
+  // Statement coverage range (start → end) when the page exposes one — from an
+  // explicit range string, else the densest date cluster. Lets the hybrid sorter
+  // dedup by date range and corroborate the closing-month naming.
+  const range = extractDateRange(readingText) || extractDateRange(rawText) ||
+    (() => { const c = clusterDates(collectDates(readingText, inferYearFromText(readingText))); return c ? { start: c.start, end: c.end } : null; })();
+  const isoOf = (x) => x ? `${x.year}-${String(x.month).padStart(2, '0')}-${String(x.day).padStart(2, '0')}` : null;
+
   return { institution, accountName, last4, year: period.year, month: period.month, closingBalance,
-           propertyAddress: property?.address || null, propertyStreet: property?.streetName || null };
+           propertyAddress: property?.address || null, propertyStreet: property?.streetName || null,
+           periodStart: isoOf(range?.start), periodEnd: isoOf(range?.end), text: readingText };
 }
 
 // ── Raw text extraction (for similarity comparison) ───────────────────────────

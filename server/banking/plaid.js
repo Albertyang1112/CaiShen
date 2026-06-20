@@ -251,6 +251,12 @@ module.exports = function(makeIO, notifyClients = () => {}) {
       const _q = await require('./categorizer-core').enqueueQuestions(query, io, userId, { channel: 'discord', onlyIds: newIds });
       if (_q) console.log(`[Categorizer] user ${userId}: queued ${_q} question(s) for ${newIds.length} new txn(s)`);
     } catch (e) { console.error('[Categorizer] enqueue error:', e.message); }
+    // Retroactively match unmatched (non-cash) receipts to the transactions just pulled.
+    try {
+      const { query } = require('../core/db');
+      const _rm = await require('./receipt-match').matchPendingReceipts(query, io, userId);
+      if (_rm) console.log(`[Receipts] user ${userId}: matched ${_rm} pending receipt(s) to transactions`);
+    } catch (e) { console.error('[Receipts match] error:', e.message); }
     // Auto-reconcile: re-match Plaid rows against any previously uploaded statement data
     try {
       const { query } = require('../core/db');

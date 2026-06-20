@@ -1,18 +1,20 @@
 'use strict';
 /**
- * banking/receipt-ingest.js — ingest a receipt that arrived through the messaging bot
- * (a DM attachment), with no transaction context required.
+ * banking/receipt-ingest.js — ingest a receipt that arrived through the messaging bot.
  *
  *   ingestReceipt(query, io, userId, { buffer, mimeType, originalName })
- *     1. OCR the image/PDF → { merchant, total, date, items }   (best-effort; never throws)
- *     2. best-effort auto-match to a recent transaction (amount + date + merchant)
- *     3. store the bytes (R2 via core/documents; disk fallback)
- *     4. INSERT the receipts row (txn_id may be NULL — standalone)
- *     5. remodel write-flow: receipt_items + source_transactions + structured columns,
- *        and the receipt→transaction evidence link when a match was found.
+ *     1. OCR + gatekeeper (is_receipt) — reject non-receipts.
+ *     2. compute dedup hashes (file / perceptual / OCR-text) and run findDuplicate.
+ *     3. store the file (R2 + documents row; disk fallback) — always, as a file record.
+ *     4. insert the receipts row with hashes + duplicate_status/review_status.
+ *     5. branch:
+ *          hard     → blocked: rejected_duplicate, NO source_transaction; bot says "already saved".
+ *          possible → held: needs_review, NO source_transaction yet; opens a same/separate question.
+ *          unique   → active: receipt_items + source_transaction + reconciliation (findMatch).
  *
- * Mirrors the storage path of banking/receipt-routes.js, but txn-optional. Runs in-process
- * with the server, so the bot calls it directly (no HTTP round-trip).
+ * Returns a tagged result the bot turns into the right SMS:
+ *   { rejected, reason } | { level:'hard', existing } | { level:'possible', newOcr, existing }
+ *   | { level:'unique', id, ocr, matched }
  */
 const crypto    = require('crypto');
 const path      = require('path');
@@ -21,21 +23,22 @@ const r2        = require('../core/r2');
 const documents = require('../core/documents');
 const { ocrReceipt, compareToTxn } = require('./receipt-ocr');
 const { recordReceiptRemodel }     = require('./receipt-store');
+const { fileSha256, perceptualHash, ocrTextHash } = require('./receipt-hash');
+const { findDuplicate } = require('./receipt-dedup');
+const dupflow = require('./receipt-dupflow');
 
-// Best-effort match of an OCR'd receipt to a recent transaction: amount must line up, date
-// must be within a few days, and a shared merchant word boosts confidence. Returns the
-// transaction (or null). Pure — testable without a DB.
+// Best-effort match of an OCR'd receipt to a recent transaction (amount + date + merchant).
 function findMatch(ocr, txns) {
   if (!ocr || ocr.total == null) return null;
   const total = Number(ocr.total);
   let best = null, bestScore = 0;
   for (const t of (txns || [])) {
     if (!t || t.excluded) continue;
-    if (Math.abs(Math.abs(Number(t.amount) || 0) - total) > 0.02) continue;   // amount must match
+    if (Math.abs(Math.abs(Number(t.amount) || 0) - total) > 0.02) continue;
     let score = 1;
     if (ocr.date && t.date) {
       const dd = Math.abs((new Date(ocr.date) - new Date(t.date)) / 86400000);
-      if (dd > 5) continue;                                                    // within ~5 days
+      if (dd > 5) continue;
       score += (5 - dd) / 5;
     }
     if (ocr.merchant && t.desc) {
@@ -48,8 +51,8 @@ function findMatch(ocr, txns) {
   return best;
 }
 
-// Gate: only genuine proofs of purchase are stored. The vision model classifies is_receipt;
-// when it didn't classify (odd/old response), accept only if real purchase data was read.
+// Gate: only genuine proofs of purchase are stored. (is_receipt from the OCR; if unclassified,
+// accept only when real purchase data was read.)
 function shouldAccept(ocr) {
   if (ocr && ocr.is_receipt === false) return { accept: false, reason: 'not_receipt', docType: ocr.doc_type || 'other' };
   if (ocr && ocr.is_receipt === true)  return { accept: true };
@@ -57,56 +60,81 @@ function shouldAccept(ocr) {
   return readable ? { accept: true } : { accept: false, reason: 'unreadable', docType: (ocr && ocr.doc_type) || null };
 }
 
-async function ingestReceipt(query, io, userId, { buffer, mimeType, originalName }) {
-  // 1. OCR + classify — best-effort; a failure yields a blank, which the gate then rejects.
-  let ocrData;
-  try { ocrData = await ocrReceipt(buffer, mimeType); }
-  catch (e) { ocrData = { is_receipt: null, merchant: null, total: null, date: null, items: [], error: e.message }; }
-
-  // 1b. Gatekeeper — a non-receipt (random photo, etc.) is rejected and nothing is stored.
-  const gate = shouldAccept(ocrData);
-  if (!gate.accept) return { rejected: true, reason: gate.reason, docType: gate.docType };
-
-  // 2. Auto-match to a recent transaction.
-  const match = findMatch(ocrData, io.read('transactions.json') || []);
-  const cmp   = match ? compareToTxn(ocrData, match) : null;
-
-  // 3. Store bytes — R2 (documents) preferred, disk fallback (same as receipt-routes).
+// Store bytes — R2 + documents row preferred; disk fallback. Returns { docId, filePath, name }.
+async function storeBytes(io, userId, buffer, mimeType, originalName) {
   const ext  = path.extname(originalName || '') || (mimeType === 'application/pdf' ? '.pdf' : '.png');
   const name = originalName || `receipt${ext}`;
   let docId = null, filePath = null;
   if (r2.configured) {
     try {
       docId = `rcpt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const { key } = await documents.saveDocument({
-        id: docId, userId, name, mimeType, bytes: buffer, folderPath: 'receipts',
-        tags: match ? { txnId: match.id } : {},
-      });
+      const { key } = await documents.saveDocument({ id: docId, userId, name, mimeType, bytes: buffer, folderPath: 'receipts', tags: {} });
       filePath = key;
-    } catch (e) { console.error('[receipt-ingest] R2 store failed, falling back to disk:', e.message); docId = null; }
+    } catch (e) { console.error('[receipt-ingest] R2 store failed, disk fallback:', e.message); docId = null; }
   }
   if (!docId) {
-    const dir = path.join(io.dir, 'receipts');
-    fs.mkdirSync(dir, { recursive: true });
+    const dir = path.join(io.dir, 'receipts'); fs.mkdirSync(dir, { recursive: true });
     filePath = path.join(dir, `${Date.now()}_${crypto.randomBytes(4).toString('hex')}${ext}`);
     fs.writeFileSync(filePath, buffer);
   }
+  return { docId, filePath, name };
+}
 
-  // 4. Persist the receipt row (txn_id may be NULL — standalone).
+async function ingestReceipt(query, io, userId, { buffer, mimeType, originalName }) {
+  // 1. OCR + classify.
+  let ocrData;
+  try { ocrData = await ocrReceipt(buffer, mimeType); }
+  catch (e) { ocrData = { is_receipt: null, merchant: null, total: null, date: null, items: [], error: e.message }; }
+  const gate = shouldAccept(ocrData);
+  if (!gate.accept) return { rejected: true, reason: gate.reason, docType: gate.docType };
+
+  // 2. dedup hashes + check against existing active receipts.
+  const file_sha256 = fileSha256(buffer);
+  const perceptual_hash = await perceptualHash(buffer, mimeType);
+  const ocr_text_hash = ocrTextHash(ocrData);
+  const dup = await findDuplicate(query, userId, { file_sha256, perceptual_hash, ocr_text_hash, ocr: ocrData });
+  const existingOcr = (dup.existing && dup.existing.ocr_data) || {};
+
+  // 3. store the file (a file record always exists, even for blocked duplicates).
+  const { docId, filePath, name } = await storeBytes(io, userId, buffer, mimeType, originalName);
+
+  // 4. reconciliation only matters for receipts that will become active (unique path).
+  const match = dup.level === 'unique' ? findMatch(ocrData, io.read('transactions.json') || []) : null;
+  const cmp   = match ? compareToTxn(ocrData, match) : null;
+
+  const status = dup.level === 'hard'     ? ['hard_duplicate',     'rejected_duplicate']
+               : dup.level === 'possible' ? ['possible_duplicate', 'needs_review']
+               :                            ['unique',             'auto_accepted'];
   const id = crypto.randomUUID();
   await query(
-    `INSERT INTO receipts (id, user_id, txn_id, file_path, doc_id, original_name, mime_type, ocr_data, match_status, match_flags)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    `INSERT INTO receipts (id,user_id,txn_id,file_path,doc_id,original_name,mime_type,ocr_data,match_status,match_flags,
+        merchant_name,receipt_date,total_amount,parser_status,file_sha256,perceptual_hash,ocr_text_hash,
+        duplicate_status,review_status,duplicate_of_receipt_id,duplicate_confidence,duplicate_reason)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'parsed',$14,$15,$16,$17,$18,$19,$20,$21)`,
     [id, userId, match ? match.id : null, filePath, docId, name, mimeType,
-     JSON.stringify(ocrData), cmp ? cmp.status : (match ? 'matched' : 'unreviewed'), JSON.stringify(cmp ? cmp.flags : [])]);
+     JSON.stringify(ocrData), cmp ? cmp.status : (match ? 'matched' : 'unreviewed'), JSON.stringify(cmp ? cmp.flags : []),
+     ocrData.merchant || null, ocrData.date || null, ocrData.total != null ? ocrData.total : null,
+     file_sha256, perceptual_hash, ocr_text_hash,
+     status[0], status[1], dup.matchedReceiptId || null, dup.level === 'unique' ? null : dup.score, dup.reason || null]);
 
-  // 5. Remodel write-flow (receipt_items + source_transactions + structured columns + link).
+  // 5. branch.
+  if (dup.level === 'hard') {
+    await dupflow.logCheck(query, { userId, newReceiptId: id, newFileId: docId, existingReceiptId: dup.matchedReceiptId,
+      score: dup.score, reason: dup.reason, signals: dup.signals, botMessage: dupflow.hardDuplicateMessage(existingOcr), finalDecision: 'hard_duplicate' });
+    return { level: 'hard', id, existing: existingOcr, existingDocId: dup.existing && dup.existing.doc_id, existingReceiptId: dup.matchedReceiptId };
+  }
+  if (dup.level === 'possible') {
+    const checkId = await dupflow.logCheck(query, { userId, newReceiptId: id, newFileId: docId, existingReceiptId: dup.matchedReceiptId,
+      score: dup.score, reason: dup.reason, signals: dup.signals, botMessage: dupflow.possibleDuplicateMessage(ocrData, existingOcr) });
+    await dupflow.createDedupQuestion(query, userId, { newReceiptId: id, existingReceiptId: dup.matchedReceiptId, checkId });
+    return { level: 'possible', id, newOcr: ocrData, existing: existingOcr, existingDocId: dup.existing && dup.existing.doc_id, existingReceiptId: dup.matchedReceiptId };
+  }
+  // unique → active receipt: items + source_transaction + evidence link.
   try {
     const matchScore = cmp ? (cmp.status === 'matched' ? 1 : cmp.status === 'partial' ? 0.5 : 0.1) : null;
     await recordReceiptRemodel(query, { userId, receiptId: id, txnId: match ? match.id : null, txn: match || null, ocrData, matchScore });
   } catch (e) { console.error('[receipt-ingest/remodel]', e.message); }
-
-  return { id, ocr: ocrData, matched: match ? { id: match.id, desc: match.desc, date: match.date } : null };
+  return { level: 'unique', id, ocr: ocrData, matched: match ? { id: match.id, desc: match.desc, date: match.date } : null };
 }
 
-module.exports = { ingestReceipt, findMatch, shouldAccept };
+module.exports = { ingestReceipt, findMatch, shouldAccept, storeBytes };

@@ -201,7 +201,7 @@ async function enqueueQuestions(query, io, userId, { limit = 25, channel = null,
 
 async function openQuestionFor(query, userId) {
   const r = await query(
-    `SELECT * FROM txn_messages WHERE user_id=$1 AND state IN ('open','asked')
+    `SELECT * FROM txn_messages WHERE user_id=$1 AND state IN ('open','asked') AND kind='confirm'
        ORDER BY created_at ASC LIMIT 1`, [userId]);
   const row = r.rows[0];
   if (row && typeof row.payload === 'string') row.payload = JSON.parse(row.payload);

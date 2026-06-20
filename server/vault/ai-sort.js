@@ -46,9 +46,12 @@ HOW TO TELL BANK vs MORTGAGE (critical):
 - Never classify a document as a mortgage just because an address appears on it.
 
 FILING RULES — set "folder" (a forward-slash path) and "filename":
-- bank_statement     -> "Bank Statements/{institution}/{accountName}/{year}"
+- bank_statement     -> "Bank Statements/{institution}/{accountName} (••{last4})/{year}"
     institution = bank/brokerage brand only (e.g. "Chase", "Bank of America", "Charles Schwab").
-    accountName = the product name on the statement (e.g. "TOTAL CHECKING", "Premier Savings"). If absent, "Account {last4}".
+    accountName = the product name on the statement (e.g. "Total Checking", "Premier Savings").
+    The ACCOUNT IS IDENTIFIED BY ITS LAST 4 DIGITS — always extract last4, and if a folder
+    already exists for the same institution + last4 (even under a DIFFERENT name), REUSE it
+    rather than create a new one. The last4 keeps a renamed account from splitting in two.
     filename = "{last4} Statement {Mon} {year}.pdf"  (Mon = 3-letter month). If no last4: "{accountName} {Mon} {year}.pdf".
 - mortgage_statement -> "Mortgage Statements/{propertyAddress}/{year}"
     propertyAddress = the property/subject address securing the loan (e.g. "8962 Kobe Pl"). NOT the servicer's payment/remit address.
@@ -74,16 +77,23 @@ function indexFolders(folders = []) {
   const paths = folders.map(f => (typeof f === 'string' ? f : f.path)).filter(Boolean);
   const banks = new Set(), properties = new Set();
   const accountsByBank = {};
+  const accountFolderByLast4 = {};   // { instKey: { last4: accountFolderSegment } } — last4 is the account identity
+  const last4Of = (seg) => { const m = String(seg).match(/(\d{4})(?!.*\d)/); return m ? m[1] : null; };
   for (const p of paths) {
     const parts = p.split('/');
     if (parts[0] === 'Bank Statements' && parts[1]) {
       banks.add(parts[1]);
-      if (parts[2]) (accountsByBank[parts[1].toLowerCase()] ||= new Set()).add(parts[2]);
+      if (parts[2]) {
+        const instKey = parts[1].toLowerCase();
+        (accountsByBank[instKey] ||= new Set()).add(parts[2]);
+        const l4 = last4Of(parts[2]);
+        if (l4) (accountFolderByLast4[instKey] ||= {})[l4] = parts[2];
+      }
     } else if (parts[0] === 'Mortgage Statements' && parts[1]) {
       properties.add(parts[1]);
     }
   }
-  return { paths, banks, properties, accountsByBank };
+  return { paths, banks, properties, accountsByBank, accountFolderByLast4 };
 }
 
 // A compact view of the existing tree for the prompt (depths 1-3, deduped).
@@ -174,12 +184,20 @@ function reconcile(ai, idx, originalName) {
 
   if (docType === 'bank_statement') {
     institution = institution ? snap(institution, idx.banks) : null;
-    const acctPool = institution ? (idx.accountsByBank[institution.toLowerCase()] || new Set()) : new Set();
-    accountName = accountName ? snap(accountName, acctPool) : (last4 ? `Account ${last4}` : null);
-    if (institution && accountName && year) {
-      folder = `Bank Statements/${institution}/${accountName}/${year}`;
+    const instKey = institution ? institution.toLowerCase() : '';
+    // Account identity = last4. A renamed account must NOT split into two folders, so if a
+    // folder already exists for this (institution, last4) reuse it verbatim. Only a NEW last4
+    // mints a folder "{name} (••last4)" — last4 is the eternal key, name is the model's call.
+    let acctSeg = (last4 && idx.accountFolderByLast4[instKey]) ? idx.accountFolderByLast4[instKey][last4] : null;
+    if (!acctSeg) {
+      const readable = (accountName || 'Account').trim() || 'Account';
+      acctSeg = last4 ? (readable.includes(last4) ? readable : `${readable} (••${last4})`) : readable;
+    }
+    accountName = acctSeg;
+    if (institution && acctSeg && year) {
+      folder = `Bank Statements/${institution}/${acctSeg}/${year}`;
       filename = last4 && mon ? `${last4} Statement ${mon} ${year}.pdf`
-               : (mon ? `${accountName} ${mon} ${year}.pdf` : filename);
+               : (mon ? `${acctSeg} ${mon} ${year}.pdf` : filename);
     }
   } else if (docType === 'mortgage_statement' || docType === 'escrow') {
     property = property ? snap(property, idx.properties) : null;

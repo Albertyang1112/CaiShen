@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import axios from 'axios'
 
-const API = 'http://localhost:3001/api'
+const API = '/api'
 
 const COINS = {
   BTC:   { name: 'Bitcoin',    id: 'bitcoin',       color: 'var(--amber)' },

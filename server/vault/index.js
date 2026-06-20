@@ -147,6 +147,74 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── POST /api/vault/move — drag-and-drop: move files and/or a folder ──
+  // body: { fileIds?: string[], folderId?: string, targetFolderId?: string|null }
+  // targetFolderId null = vault root. Folder moves re-parent + cascade every
+  // descendant folder path AND the files under them. R2 bytes are keyed by id, so a
+  // move is metadata only (disk rename is best-effort for un-migrated files).
+  router.post('/move', async (req, res) => {
+    try {
+      const userId   = req.user.id;
+      const vaultDir = getUserVaultDir(userId);
+      const meta     = readMeta(userId);
+      const { fileIds = [], folderId = null, targetFolderId = null } = req.body || {};
+
+      const target = targetFolderId ? meta.folders.find(f => f.id === targetFolderId) : null;
+      if (targetFolderId && !target) return res.status(404).json({ error: 'Target folder not found' });
+      const targetPath = target ? target.path : '';            // '' = vault root
+
+      const diskMove = (op, np) => { try {
+        const a = path.join(vaultDir, op), b = path.join(vaultDir, np);
+        if (fs.existsSync(a)) { fs.mkdirSync(path.dirname(b), { recursive: true }); if (!fs.existsSync(b)) fs.renameSync(a, b); }
+      } catch {} };
+
+      let movedFiles = 0, movedFolder = null;
+
+      // ── Move a folder (re-parent + cascade) ──
+      if (folderId) {
+        const folder = meta.folders.find(f => f.id === folderId);
+        if (!folder) return res.status(404).json({ error: 'Folder not found' });
+        const subtree = (id) => { const c = meta.folders.filter(f => f.parentId === id); return [id, ...c.flatMap(x => subtree(x.id))]; };
+        const ids = subtree(folderId);
+        if (targetFolderId && ids.includes(targetFolderId))
+          return res.status(400).json({ error: "Can't move a folder into itself or one of its subfolders" });
+        if ((folder.parentId || null) !== (targetFolderId || null)) {
+          const newPath = targetPath ? `${targetPath}/${folder.name}` : folder.name;
+          if (meta.folders.some(f => f.id !== folder.id && f.path === newPath))
+            return res.status(400).json({ error: 'A folder with that name already exists there' });
+          const oldPrefix = folder.path;
+          diskMove(oldPrefix, newPath);
+          for (const fo of meta.folders) if (fo.id === folder.id || ids.includes(fo.id))
+            fo.path = newPath + fo.path.slice(oldPrefix.length);          // re-root the prefix
+          folder.parentId = targetFolderId || null;
+          for (const f of meta.files)
+            if (f.folderPath === oldPrefix || String(f.folderPath).startsWith(oldPrefix + '/'))
+              f.folderPath = newPath + String(f.folderPath).slice(oldPrefix.length);
+          movedFolder = { id: folder.id, path: newPath };
+        }
+      }
+
+      // ── Move files ──
+      for (const fid of fileIds) {
+        const f = meta.files.find(x => x.id === fid);
+        if (!f || (f.folderId || null) === (targetFolderId || null)) continue;
+        let name = f.name;
+        if (meta.files.some(x => x.id !== fid && x.folderPath === targetPath && x.name === name)) {
+          const ext = path.extname(name);                                 // collision → unique suffix
+          name = `${path.basename(name, ext)}_${Date.now()}${ext}`;
+        }
+        diskMove(`${f.folderPath}/${f.name}`, `${targetPath}/${name}`);
+        if (name !== f.name) { try { await require('../core/documents').renameDocument(userId, f.id, name); } catch {} f.name = name; }
+        f.folderPath = targetPath;
+        f.folderId   = targetFolderId || null;
+        movedFiles++;
+      }
+
+      writeMeta(meta, userId);
+      res.json({ movedFiles, movedFolder });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── GET /api/vault/file/:id ───────────────────────────────────────────
   router.get('/file/:id', async (req, res) => {
     const userId = req.user.id;
@@ -356,36 +424,92 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
       const meta      = readMeta(userId);
       const { query } = require('../core/db');
       const documents = require('../core/documents');
-      const { parseStatement, mirrorStatement, reconcileUser } = require('../banking/reconciler');
+      const { classifyStatement, mirrorStatement, reconcileUser } = require('../banking/reconciler');
 
-      const { fileIds } = req.body || {};
+      const { fileIds, force } = req.body || {};
+      const explicit = Array.isArray(fileIds) && fileIds.length > 0;
       let targets = meta.files.filter(f =>
         f.type === 'pdf' && (f.folderPath || '').startsWith('Bank Statements/'));
-      if (Array.isArray(fileIds) && fileIds.length) {
+      if (explicit) {
         const want = new Set(fileIds);
         targets = targets.filter(f => want.has(f.id));
       }
 
-      let statements = 0, mirrored = 0, failed = 0;
+      // Checkpoint-aware loop: persist each file's parse outcome to its tags, so a
+      // re-run skips files already indexed OK and retries only failures/new files
+      // (force:true or an explicit fileIds list re-parses regardless). Meta is
+      // flushed every few files so a crash mid-run doesn't lose progress.
+      let statements = 0, mirrored = 0, failed = 0, skipped = 0, empty = 0;
+      const failures = [];                          // [{ id, name, reason }] — genuine misses, surfaced
+      const DONE = new Set(['indexed', 'empty']);   // already-settled outcomes a re-run can skip
+      // Groq fallback budget: only 'unparsed' PDFs (real misses) hit Groq, and never
+      // more than this many per run, so a bulk upload of odd layouts can't drain the
+      // daily token cap. Files past the cap stay 'failed' and are retried on re-run.
+      const GROQ_FALLBACK_MAX = parseInt(process.env.GROQ_FALLBACK_MAX, 10) || 25;
+      let groqUsed = 0, groqRecovered = 0, groqCapped = 0;
+      let dirty = false, sinceFlush = 0;
+      const FLUSH_EVERY = 10;
+      const flush = () => {
+        if (!dirty) return;
+        try { writeMeta(meta, userId); dirty = false; sinceFlush = 0; }
+        catch (e) { console.error('[vault/index-statements] writeMeta:', e.message); }
+      };
+
       for (const f of targets) {
+        if (!force && !explicit && DONE.has(f.tags?.indexStatus)) { skipped++; continue; }
+        const fi = meta.files.findIndex(x => x.id === f.id);
+        const setTags = (t) => { if (fi >= 0) meta.files[fi].tags = { ...(meta.files[fi].tags || {}), indexedAt: new Date().toISOString(), ...t }; };
         try {
           const bytes = await documents.getDocumentBytes(userId, f.id);
-          if (!bytes) { failed++; continue; }
-          const rows = await parseStatement(bytes, f.name);   // PDF → [{date,amount,desc}]
-          if (!rows.length) { failed++; continue; }
-          mirrored += await mirrorStatement(query, userId, rows, f.name, { documentId: f.id }); // → source_transactions (+ period, bank_statement)
-          statements++;
-        } catch (e) { failed++; console.error('[vault/index-statements]', f.name, e.message); }
+          if (!bytes) throw new Error('document bytes not found');
+          // classifyStatement: parser first; for a genuine miss it falls back to Groq
+          // (only while under the per-run budget). Quiet no-activity months come back
+          // as 'empty' so they're never reported as failures.
+          const allowGroq = groqUsed < GROQ_FALLBACK_MAX;
+          const { rows, kind, method, groqTried } = await classifyStatement(bytes, f.name, { groqFallback: allowGroq });
+          if (groqTried) groqUsed++;
+          if (kind === 'ok') {
+            mirrored += await mirrorStatement(query, userId, rows, f.name, { documentId: f.id }); // → source_transactions
+            statements++;
+            if (method === 'groq') groqRecovered++;
+            setTags({ indexStatus: 'indexed', indexRows: rows.length, indexMethod: method || 'parser', indexError: null });
+          } else if (kind === 'empty') {
+            empty++;                                  // no-activity month — nothing to mirror, not a failure
+            setTags({ indexStatus: 'empty', indexRows: 0, indexError: null });
+          } else {
+            // 'unparsed' (activity present, parser+Groq missed it) or 'unreadable' (no text)
+            failed++;
+            const capped = kind === 'unparsed' && !allowGroq;
+            if (capped) groqCapped++;
+            const reason = kind === 'unreadable' ? 'no readable text (scanned?)'
+                         : capped               ? 'parser missed it; Groq budget for this run was used up — retry'
+                         :                        'parser + Groq both found 0 transactions';
+            failures.push({ id: f.id, name: f.name, reason, kind });
+            setTags({ indexStatus: 'failed', indexKind: kind, indexError: reason });
+            console.error('[vault/index-statements]', f.name, '→', kind, capped ? '(groq-capped)' : '');
+          }
+        } catch (e) {
+          failed++;
+          failures.push({ id: f.id, name: f.name, reason: e.message, kind: 'error' });
+          setTags({ indexStatus: 'failed', indexKind: 'error', indexError: e.message });
+          console.error('[vault/index-statements]', f.name, e.message);
+        }
+        dirty = true; sinceFlush++;
+        if (sinceFlush >= FLUSH_EVERY) flush();
       }
+      flush();   // persist the final batch of checkpoint tags
 
       // Compare to Plaid + (re)populate statement_matches — the Banking badges read these.
+      // Run whenever there's statement data on hand (freshly indexed OR already-indexed
+      // and skipped) so a re-run still refreshes matches against new Plaid activity.
       let reconcile = null;
-      if (statements > 0) {
+      if (statements > 0 || skipped > 0) {
         try { reconcile = await reconcileUser(query, userId, io); }
         catch (e) { console.error('[vault/index-statements] reconcile:', e.message); }
       }
-      console.log(`[vault/index-statements] ${statements} statement(s), ${mirrored} rows mirrored, ${failed} failed`);
-      res.json({ statements, mirrored, failed, reconcile });
+      if (groqCapped > 0) console.warn(`[vault/index-statements] Groq budget (${GROQ_FALLBACK_MAX}) reached — ${groqCapped} file(s) left for a later run`);
+      console.log(`[vault/index-statements] ${statements} indexed (${groqRecovered} via groq), ${mirrored} rows mirrored, ${empty} empty, ${skipped} skipped, ${failed} failed`);
+      res.json({ statements, mirrored, empty, skipped, failed, groqRecovered, groqCapped, failures, reconcile });
     } catch (e) {
       console.error('[vault/index-statements]', e.message);
       res.status(500).json({ error: e.message });

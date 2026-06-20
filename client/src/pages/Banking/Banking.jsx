@@ -1222,10 +1222,20 @@ export default function Banking({ accounts, transactions, onUpdate }) {
   const [acctSettings, setAcctSettings] = useState({})            // {accountId → {business, propertyId}}
   const [properties, setProperties]     = useState([])            // rentals, for the business property tag
   const [receiptCounts, setReceiptCounts] = useState({})          // {txn_id → receipt count} for the 📎 row indicator
+  const [recStatus, setRecStatus]         = useState(null)        // GET /reconcile/status — matched/plaid-only/stmt-only counts
+  const [idxRunning, setIdxRunning]       = useState(false)       // index-statements request in flight
+  const [idxResult, setIdxResult]         = useState(null)        // last index-statements summary
+  const [idxErr, setIdxErr]               = useState('')          // index-statements error
 
   // Refetched after every attach/remove in the detail modal so row 📎s stay current.
   const reloadReceiptCounts = useCallback(() => {
     axios.get(`${API}/receipts/counts`).then(r => setReceiptCounts(r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? r.data : {})).catch(() => {})
+  }, [])
+
+  // Reconciliation summary (matched / plaid-only / statement-only / conflict) for the
+  // statements-view status line; refreshed after a re-index.
+  const loadRecStatus = useCallback(() => {
+    axios.get(`${API}/reconcile/status`).then(r => setRecStatus(r.data || null)).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -1235,7 +1245,8 @@ export default function Banking({ accounts, transactions, onUpdate }) {
     axios.get(`${API}/account-settings`).then(r => setAcctSettings(r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? r.data : {})).catch(() => {})
     axios.get(`${API}/properties`).then(r => setProperties(Array.isArray(r.data) ? r.data : [])).catch(() => {})
     reloadReceiptCounts()
-  }, [reloadReceiptCounts])
+    loadRecStatus()
+  }, [reloadReceiptCounts, loadRecStatus])
 
   // Lookup a COA entry by id — tolerant of missing (deleted) accounts.
   const coaById = useMemo(() => new Map(coa.map(a => [a.id, a])), [coa])
@@ -1246,6 +1257,19 @@ export default function Banking({ accounts, transactions, onUpdate }) {
   // After a manual match / alias change in the detail popup, refresh the inline
   // reconcile badges (✓ / ◈ / ⚠) on the transaction rows.
   const reloadFlags = () => axios.get(`${API}/reconcile/txn-flags`).then(r => setReconcileFlags(r.data || {})).catch(() => {})
+  // Re-index every Bank-Statements PDF (parse → mirror → reconcile). force=false skips
+  // files already indexed/empty and retries only failures + new files; force=true
+  // re-parses everything. Refreshes the inline badges + status line afterwards.
+  const runIndex = async (force = false) => {
+    setIdxRunning(true); setIdxErr(''); setIdxResult(null)
+    try {
+      const r = await axios.post(`${API}/vault/index-statements`, { force }, { timeout: 600000 })
+      setIdxResult(r.data)
+      reloadFlags(); loadRecStatus(); reload()
+    } catch (e) {
+      setIdxErr(e.response?.data?.error || e.message)
+    } finally { setIdxRunning(false) }
+  }
   // Persist a per-account business flag / property tag (optimistic). Re-run "Auto-categorize
   // all" afterwards to reclassify that account's transactions as business.
   const saveAcctSetting = async (id, patch) => {
@@ -1486,6 +1510,52 @@ export default function Banking({ accounts, transactions, onUpdate }) {
 
           {view==='statements' && (
             <div>
+              {/* Re-index & reconcile toolbar + last-run summary */}
+              <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14,padding:'10px 14px',background:'var(--bg-secondary)',border:'0.5px solid var(--border)',borderRadius:'var(--radius-md)',flexWrap:'wrap'}}>
+                <div style={{flex:1,minWidth:200}}>
+                  <p style={{margin:0,fontSize:13,fontWeight:500}}>Statement reconciliation</p>
+                  <p style={{margin:'2px 0 0',fontSize:11,color:'var(--text-secondary)',lineHeight:1.5}}>
+                    {recStatus
+                      ? <>{recStatus.stats.matched} matched · {recStatus.stats.plaid_only} Plaid-only · {recStatus.stats.stmt_only} statement-only{recStatus.stats.conflict ? ` · ${recStatus.stats.conflict} conflict` : ''}</>
+                      : 'Extract each statement’s transactions and compare them against Plaid.'}
+                  </p>
+                </div>
+                <button onClick={()=>runIndex(false)} disabled={idxRunning}
+                  title="Parse any new or previously-failed statements, then re-compare everything against Plaid"
+                  style={{background:'var(--blue-light)',color:'var(--blue)',border:'0.5px solid var(--blue)'}}>
+                  <i className={`ti ti-refresh ${idxRunning?'spin':''}`} aria-hidden="true"/> {idxRunning?'Indexing…':'Re-index & reconcile'}
+                </button>
+                <button onClick={()=>runIndex(true)} disabled={idxRunning}
+                  title="Re-parse ALL statements from scratch (slower)"
+                  style={{background:'none',color:'var(--text-secondary)',border:'0.5px solid var(--border)'}}>
+                  Re-parse all
+                </button>
+              </div>
+
+              {idxErr && <p style={{color:'var(--coral)',fontSize:12,marginBottom:12}}>Indexing failed: {idxErr}</p>}
+              {idxResult && (
+                <div style={{marginBottom:14,padding:'9px 13px',borderRadius:'var(--radius-sm)',fontSize:12,
+                  background: idxResult.failed ? 'var(--coral-light)' : 'var(--teal-light)',
+                  border:`0.5px solid ${idxResult.failed ? 'var(--coral)' : 'var(--teal)'}`}}>
+                  <span style={{fontWeight:500}}>
+                    {idxResult.statements} indexed{idxResult.groqRecovered ? ` (${idxResult.groqRecovered} recovered via AI)` : ''}
+                    {' · '}{idxResult.empty} empty (no activity)
+                    {idxResult.skipped ? ` · ${idxResult.skipped} unchanged` : ''}
+                    {idxResult.failed ? ` · ${idxResult.failed} failed` : ''}
+                  </span>
+                  {Array.isArray(idxResult.failures) && idxResult.failures.length > 0 && (
+                    <ul style={{margin:'6px 0 0',paddingLeft:18,color:'var(--text-secondary)',lineHeight:1.6}}>
+                      {idxResult.failures.map(x => <li key={x.id}><b style={{fontWeight:500}}>{x.name}</b> — {x.reason}</li>)}
+                    </ul>
+                  )}
+                  {idxResult.groqCapped > 0 && (
+                    <p style={{margin:'6px 0 0',color:'var(--text-secondary)'}}>
+                      {idxResult.groqCapped} left for a later run (AI budget) — click “Re-index &amp; reconcile” again to continue.
+                    </p>
+                  )}
+                </div>
+              )}
+
               {scopedStmts.length === 0 ? (
                 <div className="card" style={{textAlign:'center',padding:'3rem'}}>
                   <i className="ti ti-file-text" style={{fontSize:40,color:'var(--text-muted)'}} aria-hidden="true"/>

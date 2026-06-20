@@ -3,8 +3,7 @@
 // then DMs it). Finds by description substring (+ optional date prefix).
 //   node server/scripts/send-txn.js [userId] <search> [YYYY-MM-DD]            # dry run (lists)
 //   node server/scripts/send-txn.js [userId] <search> [YYYY-MM-DD] --send     # actually queue
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+require('./_env');
 const crypto = require('crypto');
 const { query } = require('../core/db');
 const store = require('../core/store');

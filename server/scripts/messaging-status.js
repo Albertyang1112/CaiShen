@@ -1,8 +1,7 @@
 'use strict';
 // Dev helper: inspect the messaging state for a user (links + question queue).
 // Usage: node server/scripts/messaging-status.js [userId]
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+require('./_env');
 const { query } = require('../core/db');
 
 (async () => {

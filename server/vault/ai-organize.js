@@ -20,30 +20,24 @@ const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
 const documents = require('../core/documents');
-const { classifyDocument, reconcile, indexFolders } = require('./ai-sort');
-const { extractStatementMeta } = require('../core/pdf-parser');
+const { classifyDocument } = require('./ai-sort');
+const { parserSort } = require('./parser-sort');
 
-const CLASSIFY_CONCURRENCY = 3;   // Groq calls per batch (free-tier friendly)
+// One file at a time. Under the free-tier tokens-per-minute cap, firing several
+// large (~4k-token) classify calls at once makes them collide and 429 — and the
+// shared cooldown then stalls all of them. Sequential calls each get the full
+// token budget and succeed; combined with the per-batch writeMeta below, this also
+// means progress is persisted after every single file. Raise this on a paid Groq tier.
+const CLASSIFY_CONCURRENCY = 1;
 
-// Deterministic fast-path: when a file's TYPE is already known reliably (e.g. the
-// mortgage scraper tagged it source:'mortgage', type:'statement'), we don't need a
-// Groq call to classify it — just read the property address + statement date from
-// the text and file it. This keeps a big scraped batch (dozens of statements) from
-// stalling on the Groq rate limit. Returns a decision in the same shape classifyDocument
-// produces, or null to fall back to Groq.
+// Deterministic fast-path (Tier 1+2 of the hybrid sorter): read the PDF locally and,
+// when the parser is confident, return a fully-reconciled filing decision WITHOUT a
+// Groq call. Handles bank/mortgage statements + tax forms; returns null (→ Groq) for
+// receipts, unknown types, scanned/no-text PDFs, or any low-confidence read. The
+// triage + confidence gate live in vault/parser-sort.js.
 async function deterministicDecision(buffer, file, folders) {
-  const t = file.tags || {};
-  const isScrapedMortgageStmt = t.source === 'mortgage' && (t.type === 'statement' || !t.type);
-  if (!isScrapedMortgageStmt) return null;
-  let m;
-  try { m = await extractStatementMeta(buffer); } catch { return null; }
-  if (!m.propertyAddress || !m.year || !m.month) return null;
-  return reconcile({
-    docType: 'mortgage_statement',
-    propertyAddress: m.propertyAddress,
-    institution: m.institution || 'Mortgage',
-    year: m.year, month: m.month,
-  }, indexFolders(folders), file.name);
+  const res = await parserSort(buffer, file, folders);
+  return res && res.confidence >= 0.75 ? res.decision : null;
 }
 
 module.exports = function makeAiOrganize({ getUserVaultDir, makeIO, readMeta, writeMeta }) {
@@ -247,11 +241,15 @@ module.exports = function makeAiOrganize({ getUserVaultDir, makeIO, readMeta, wr
 
       const folders = meta.folders; // reuse-context for the classifier
 
-      // ── Classify (Groq) in small concurrent batches ──────────────────────────
-      const classified = [];
+      // ── Classify (Groq) -> file -> PERSIST, one small batch at a time ────────
+      // Persisting after EVERY batch means a rate-limited or interrupted run keeps
+      // the files it already sorted (their aiSorted tag is saved), so re-running
+      // resumes on the remaining files instead of restarting from the first one.
+      const results = zero({ duplicates: duplicatesFound, details: [] });
+
       for (let i = 0; i < pdfFiles.length; i += CLASSIFY_CONCURRENCY) {
         const batch = pdfFiles.slice(i, i + CLASSIFY_CONCURRENCY);
-        const out = await Promise.all(batch.map(async (file) => {
+        const classified = await Promise.all(batch.map(async (file) => {
           try {
             const buffer = await readFileBytes(file);
             if (!buffer) return { file, error: 'File bytes unavailable' };
@@ -259,90 +257,87 @@ module.exports = function makeAiOrganize({ getUserVaultDir, makeIO, readMeta, wr
             const det = await deterministicDecision(buffer, file, folders);
             if (det && det.docType !== 'other' && det.folder) return { file, decision: det, ok: true };
             // A scraped file whose type is already known should NEVER fall through to
-            // Groq in a big batch — one unreadable one would burn the rate limit in
+            // Groq in a big batch - one unreadable one would burn the rate limit in
             // retries and stall everything. Leave it for a later targeted pass.
             if (file.tags?.source === 'mortgage') return { file, error: 'deterministic read failed (skipped Groq for scraped batch)' };
             const r = await classifyDocument({ buffer, filename: file.name, mimeType: file.mimeType || 'application/pdf', folders });
             return { file, decision: r.decision, ok: r.ok, error: r.ok ? null : (r.error || null) };
           } catch (e) { return { file, error: e.response?.data?.error?.message || e.message }; }
         }));
-        classified.push(...out);
-      }
 
-      const results = zero({ duplicates: duplicatesFound, details: [] });
+        for (const { file, decision: d, error } of classified) {
+          results.processed++;
 
-      for (const { file, decision: d, error } of classified) {
-        results.processed++;
+          if (error && !d) { results.failed++; results.details.push({ file: file.name, status: 'failed', reason: error }); continue; }
 
-        if (error && !d) { results.failed++; results.details.push({ file: file.name, status: 'failed', reason: error }); continue; }
-
-        // Unclassifiable → leave in place, mark attempted so the auto-load flow won't
-        // re-ask Groq every refresh (the manual Sort button still retries).
-        if (!d || d.docType === 'other' || !d.folder || d.folder === 'Unsorted') {
-          results.skipped++;
-          const fi = meta.files.findIndex(x => x.id === file.id);
-          if (fi >= 0) meta.files[fi].tags = { ...meta.files[fi].tags, aiSorted: true, docType: 'other' };
-          results.details.push({ file: file.name, status: 'skipped', reason: error || d?.reasoning || 'Could not determine document type' });
-          continue;
-        }
-
-        const targetPath  = d.folder;
-        const isStatement = d.docType === 'bank_statement' || d.docType === 'mortgage_statement';
-
-        // ── Period duplicate at the target folder ──────────────────────────────
-        const existing = meta.files.find(f2 => f2.id !== file.id && periodMatch(f2, targetPath, d));
-        if (existing) {
-          if (!(await fileExists(existing))) {                       // ghost entry — drop it, organize normally
-            const gi = meta.files.findIndex(x => x.id === existing.id);
-            if (gi >= 0) meta.files.splice(gi, 1);
-          } else {
-            if (isStatement && d.year && d.month && await detectFudge(existing, file, d.year, d.month)) {
-              const flaggedName = d.filename.replace(/\.pdf$/i, '') + '_FLAGGED.pdf';
-              if (file.name !== flaggedName) await applyRename(file, flaggedName);
-              const fi = meta.files.findIndex(x => x.id === file.id);
-              if (fi >= 0) {
-                meta.files[fi].name = flaggedName;
-                meta.files[fi].tags = { ...meta.files[fi].tags, ...baseTags(d), fudge: true, fudgeOf: existing.id };
-              }
-              results.fudgedCount++;
-              results.details.push({ file: flaggedName, status: 'flagged', targetPath });
-              continue;
-            }
-            const keepId = resolutionFor(existing, file);
-            if (!keepId) { pushDuplicate(existing, file, dupPeriod(d)); continue; }
-            if (keepId === existing.id) {                            // keep existing → drop incoming
-              await removeFile(file);
-              const fi = meta.files.findIndex(x => x.id === file.id);
-              if (fi >= 0) meta.files.splice(fi, 1);
-              results.duplicatesRemoved++; continue;
-            }
-            await removeFile(existing);                              // keep incoming → drop existing, place incoming
-            const ei = meta.files.findIndex(x => x.id === existing.id);
-            if (ei >= 0) meta.files.splice(ei, 1);
-            results.duplicatesRemoved++;
+          // Unclassifiable → leave in place, mark attempted so the auto-load flow won't
+          // re-ask Groq every refresh (the manual Sort button still retries).
+          if (!d || d.docType === 'other' || !d.folder || d.folder === 'Unsorted') {
+            results.skipped++;
+            const fi = meta.files.findIndex(x => x.id === file.id);
+            if (fi >= 0) meta.files[fi].tags = { ...meta.files[fi].tags, aiSorted: true, docType: 'other' };
+            results.details.push({ file: file.name, status: 'skipped', reason: error || d?.reasoning || 'Could not determine document type' });
+            continue;
           }
+
+          const targetPath  = d.folder;
+          const isStatement = d.docType === 'bank_statement' || d.docType === 'mortgage_statement';
+
+          // ── Period duplicate at the target folder ──────────────────────────────
+          const existing = meta.files.find(f2 => f2.id !== file.id && periodMatch(f2, targetPath, d));
+          if (existing) {
+            if (!(await fileExists(existing))) {                       // ghost entry — drop it, organize normally
+              const gi = meta.files.findIndex(x => x.id === existing.id);
+              if (gi >= 0) meta.files.splice(gi, 1);
+            } else {
+              if (isStatement && d.year && d.month && await detectFudge(existing, file, d.year, d.month)) {
+                const flaggedName = d.filename.replace(/\.pdf$/i, '') + '_FLAGGED.pdf';
+                if (file.name !== flaggedName) await applyRename(file, flaggedName);
+                const fi = meta.files.findIndex(x => x.id === file.id);
+                if (fi >= 0) {
+                  meta.files[fi].name = flaggedName;
+                  meta.files[fi].tags = { ...meta.files[fi].tags, ...baseTags(d), fudge: true, fudgeOf: existing.id };
+                }
+                results.fudgedCount++;
+                results.details.push({ file: flaggedName, status: 'flagged', targetPath });
+                continue;
+              }
+              const keepId = resolutionFor(existing, file);
+              if (!keepId) { pushDuplicate(existing, file, dupPeriod(d)); continue; }
+              if (keepId === existing.id) {                            // keep existing → drop incoming
+                await removeFile(file);
+                const fi = meta.files.findIndex(x => x.id === file.id);
+                if (fi >= 0) meta.files.splice(fi, 1);
+                results.duplicatesRemoved++; continue;
+              }
+              await removeFile(existing);                              // keep incoming → drop existing, place incoming
+              const ei = meta.files.findIndex(x => x.id === existing.id);
+              if (ei >= 0) meta.files.splice(ei, 1);
+              results.duplicatesRemoved++;
+            }
+          }
+
+          // ── File it ────────────────────────────────────────────────────────────
+          const newFolderId = ensureFolderPath(targetPath);
+          let dstName = d.filename;
+          if (meta.files.some(f2 => f2.id !== file.id && f2.folderPath === targetPath && f2.name === dstName)) {
+            const base = path.basename(dstName, path.extname(dstName));
+            dstName = `${base}_${Date.now()}${path.extname(dstName)}`;
+          }
+          if (!(file.folderPath === targetPath && file.name === dstName)) await applyMove(file, targetPath, dstName);
+          const fi = meta.files.findIndex(x => x.id === file.id);
+          if (fi >= 0) {
+            meta.files[fi].name       = dstName;
+            meta.files[fi].folderPath = targetPath;
+            meta.files[fi].folderId   = newFolderId;
+            meta.files[fi].tags       = { ...meta.files[fi].tags, ...baseTags(d) };
+          }
+          results.organized++;
+          results.details.push({ file: dstName, status: 'organized', targetPath, docType: d.docType, year: d.year, month: d.month });
         }
 
-        // ── File it ────────────────────────────────────────────────────────────
-        const newFolderId = ensureFolderPath(targetPath);
-        let dstName = d.filename;
-        if (meta.files.some(f2 => f2.id !== file.id && f2.folderPath === targetPath && f2.name === dstName)) {
-          const base = path.basename(dstName, path.extname(dstName));
-          dstName = `${base}_${Date.now()}${path.extname(dstName)}`;
-        }
-        if (!(file.folderPath === targetPath && file.name === dstName)) await applyMove(file, targetPath, dstName);
-        const fi = meta.files.findIndex(x => x.id === file.id);
-        if (fi >= 0) {
-          meta.files[fi].name       = dstName;
-          meta.files[fi].folderPath = targetPath;
-          meta.files[fi].folderId   = newFolderId;
-          meta.files[fi].tags       = { ...meta.files[fi].tags, ...baseTags(d) };
-        }
-        results.organized++;
-        results.details.push({ file: dstName, status: 'organized', targetPath, docType: d.docType, year: d.year, month: d.month });
+        writeMeta(meta, userId);   // persist after every batch (resumable)
       }
-
-      writeMeta(meta, userId);
 
       // ── Clean up the source folder + now-empty ancestors ─────────────────────
       if (folderId) {

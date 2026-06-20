@@ -844,18 +844,31 @@ function NewFolderModal({ onConfirm, onClose }) {
 }
 
 // ── Folder tree node ──────────────────────────────────────────────────
-function FolderNode({ folder, folders, files, selectedId, onSelect, depth=0 }) {
+// dataTransfer MIME marking an INTERNAL move (file/folder → folder), so it's
+// distinguishable from an OS file drop (which uploads). Payload: { kind, id }.
+const MOVE_MIME = 'application/x-caishen-move'
+
+function FolderNode({ folder, folders, files, selectedId, onSelect, onMoveItem, depth=0 }) {
   const [open, setOpen] = useState(depth < 1)
+  const [dropOver, setDropOver] = useState(false)
   const children  = folders.filter(f => f.parentId === folder.id)
   const fileCount = files.filter(f => f.folderId === folder.id).length
   const tag = folder.tags?.property || folder.tags?.type
+  const bg = dropOver ? 'var(--blue-light)' : (selectedId===folder.id ? 'var(--blue-light)' : 'transparent')
 
   return (
     <div>
-      <div onClick={()=>{ setOpen(!open); onSelect(folder.id) }}
-        style={{ display:'flex', alignItems:'center', gap:7, padding:'5px 8px', paddingLeft:(depth*14+8)+'px', borderRadius:'var(--radius-sm)', background:selectedId===folder.id?'var(--blue-light)':'transparent', cursor:'pointer', userSelect:'none' }}
-        onMouseEnter={e=>{ if(selectedId!==folder.id) e.currentTarget.style.background='var(--bg-hover)' }}
-        onMouseLeave={e=>{ if(selectedId!==folder.id) e.currentTarget.style.background='transparent' }}>
+      <div
+        draggable
+        onDragStart={e=>{ e.stopPropagation(); e.dataTransfer.setData(MOVE_MIME, JSON.stringify({ kind:'folder', id:folder.id })); e.dataTransfer.effectAllowed='move' }}
+        onDragOver={e=>{ if(e.dataTransfer.types.includes(MOVE_MIME)){ e.preventDefault(); setDropOver(true) } }}
+        onDragLeave={()=>setDropOver(false)}
+        onDrop={e=>{ const r=e.dataTransfer.getData(MOVE_MIME); if(r){ e.preventDefault(); e.stopPropagation(); setDropOver(false); try{ onMoveItem(JSON.parse(r), folder.id) }catch{} } }}
+        onClick={()=>{ setOpen(!open); onSelect(folder.id) }}
+        title={folder.name}
+        style={{ display:'flex', alignItems:'center', gap:7, padding:'5px 8px', paddingLeft:(depth*14+8)+'px', borderRadius:'var(--radius-sm)', background:bg, outline:dropOver?'1px dashed var(--blue)':'none', cursor:'pointer', userSelect:'none' }}
+        onMouseEnter={e=>{ if(selectedId!==folder.id && !dropOver) e.currentTarget.style.background='var(--bg-hover)' }}
+        onMouseLeave={e=>{ if(selectedId!==folder.id && !dropOver) e.currentTarget.style.background='transparent' }}>
         {children.length>0
           ? <i className={`ti ${open?'ti-chevron-down':'ti-chevron-right'}`} style={{ fontSize:11, color:'var(--text-muted)', width:12, flexShrink:0 }} aria-hidden="true"/>
           : <span style={{ width:12, flexShrink:0 }}/>}
@@ -865,7 +878,7 @@ function FolderNode({ folder, folders, files, selectedId, onSelect, depth=0 }) {
         {fileCount>0 && <span style={{ fontSize:10, color:'var(--text-muted)', flexShrink:0 }}>{fileCount}</span>}
       </div>
       {open && sortFoldersByDate(children).map(child=>(
-        <FolderNode key={child.id} folder={child} folders={folders} files={files} selectedId={selectedId} onSelect={onSelect} depth={depth+1}/>
+        <FolderNode key={child.id} folder={child} folders={folders} files={files} selectedId={selectedId} onSelect={onSelect} onMoveItem={onMoveItem} depth={depth+1}/>
       ))}
     </div>
   )
@@ -1142,6 +1155,18 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
       setLoading(false)
       return null
     }
+  }
+
+  // ── Drag-and-drop move: re-home a file or folder into another folder ──
+  // (payload { kind:'file'|'folder', id }; targetFolderId null = vault root)
+  const moveTo = async (payload, targetFolderId) => {
+    if (!payload || !payload.id || (payload.kind === 'folder' && payload.id === targetFolderId)) return
+    try {
+      await axios.post(`${API}/move`, payload.kind === 'folder'
+        ? { folderId: payload.id, targetFolderId }
+        : { fileIds: [payload.id], targetFolderId })
+      await load()
+    } catch (e) { setUploadError('Move failed: ' + (e.response?.data?.error || e.message)) }
   }
 
   const exportVault = async () => {
@@ -1478,13 +1503,22 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
           if (sr.data.processed > 0) await load()
         } catch {}
         // Mirror the uploaded statements into the DB and reconcile against Plaid so
-        // they flow through to the Banking tab.
+        // they flow through to the Banking tab. Surface failures instead of hiding
+        // them — a statement that won't parse otherwise silently never reconciles.
+        let indexNote = ''
         try {
           const ir = await axios.post(`${API}/index-statements`, { fileIds: newPdfFileIds }, { timeout: 600000 })
           if (ir.data?.statements > 0) onTransactionsChanged?.()
-        } catch {}
+          if (ir.data?.failed > 0) {
+            indexNote = ` · ⚠ ${ir.data.failed} statement${ir.data.failed !== 1 ? 's' : ''} couldn't be read`
+            console.warn('[index-statements] failures:', ir.data.failures)
+          }
+        } catch (e) {
+          indexNote = ' · ⚠ statement indexing failed'
+          console.error('[index-statements] request failed:', e.response?.data?.error || e.message)
+        }
         setOrganizing(false)
-        setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded · ${parts.join(' · ')}`)
+        setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded · ${parts.join(' · ')}${indexNote}`)
       } else {
         setUploadSuccess(`✓ ${total} file${total !== 1 ? 's' : ''} uploaded successfully`)
       }
@@ -1752,21 +1786,24 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
       <div style={{ display:'flex', flex:1, minHeight:0, gap:0 }}>
         {/* Folder tree */}
         <div
-          onDragOver={e=>{e.preventDefault();setDragOver(true)}}
+          onDragOver={e=>{ if(e.dataTransfer.types.includes('Files')){e.preventDefault();setDragOver(true)} }}
           onDragLeave={()=>setDragOver(false)}
-          onDrop={e=>{e.preventDefault();setDragOver(false);handleFiles(e.dataTransfer.files)}}
+          onDrop={e=>{ if(!e.dataTransfer.types.includes('Files'))return; e.preventDefault();setDragOver(false);handleFiles(e.dataTransfer.files) }}
           style={{ width:sidebarWidth, flexShrink:0, background:dragOver?'var(--blue-light)':'var(--bg-card)', border:`0.5px solid ${dragOver?'var(--blue)':'var(--border)'}`, borderRadius:'var(--radius-lg)', overflow:'auto', padding:'8px 4px', transition:'background 0.15s, border-color 0.15s' }}>
           <div style={{ padding:'4px 8px 8px', borderBottom:'0.5px solid var(--border)', marginBottom:4 }}>
             <p style={{ fontSize:10, fontWeight:500, color:'var(--text-secondary)', margin:0, textTransform:'uppercase', letterSpacing:'0.5px' }}>Vault</p>
           </div>
           <div onClick={()=>setSelectedFolderId(null)}
+            onDragOver={e=>{ if(e.dataTransfer.types.includes(MOVE_MIME)){ e.preventDefault(); e.currentTarget.style.background='var(--blue-light)'; e.currentTarget.style.outline='1px dashed var(--blue)' } }}
+            onDragLeave={e=>{ e.currentTarget.style.background=!selectedFolderId?'var(--blue-light)':'transparent'; e.currentTarget.style.outline='none' }}
+            onDrop={e=>{ const r=e.dataTransfer.getData(MOVE_MIME); if(r){ e.preventDefault(); e.stopPropagation(); e.currentTarget.style.background=!selectedFolderId?'var(--blue-light)':'transparent'; e.currentTarget.style.outline='none'; try{ moveTo(JSON.parse(r), null) }catch{} } }}
             style={{ display:'flex', alignItems:'center', gap:8, padding:'5px 8px', borderRadius:'var(--radius-sm)', background:!selectedFolderId?'var(--blue-light)':'transparent', cursor:'pointer', marginBottom:2 }}>
             <i className="ti ti-home" style={{ fontSize:13, color:!selectedFolderId?'var(--blue)':'var(--text-secondary)' }} aria-hidden="true"/>
             <span style={{ fontSize:13, color:!selectedFolderId?'var(--blue)':'var(--text-secondary)', fontWeight:!selectedFolderId?500:400 }}>All files</span>
             <span style={{ fontSize:10, color:'var(--text-muted)', marginLeft:'auto' }}>{meta.files.length}</span>
           </div>
           {rootFolders.map(folder=>(
-            <FolderNode key={folder.id} folder={folder} folders={meta.folders} files={meta.files} selectedId={selectedFolderId} onSelect={setSelectedFolderId} depth={0}/>
+            <FolderNode key={folder.id} folder={folder} folders={meta.folders} files={meta.files} selectedId={selectedFolderId} onSelect={setSelectedFolderId} onMoveItem={moveTo} depth={0}/>
           ))}
           {rootFolders.length===0 && (
             <div style={{ padding:'20px 8px', textAlign:'center', fontSize:12, color:'var(--text-muted)' }}>
@@ -1792,6 +1829,10 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
           <div style={{ padding:'10px 16px', borderBottom:'0.5px solid var(--border)', background:'var(--bg-secondary)', display:'flex', alignItems:'center', gap:8 }}>
             {selectedFolder && (
               <button onClick={()=>setSelectedFolderId(selectedFolder.parentId||null)}
+                onDragOver={e=>{ if(e.dataTransfer.types.includes(MOVE_MIME)){ e.preventDefault(); e.currentTarget.style.background='var(--blue-light)' } }}
+                onDragLeave={e=>{ e.currentTarget.style.background='none' }}
+                onDrop={e=>{ const r=e.dataTransfer.getData(MOVE_MIME); if(r){ e.preventDefault(); e.currentTarget.style.background='none'; try{ moveTo(JSON.parse(r), selectedFolder.parentId||null) }catch{} } }}
+                title="Drop here to move up one level"
                 style={{ background:'none', border:'none', color:'var(--text-muted)', cursor:'pointer', padding:'2px 6px', borderRadius:4, display:'flex', alignItems:'center', gap:4, fontSize:12 }}>
                 <i className="ti ti-arrow-left" style={{ fontSize:13 }} aria-hidden="true"/> Up
               </button>
@@ -1823,7 +1864,12 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
                 {!search && childFolders.map(folder => {
                   const count = countInFolder(folder.id)
                   return (
-                    <div key={folder.id} onClick={()=>setSelectedFolderId(folder.id)}
+                    <div key={folder.id} draggable
+                      onDragStart={e=>{ e.dataTransfer.setData(MOVE_MIME, JSON.stringify({ kind:'folder', id:folder.id })); e.dataTransfer.effectAllowed='move' }}
+                      onDragOver={e=>{ if(e.dataTransfer.types.includes(MOVE_MIME)){ e.preventDefault(); e.currentTarget.style.background='var(--blue-light)'; e.currentTarget.style.outline='1px dashed var(--blue)' } }}
+                      onDragLeave={e=>{ e.currentTarget.style.background='transparent'; e.currentTarget.style.outline='none' }}
+                      onDrop={e=>{ const r=e.dataTransfer.getData(MOVE_MIME); if(r){ e.preventDefault(); e.currentTarget.style.background='transparent'; e.currentTarget.style.outline='none'; try{ moveTo(JSON.parse(r), folder.id) }catch{} } }}
+                      onClick={()=>setSelectedFolderId(folder.id)}
                       style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 10px', borderRadius:'var(--radius-sm)', cursor:'pointer', transition:'background 0.1s' }}
                       onMouseEnter={e=>e.currentTarget.style.background='var(--bg-secondary)'}
                       onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
@@ -1860,7 +1906,9 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
                         ? 'rgba(185,28,28,0.08)'
                         : (idx%2===1 ? 'rgba(255,255,255,0.02)' : 'transparent')
                       return (
-                        <div key={file.id} onClick={()=>setPreviewFile(file)}
+                        <div key={file.id} draggable
+                          onDragStart={e=>{ e.dataTransfer.setData(MOVE_MIME, JSON.stringify({ kind:'file', id:file.id })); e.dataTransfer.effectAllowed='move' }}
+                          onClick={()=>setPreviewFile(file)}
                           style={{ display:'grid', gridTemplateColumns:'1fr 90px 90px 90px 70px', gap:12, padding:'8px 10px', cursor:'pointer', borderRadius:'var(--radius-sm)', alignItems:'center', background: rowBg, transition:'background 0.1s', outline: isFlagged ? '1px solid rgba(185,28,28,0.3)' : 'none' }}
                           onMouseEnter={e=>e.currentTarget.style.background=isFlagged?'rgba(185,28,28,0.15)':'var(--bg-secondary)'}
                           onMouseLeave={e=>e.currentTarget.style.background=rowBg}>
