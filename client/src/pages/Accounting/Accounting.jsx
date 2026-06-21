@@ -249,8 +249,29 @@ function ChartOfAccounts() {
   )
 }
 
-// ── P&L Report — nested category tree (transactions auto-categorized server-side),
-//    Personal → Income/Expenses/Net, then Business. Manual coaId always wins.
+// Percentage label, e.g. pct(50,200) → "25.0%". Empty string when there's no base.
+const pct = (part, whole) => (whole ? `${(part / whole * 100).toFixed(1)}%` : '')
+
+// Short human date for transaction rows ("Jun 12, 2026"). Tolerates YYYY-MM-DD and ISO.
+function fmtDate(d) {
+  if (!d) return ''
+  const s = String(d)
+  const dt = new Date(s.length <= 10 ? s + 'T00:00:00' : s)
+  return isNaN(dt) ? s : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+// Centered muted message for empty states.
+function Empty({ text }) {
+  return <p style={{ fontSize: 12.5, color: 'var(--text-muted)', textAlign: 'center', padding: '14px 0', margin: 0 }}>{text}</p>
+}
+
+// ── P&L Report ────────────────────────────────────────────────────────
+// Progressive disclosure, all inline: major categories first (Summary), expand to
+// subcategories (Detailed / per-row caret), then drill a subcategory into its merchants
+// and each merchant into individual transactions. The category tree is the server-seeded
+// Chart of Accounts; amounts come from /pl's byAccount roll-up; merchant/transaction
+// detail is lazy-loaded per leaf from /pl/transactions for the report's period.
+// Personal Income/Expenses/Net then Business, plus an overall Net Income line.
 function PLReport() {
   const thisYear = new Date().getFullYear()
   const [startDate, setStartDate] = useState(`${thisYear}-01-01`)
@@ -259,6 +280,9 @@ function PLReport() {
   const [coa, setCoa]         = useState([])
   const [loading, setLoading] = useState(false)
   const [showZero, setShowZero] = useState(false)
+  const [view, setView] = useState(() => localStorage.getItem('caishen_pl_view') || 'summary')
+  const [expandedMap, setExpandedMap] = useState({})         // id → bool overrides (else the view default)
+  const [leafTxns, setLeafTxns] = useState({})               // coaId → { loading, error, groups, total, count } (lazy)
 
   const load = async () => {
     setLoading(true)
@@ -273,11 +297,22 @@ function PLReport() {
     setLoading(false)
   }
   useEffect(() => { load() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { localStorage.setItem('caishen_pl_view', view) }, [view])
+  // Switching Summary/Detailed re-applies that mode's default expansion (drop overrides).
+  useEffect(() => { setExpandedMap({}) }, [view])
+  // A fresh report run resets the tree to the view default and drops cached drill-downs.
+  useEffect(() => { setExpandedMap({}); setLeafTxns({}) }, [data])
 
-  const byAccount = data?.byAccount || {}
-  const amt  = id => byAccount[id]
-  const tree = (type, scope) => computeTotals(coa.filter(a => a.type === type && a.scope === scope), amt)
+  const byAccount      = data?.byAccount || {}
+  const countByAccount = data?.countByAccount || {}
 
+  // One rolled-up tree per type+scope, carrying both summed amounts and txn counts.
+  const tree = (type, scope) => {
+    const list = coa.filter(a => a.type === type && a.scope === scope)
+    const t = computeTotals(list, id => byAccount[id])
+    const c = computeTotals(list, id => countByAccount[id])
+    return { kids: t.kids, totals: t.totals, counts: c.totals }
+  }
   const pInc = tree('income', 'personal'), pExp = tree('expense', 'personal')
   const bInc = tree('income', 'business'), bExp = tree('expense', 'business')
   const pIncT = rootTotal(pInc), pExpT = rootTotal(pExp)
@@ -285,25 +320,156 @@ function PLReport() {
   const overallNet = (pIncT + bIncT) - (pExpT + bExpT)
   const empty = (pIncT + pExpT + bIncT + bExpT) === 0
 
-  const rows = (node, calc, depth, color) => {
-    const total = calc.totals[node.id] || 0
-    if (!showZero && total === 0) return null
-    const kids = calc.kids[node.id] || []
-    const isGroup = kids.length > 0
+  // Children worth rendering at the current zero-filter. A category with COA children
+  // expands into them; a spending leaf (no children but has spend) drills into merchants.
+  const visKids = (node, calc) => (calc.kids[node.id] || []).filter(c => showZero || (calc.totals[c.id] || 0) !== 0)
+  const groupsOf = (calc) => { const root = (calc.kids['__root'] || [])[0]; return root ? visKids(root, calc) : [] }
+
+  const defaultOpen = (depth) => view === 'detailed' && depth === 0    // Detailed pre-opens main categories
+  const isOpen = (id, depth) => (id in expandedMap) ? expandedMap[id] : defaultOpen(depth)
+  const toggle = (id, depth) => setExpandedMap(m => ({ ...m, [id]: !isOpen(id, depth) }))
+
+  // All expandable ids for Expand/Collapse all: COA groups plus spending leaves (which
+  // drill into merchants). `leaves` is the subset that needs a lazy transaction fetch.
+  const collectExpandable = () => {
+    const ids = [], leaves = []
+    const walk = (node, calc) => {
+      const kids = visKids(node, calc)
+      if (kids.length) { ids.push(node.id); kids.forEach(k => walk(k, calc)) }
+      else if ((calc.totals[node.id] || 0) !== 0) { ids.push(node.id); leaves.push(node.id) }
+    }
+    for (const calc of [pInc, pExp, bInc, bExp]) groupsOf(calc).forEach(g => walk(g, calc))
+    return { ids, leaves }
+  }
+  const expandAll = () => {
+    const { ids, leaves } = collectExpandable()
+    setExpandedMap(Object.fromEntries(ids.map(id => [id, true])))
+    leaves.forEach(id => { if (!leafTxns[id]) fetchLeaf(id) })
+  }
+  const collapseAll = () => setExpandedMap(Object.fromEntries(collectExpandable().ids.map(id => [id, false])))
+
+  // Group a leaf's transactions by merchant (location/type), biggest spend first.
+  const groupByMerchant = (txns) => {
+    const map = new Map()
+    for (const t of txns) {
+      const key = t.merchant || 'Unknown'
+      const g = map.get(key) || { name: key, amount: 0, count: 0, txns: [] }
+      g.amount += t.amount; g.count += 1; g.txns.push(t)
+      map.set(key, g)
+    }
+    return [...map.values()].sort((a, b) => b.amount - a.amount)
+  }
+
+  // Lazily load a spending leaf's transactions for the report's actual period (data.period),
+  // so the drill-down always matches the totals on screen even if the date inputs changed.
+  const fetchLeaf = async (coaId) => {
+    const start = data?.period?.start, end = data?.period?.end
+    setLeafTxns(m => ({ ...m, [coaId]: { loading: true } }))
+    try {
+      const params = new URLSearchParams({ coaId, startDate: start, endDate: end })
+      const { data: d } = await axios.get(`${API}/pl/transactions?${params}`)
+      // A missing endpoint (stale backend) falls through to the SPA → HTML, not JSON.
+      // Treat anything without a transactions array as an error, not "no transactions".
+      if (!d || !Array.isArray(d.transactions)) throw new Error('unexpected response')
+      setLeafTxns(m => ({ ...m, [coaId]: { loading: false, groups: groupByMerchant(d.transactions), total: d.total, count: d.count } }))
+    } catch {
+      setLeafTxns(m => ({ ...m, [coaId]: { loading: false, error: true } }))
+    }
+  }
+
+  // Toggle a row; on first open of a spending leaf, kick off its merchant fetch.
+  const onToggleNode = (node, depth, drillable) => {
+    const willOpen = !isOpen(node.id, depth)
+    toggle(node.id, depth)
+    if (willOpen && drillable && !leafTxns[node.id]) fetchLeaf(node.id)
+  }
+
+  // A muted single-line note (loading / empty / error) indented to a given depth.
+  const infoRow = (depth, content, key) => (
+    <div key={key} style={{ padding:'6px 8px', paddingLeft:8 + depth*18, fontSize:12, color:'var(--text-muted)', borderBottom:'0.5px solid var(--border)' }}>{content}</div>
+  )
+
+  // One individual transaction (deepest level): date · account — amount.
+  const renderTxn = (t, depth, color) => (
+    <div key={t.id} className="pl-row" style={{ display:'flex', alignItems:'center', gap:8, padding:'5px 8px', paddingLeft:8 + depth*18, borderBottom:'0.5px solid var(--border)' }}>
+      <span style={{ width:13, flexShrink:0 }}/>
+      <span style={{ flex:1, minWidth:0, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontSize:12, color:'var(--text-muted)' }}>
+        {fmtDate(t.date)}{t.account ? ` · ${t.account}` : ''}{t.pending ? ' · pending' : ''}
+      </span>
+      <span style={{ flexShrink:0, fontSize:12, color, fontVariantNumeric:'tabular-nums' }}>{fd(t.amount)}</span>
+      <span style={{ width:12, flexShrink:0 }}/>
+    </div>
+  )
+
+  // One merchant/location under a leaf. Single-purchase merchants show their date inline;
+  // multi-purchase merchants get their own caret that expands into individual transactions.
+  const renderMerchantGroup = (g, leafId, depth, color) => {
+    const single = g.txns.length === 1
+    const mkey = `m:${leafId}:${g.name}`
+    const open = !single && expandedMap[mkey] === true
     return (
-      <Fragment key={node.id}>
-        <div style={{ display:'flex', justifyContent:'space-between', gap:12, padding:'4px 0', paddingLeft:depth * 16, borderBottom:'0.5px solid var(--border)', fontSize:13 }}>
-          <span style={{ fontWeight: isGroup ? 600 : 400, color: isGroup ? 'var(--text-primary)' : 'var(--text-secondary)' }}>{node.name}</span>
-          <span style={{ fontWeight: isGroup ? 600 : 400, color, fontVariantNumeric:'tabular-nums' }}>{fd(total)}</span>
+      <Fragment key={mkey}>
+        <div className="pl-row" onClick={single ? undefined : () => setExpandedMap(m => ({ ...m, [mkey]: !open }))}
+          style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 8px', paddingLeft:8 + depth*18, borderBottom:'0.5px solid var(--border)', cursor: single ? 'default' : 'pointer' }}>
+          <span style={{ width:13, flexShrink:0, display:'inline-flex', justifyContent:'center', color:'var(--text-muted)' }}>
+            {!single && <i className={`ti ${open ? 'ti-chevron-down' : 'ti-chevron-right'}`} style={{ fontSize:12 }} aria-hidden="true"/>}
+          </span>
+          <span style={{ flex:1, minWidth:0, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontSize:12.5, color:'var(--text-secondary)' }}>
+            {g.name}
+            <span style={{ marginLeft:8, fontSize:11, color:'var(--text-muted)' }}>{single ? fmtDate(g.txns[0].date) : `${g.count} txns`}</span>
+          </span>
+          <span style={{ flexShrink:0, fontSize:12.5, color, fontVariantNumeric:'tabular-nums' }}>{fd(g.amount)}</span>
+          <span style={{ width:12, flexShrink:0 }}/>
         </div>
-        {kids.map(c => rows(c, calc, depth + 1, color))}
+        {open && g.txns.map(t => renderTxn(t, depth + 1, color))}
       </Fragment>
     )
   }
-  const groupsOf = (calc) => { const root = (calc.kids['__root'] || [])[0]; return root ? (calc.kids[root.id] || []) : [] }
+
+  // The merchant list shown when a spending leaf is expanded (lazy-loaded).
+  const renderMerchants = (leafId, depth, color) => {
+    const entry = leafTxns[leafId]
+    if (!entry || entry.loading) return infoRow(depth, <span><i className="ti ti-loader-2 spin" aria-hidden="true"/> Loading…</span>, leafId + ':load')
+    if (entry.error)             return infoRow(depth, 'Couldn’t load transactions.', leafId + ':err')
+    if (!entry.groups || !entry.groups.length) return infoRow(depth, 'No transactions in this period.', leafId + ':none')
+    return entry.groups.map(g => renderMerchantGroup(g, leafId, depth, color))
+  }
+
+  // One report row. Groups expand into sub-categories; spending leaves drill into merchants.
+  const renderRow = (node, calc, depth, color, scopeTotal) => {
+    const total = calc.totals[node.id] || 0
+    if (!showZero && total === 0) return null
+    const kids = visKids(node, calc)
+    const hasCoaKids = kids.length > 0
+    const drillable = !hasCoaKids && total !== 0          // spending leaf with transactions behind it
+    const expandable = hasCoaKids || drillable
+    const open = expandable && isOpen(node.id, depth)
+    const count = calc.counts[node.id] || 0
+    const strong = depth === 0 ? 600 : (hasCoaKids ? 500 : 400)
+    return (
+      <Fragment key={node.id}>
+        <div className="pl-row" onClick={() => expandable && onToggleNode(node, depth, drillable)}
+          style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 8px', paddingLeft:8 + depth*18, borderBottom:'0.5px solid var(--border)', cursor: expandable ? 'pointer' : 'default' }}>
+          <span style={{ width:13, flexShrink:0, display:'inline-flex', justifyContent:'center', color:'var(--text-muted)' }}>
+            {expandable && <i className={`ti ${open ? 'ti-chevron-down' : 'ti-chevron-right'}`} style={{ fontSize:12 }} aria-hidden="true"/>}
+          </span>
+          <span style={{ flex:1, minWidth:0, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontSize: depth===0?13:12.5, fontWeight:strong, color: depth===0?'var(--text-primary)':'var(--text-secondary)' }}>
+            {node.name}
+            {!hasCoaKids && count > 0 && <span style={{ marginLeft:8, fontSize:11, color:'var(--text-muted)', fontWeight:400 }}>· {count} txn{count>1?'s':''}</span>}
+          </span>
+          {depth===0 && scopeTotal > 0 && <span style={{ fontSize:11, color:'var(--text-muted)', flexShrink:0 }}>{pct(total, scopeTotal)}</span>}
+          <span style={{ flexShrink:0, fontSize: depth===0?13:12.5, fontWeight:strong, color, fontVariantNumeric:'tabular-nums' }}>{fd(total)}</span>
+          <span style={{ width:12, flexShrink:0 }}/>
+        </div>
+        {open && hasCoaKids && kids.map(c => renderRow(c, calc, depth+1, color, scopeTotal))}
+        {open && drillable && renderMerchants(node.id, depth+1, color)}
+      </Fragment>
+    )
+  }
+
   const totalRow = (label, val, color, weight = 600, border = '0.5px solid var(--border)') => (
-    <div style={{ display:'flex', justifyContent:'space-between', padding:'6px 0', fontSize:13, fontWeight:weight, borderTop:border }}>
-      <span>{label}</span><span style={{ color }}>{fd(val)}</span>
+    <div style={{ display:'flex', justifyContent:'space-between', padding:'6px 8px', fontSize:13, fontWeight:weight, borderTop:border }}>
+      <span>{label}</span><span style={{ color, fontVariantNumeric:'tabular-nums' }}>{fd(val)}</span>
     </div>
   )
   const subHead = (label, color, margin) => (
@@ -313,23 +479,33 @@ function PLReport() {
     if (!showZero && incT === 0 && expT === 0) return null
     const net = incT - expT
     return (
-      <div key={key} style={{ marginBottom:18 }}>
-        <p style={{ fontSize:14, fontWeight:700, margin:'0 0 2px', paddingBottom:4, borderBottom:'2px solid var(--text-muted)' }}>{label}</p>
-        {subHead(incomeLabel, 'var(--green)', '8px 0 2px')}
-        {groupsOf(incTree).map(g => rows(g, incTree, 0, 'var(--green)'))}
+      <div key={key} style={{ marginBottom:20 }}>
+        <p style={{ fontSize:12, fontWeight:700, margin:'0 0 4px', paddingBottom:5, borderBottom:'2px solid var(--border)', textTransform:'uppercase', letterSpacing:'0.6px', color:'var(--text-secondary)' }}>{label}</p>
+        {subHead(incomeLabel, 'var(--green)', '10px 0 2px')}
+        {groupsOf(incTree).map(g => renderRow(g, incTree, 0, 'var(--green)', incT))}
+        {incT === 0 && <Empty text={`No ${incomeLabel.toLowerCase()} in this period.`}/>}
         {totalRow(`Total ${incomeLabel}`, incT, 'var(--green)')}
-        {subHead('Expenses', 'var(--coral)', '14px 0 2px')}
-        {groupsOf(expTree).map(g => rows(g, expTree, 0, 'var(--coral)'))}
+        {subHead('Expenses', 'var(--coral)', '16px 0 2px')}
+        {groupsOf(expTree).map(g => renderRow(g, expTree, 0, 'var(--coral)', expT))}
+        {expT === 0 && <Empty text="No expenses in this period."/>}
         {totalRow('Total Expenses', expT, 'var(--coral)')}
         {totalRow(netLabel, net, net >= 0 ? 'var(--teal)' : 'var(--coral)', 700, '1px solid var(--border)')}
       </div>
     )
   }
 
+  const segBtn = (val, label, icon) => (
+    <button onClick={() => setView(val)}
+      style={{ fontSize:12, padding:'5px 12px', borderRadius:0, border:'none', cursor:'pointer', background: view===val?'var(--blue-light)':'transparent', color: view===val?'var(--blue)':'var(--text-secondary)', fontWeight: view===val?600:400 }}>
+      <i className={`ti ${icon}`} aria-hidden="true"/> {label}
+    </button>
+  )
+  const ctrlBtn = { fontSize:12, padding:'5px 10px', background:'var(--bg-secondary)', color:'var(--text-secondary)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)', cursor:'pointer' }
+
   return (
     <div>
-      {/* Date range */}
-      <div style={{ display:'flex', gap:10, alignItems:'flex-end', marginBottom:18, flexWrap:'wrap' }}>
+      {/* Date range + run */}
+      <div style={{ display:'flex', gap:10, alignItems:'flex-end', marginBottom:12, flexWrap:'wrap' }}>
         <div>
           <label style={{fontSize:11,color:'var(--text-secondary)',display:'block',marginBottom:4}}>From</label>
           <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={{fontSize:12}}/>
@@ -341,35 +517,44 @@ function PLReport() {
         <button onClick={load} disabled={loading} style={{fontSize:12,background:'var(--blue-light)',color:'var(--blue)',borderColor:'var(--blue)'}}>
           <i className={`ti ${loading?'ti-loader-2 spin':'ti-refresh'}`} aria-hidden="true"/> Run report
         </button>
+      </div>
+
+      {/* View toggle + expand controls */}
+      <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:18, flexWrap:'wrap' }}>
+        <div style={{ display:'flex', border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)', overflow:'hidden' }}>
+          {segBtn('summary', 'Summary', 'ti-list')}
+          {segBtn('detailed', 'Detailed', 'ti-list-tree')}
+        </div>
+        <button onClick={expandAll} style={ctrlBtn}><i className="ti ti-arrows-maximize" aria-hidden="true"/> Expand all</button>
+        <button onClick={collapseAll} style={ctrlBtn}><i className="ti ti-arrows-minimize" aria-hidden="true"/> Collapse all</button>
         <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, color:'var(--text-secondary)', marginLeft:'auto', cursor:'pointer' }}>
           <input type="checkbox" checked={showZero} onChange={e=>setShowZero(e.target.checked)}/> Show empty categories
         </label>
       </div>
 
-      {data && (
-        <div className="card" style={{ maxWidth:560 }}>
-          <div style={{ textAlign:'center', marginBottom:14 }}>
+      {loading && !data ? (
+        <div style={{ color:'var(--text-muted)', fontSize:13, padding:'24px 0' }}><i className="ti ti-loader-2 spin" aria-hidden="true"/> Generating report…</div>
+      ) : data ? (
+        <div className="card" style={{ maxWidth:620, padding:'18px 16px' }}>
+          <div style={{ textAlign:'center', marginBottom:10 }}>
             <p style={{ fontSize:14, fontWeight:600, margin:0 }}>Profit &amp; Loss</p>
             <p style={{ fontSize:11, color:'var(--text-muted)', margin:'2px 0 0' }}>
               {new Date(data.period.start).toLocaleDateString()} – {new Date(data.period.end).toLocaleDateString()}
             </p>
           </div>
-
           {empty ? (
-            <p style={{ fontSize:13, color:'var(--text-muted)', textAlign:'center', padding:'20px 0' }}>
-              No transactions in this period.
-            </p>
+            <Empty text="No report data found for this date range."/>
           ) : (
             <>
               {renderScope('personal', 'Personal', 'Income', 'Net Surplus / (Deficit)', pInc, pExp, pIncT, pExpT)}
               {renderScope('business', 'Business', 'Revenue', 'Net Income', bInc, bExp, bIncT, bExpT)}
-              <div style={{ display:'flex', justifyContent:'space-between', padding:'10px 0 2px', marginTop:4, fontSize:15, fontWeight:700, borderTop:'2px solid var(--text-muted)' }}>
-                <span>Net Income (All)</span><span style={{ color: overallNet>=0?'var(--teal)':'var(--coral)' }}>{fd(overallNet)}</span>
+              <div style={{ display:'flex', justifyContent:'space-between', padding:'12px 8px 2px', marginTop:4, fontSize:16, fontWeight:700, borderTop:'2px solid var(--border)' }}>
+                <span>Net Income (All)</span><span style={{ color: overallNet>=0?'var(--teal)':'var(--coral)', fontVariantNumeric:'tabular-nums' }}>{fd(overallNet)}</span>
               </div>
             </>
           )}
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

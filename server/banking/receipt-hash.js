@@ -21,6 +21,26 @@ async function perceptualHash(buffer, mimeType) {
   } catch { return null; }
 }
 
+// The four 90°-rotation aHashes [0°, 90°, 180°, 270°] of an image — for rotation-invariant
+// dedup: a re-upload of the same photo flipped/rotated still matches the stored (upright) hash
+// via one of these. out[0] === perceptualHash(...) (the as-is hash we store on the receipt row).
+async function perceptualHashes(buffer, mimeType) {
+  if (!/^image\//.test(mimeType || '')) return [];
+  const out = [];
+  for (const deg of [0, 90, 180, 270]) {
+    try {
+      const pipe = deg ? sharp(buffer).rotate(deg) : sharp(buffer);
+      const px = await pipe.greyscale().resize(8, 8, { fit: 'fill' }).raw().toBuffer();
+      let sum = 0; for (let i = 0; i < 64; i++) sum += px[i];
+      const mean = sum / 64;
+      let bits = 0n;
+      for (let i = 0; i < 64; i++) bits = (bits << 1n) | (px[i] >= mean ? 1n : 0n);
+      out.push(bits.toString(16).padStart(16, '0'));
+    } catch { /* skip this angle */ }
+  }
+  return out;
+}
+
 // Bit-difference between two equal-length hex hashes (Infinity if incomparable).
 function hamming(a, b) {
   if (!a || !b || a.length !== b.length) return Infinity;
@@ -38,4 +58,4 @@ function ocrTextHash(ocr) {
   return crypto.createHash('sha256').update(norm).digest('hex');
 }
 
-module.exports = { fileSha256, perceptualHash, hamming, ocrTextHash };
+module.exports = { fileSha256, perceptualHash, perceptualHashes, hamming, ocrTextHash };

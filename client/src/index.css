@@ -152,3 +152,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); }
   to   { transform: rotate(360deg); }
 }
 .spin { animation: spin 1s linear infinite; display: inline-block; }
+
+/* P&L report rows — subtle hover affordance for expand / drill-in */
+.pl-row { transition: background 0.08s ease; }
+.pl-row:hover { background: var(--bg-hover); }

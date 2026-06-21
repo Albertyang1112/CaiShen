@@ -51,9 +51,17 @@ function dedupeScore(neu, existing) {
   if (strEq(a.invoice_number, b.invoice_number)) return hard('invoice_number', { invoice_number: a.invoice_number });
   if (neu.ocr_text_hash && existing.ocr_text_hash && neu.ocr_text_hash === existing.ocr_text_hash)
     return hard('ocr_text', { ocr_text: true });
-  if (neu.perceptual_hash && existing.perceptual_hash) {
-    const dist = hamming(neu.perceptual_hash, existing.perceptual_hash);
-    if (dist <= PHASH_HARD) return hard('image_perceptual', { phash_distance: dist });
+  // Rotation-invariant: match the new upload's hash at ANY 90° rotation against the existing
+  // (upright) hash — so the same photo flipped/rotated is still caught as the same image.
+  const neuPhashes = (neu.perceptual_hashes && neu.perceptual_hashes.length)
+    ? neu.perceptual_hashes : (neu.perceptual_hash ? [neu.perceptual_hash] : []);
+  if (neuPhashes.length && existing.perceptual_hash) {
+    let dist = Infinity, bestIdx = 0;
+    for (let i = 0; i < neuPhashes.length; i++) {
+      const d = hamming(neuPhashes[i], existing.perceptual_hash);
+      if (d < dist) { dist = d; bestIdx = i; }
+    }
+    if (dist <= PHASH_HARD) return hard('image_perceptual', { phash_distance: dist, rotated_deg: [0, 90, 180, 270][bestIdx] });
   }
   const merchOk = merchantSim(a.merchant, b.merchant) >= 0.5;
   if (merchOk && amtEq(a.total, b.total) && strEq(a.date, b.date) && strEq(a.time, b.time) && strEq(a.card_last4, b.card_last4) && a.time && a.card_last4)

@@ -23,7 +23,7 @@ const r2        = require('../core/r2');
 const documents = require('../core/documents');
 const { ocrReceipt, compareToTxn } = require('./receipt-ocr');
 const { recordReceiptRemodel }     = require('./receipt-store');
-const { fileSha256, perceptualHash, ocrTextHash } = require('./receipt-hash');
+const { fileSha256, perceptualHashes, ocrTextHash } = require('./receipt-hash');
 const { findDuplicate } = require('./receipt-dedup');
 const dupflow = require('./receipt-dupflow');
 
@@ -90,9 +90,10 @@ async function ingestReceipt(query, io, userId, { buffer, mimeType, originalName
 
   // 2. dedup hashes + check against existing active receipts.
   const file_sha256 = fileSha256(buffer);
-  const perceptual_hash = await perceptualHash(buffer, mimeType);
+  const perceptual_hashes = await perceptualHashes(buffer, mimeType);   // [0°,90°,180°,270°] — rotation-invariant
+  const perceptual_hash = perceptual_hashes[0] || null;                 // the upright hash we store on the row
   const ocr_text_hash = ocrTextHash(ocrData);
-  const dup = await findDuplicate(query, userId, { file_sha256, perceptual_hash, ocr_text_hash, ocr: ocrData });
+  const dup = await findDuplicate(query, userId, { file_sha256, perceptual_hash, perceptual_hashes, ocr_text_hash, ocr: ocrData });
   const existingOcr = (dup.existing && dup.existing.ocr_data) || {};
 
   // 3. store the file (a file record always exists, even for blocked duplicates).
