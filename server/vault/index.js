@@ -187,9 +187,12 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
           for (const fo of meta.folders) if (fo.id === folder.id || ids.includes(fo.id))
             fo.path = newPath + fo.path.slice(oldPrefix.length);          // re-root the prefix
           folder.parentId = targetFolderId || null;
+          folder.tags = { ...(folder.tags || {}), userPlaced: true };     // deliberate placement — heal won't relocate
           for (const f of meta.files)
-            if (f.folderPath === oldPrefix || String(f.folderPath).startsWith(oldPrefix + '/'))
+            if (f.folderPath === oldPrefix || String(f.folderPath).startsWith(oldPrefix + '/')) {
               f.folderPath = newPath + String(f.folderPath).slice(oldPrefix.length);
+              f.tags = { ...(f.tags || {}), userPlaced: true };
+            }
           movedFolder = { id: folder.id, path: newPath };
         }
       }
@@ -207,12 +210,30 @@ module.exports = function(BASE_VAULT_DIR, makeIO) {
         if (name !== f.name) { try { await require('../core/documents').renameDocument(userId, f.id, name); } catch {} f.name = name; }
         f.folderPath = targetPath;
         f.folderId   = targetFolderId || null;
+        f.tags       = { ...(f.tags || {}), userPlaced: true };   // deliberate placement — heal won't relocate it
         movedFiles++;
       }
 
       writeMeta(meta, userId);
       res.json({ movedFiles, movedFolder });
     } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── POST /api/vault/heal — retroactive cleanup sweep (dry-run by default) ─────
+  // Finds files that bypassed the normal upload→sort→R2 flow (scraper imports) and
+  // migrates their bytes to R2 + re-files identifiable ones, flagging the rest for
+  // manual assignment. Never touches tags.userPlaced files. Body: { apply?: bool }.
+  router.post('/heal', async (req, res) => {
+    try {
+      const userId   = req.user.id;
+      const io       = makeIO(userId);
+      const meta     = io.read('vault.json') || { folders: [], files: [] };
+      const vaultDir = getUserVaultDir(userId);
+      const apply    = req.body?.apply === true;
+      const healVault = require('./heal');
+      const plan = await healVault({ userId, meta, vaultDir, apply, persist: (m) => io.write('vault.json', m) });
+      res.json(plan);
+    } catch (e) { console.error('[vault/heal]', e.message); res.status(500).json({ error: e.message }); }
   });
 
   // ── GET /api/vault/file/:id ───────────────────────────────────────────

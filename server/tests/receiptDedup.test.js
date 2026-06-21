@@ -18,6 +18,19 @@ describe('dedupeScore — hard signals', () => {
     expect(dedupeScore({ perceptual_hash: 'ffffffffffffffff', ocr: {} },
                        { perceptual_hash: 'fffffffffffffffe', ocr: {} }).reason).toBe('image_perceptual');
   });
+  test('rotation-invariant: a flipped re-upload matches the upright hash via its 180° rotation', () => {
+    const existing = { perceptual_hash: '0f0f0f0f0f0f0f0f', ocr: {} };
+    // the new upload's four-rotation hashes; index 2 (180°) equals the existing upright hash.
+    const neu = { perceptual_hashes: ['1111111111111111', '2222222222222222', '0f0f0f0f0f0f0f0f', '3333333333333333'], ocr: {} };
+    const s = dedupeScore(neu, existing);
+    expect(s).toMatchObject({ level: 'hard', reason: 'image_perceptual' });
+    expect(s.signals.rotated_deg).toBe(180);
+  });
+  test('rotation set with no close rotation → not an image match', () => {
+    const existing = { perceptual_hash: '0f0f0f0f0f0f0f0f', ocr: {} };
+    const neu = { perceptual_hashes: ['ffffffffffffffff', 'aaaaaaaaaaaaaaaa', '5555555555555555', 'cccccccccccccccc'], ocr: {} };
+    expect(dedupeScore(neu, existing).level).toBe('unique');
+  });
   test('merchant + time + total + card last4 → hard', () => {
     const a = { ocr: { merchant: 'Walmart', total: 43.91, date: '2026-06-15', time: '15:42', card_last4: '2210' } };
     const b = { ocr: { merchant: 'WALMART SUPERCENTER', total: 43.91, date: '2026-06-15', time: '15:42', card_last4: '2210' } };
@@ -76,5 +89,19 @@ describe('receipt-hash', () => {
   });
   test('fileSha256 deterministic', () => {
     expect(fileSha256(Buffer.from('hello'))).toBe(fileSha256(Buffer.from('hello')));
+  });
+  test('perceptualHashes: the 180° hash of a flipped image equals the upright hash (real sharp)', async () => {
+    const sharp = require('sharp');
+    const { perceptualHash, perceptualHashes } = require('../banking/receipt-hash');
+    // an asymmetric image so rotations genuinely differ
+    const raw = Buffer.alloc(16 * 16 * 3);
+    for (let i = 0; i < raw.length; i++) raw[i] = (i * 37) % 256;
+    const upright = await sharp(raw, { raw: { width: 16, height: 16, channels: 3 } }).png().toBuffer();
+    const flipped = await sharp(upright).rotate(180).png().toBuffer();
+    const up = await perceptualHash(upright, 'image/png');
+    const fl = await perceptualHashes(flipped, 'image/png');     // [0°,90°,180°,270°]
+    expect(fl).toHaveLength(4);
+    expect(hamming(fl[0], up)).toBeGreaterThan(6);               // as-is (flipped) does NOT match
+    expect(hamming(fl[2], up)).toBeLessThanOrEqual(6);           // rotated back 180° DOES match
   });
 });

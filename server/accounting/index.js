@@ -2,6 +2,55 @@ const express = require('express');
 const { buildDefaultChart, categoryLibrary, resolveLibraryAdditions, OLD_DEFAULT_IDS, idForPath } = require('./categories');
 const { autoCoaId, isLikelyBusiness } = require('../banking/auto-categorize');
 
+// ── Report helpers (shared by /pl and /pl/transactions) ──────────────────────
+// A node id + every descendant id, so opening a parent category in the drawer
+// surfaces everything filed beneath it (not just rows pinned to the parent itself).
+function subtreeIds(coa, rootId) {
+  const childrenOf = {};
+  for (const a of coa) { const p = a.parentId || '__root'; (childrenOf[p] = childrenOf[p] || []).push(a.id); }
+  const out = new Set([rootId]);
+  const stack = [rootId];
+  while (stack.length) {
+    const id = stack.pop();
+    for (const c of childrenOf[id] || []) if (!out.has(c)) { out.add(c); stack.push(c); }
+  }
+  return out;
+}
+
+// Name path from a leaf up to its section root, e.g.
+// ['Personal Expenses','Entertainment','Games'].
+function categoryPath(coaById, id) {
+  const parts = [];
+  let cur = coaById.get(id);
+  while (cur) { parts.unshift(cur.name); cur = cur.parentId ? coaById.get(cur.parentId) : null; }
+  return parts;
+}
+
+// The effective category node a transaction lands on, mirroring the /pl rule exactly:
+// a manual/rule coaId wins; otherwise the built-in guesser; capitalized fixed-asset
+// buys and transfers resolve to null (excluded from the P&L). Keeps the drawer's
+// transaction list consistent with the totals shown in the report rows.
+function effectiveAcct(tx, coaById) {
+  if (tx.capital) return null;
+  let acct = tx.coaId ? coaById.get(tx.coaId) : null;
+  if (!acct) { const g = autoCoaId(tx); acct = g ? coaById.get(g) : null; }
+  return acct || null;
+}
+
+// Best-effort human merchant label for the insights / drawer. Prefer an explicit
+// vendor; otherwise strip common processor prefixes and trailing store-number / city
+// /state noise off the raw description. Heuristic — good enough for grouping.
+function cleanMerchant(tx) {
+  if (tx.vendor && String(tx.vendor).trim()) return String(tx.vendor).trim();
+  let d = String(tx.desc || '').trim();
+  if (!d) return 'Unknown';
+  d = d.replace(/^(TST\*|SQ ?\*|SP ?\*|PP\*|PAYPAL ?\*|POS |PURCHASE |DEBIT |CREDIT |CHECKCARD |VISA |PMT |ACH )/i, '');
+  d = d.replace(/\s+#?\d{3,}\b.*$/, '');       // trailing store number / ref id and anything after
+  d = d.replace(/\s+[A-Z]{2}$/, '');           // trailing state code
+  d = d.replace(/\s{2,}/g, ' ').trim();
+  return d || String(tx.desc).trim();
+}
+
 module.exports = function(makeIO) {
   const router = express.Router();
 
@@ -270,7 +319,8 @@ module.exports = function(makeIO) {
     // balance-sheet accounts (asset/liability/equity) never get assigned here.
     const incomeByCategory  = {};
     const expenseByCategory = {};
-    const byAccount = {};                          // coaId → total (drives the nested report)
+    const byAccount  = {};                          // coaId → total (drives the nested report)
+    const countByAccount = {};                      // coaId → transaction count (rolled up client-side)
     let totalIncome = 0, totalExpenses = 0;
     const coaById = new Map(coa.map(a => [a.id, a]));
 
@@ -278,17 +328,18 @@ module.exports = function(makeIO) {
       if (tx.capital) continue;                    // capitalized fixed-asset purchase → Balance Sheet, not P&L
       // Prefer the saved category; if it's stale (id not in the current chart) or absent,
       // fall back to the auto-guess so the transaction still lands on a valid leaf.
-      let acct = tx.coaId ? coaById.get(tx.coaId) : null;
-      if (!acct) { const g = autoCoaId(tx); acct = g ? coaById.get(g) : null; }
-      if (!acct) continue;                         // transfer, or unresolved → skip
+      const acct = effectiveAcct(tx, coaById);
+      if (!acct) continue;                          // transfer, or unresolved → skip
       const amt = Math.abs(tx.amount);
       if (acct.type === 'income') {
         incomeByCategory[acct.name] = (incomeByCategory[acct.name] || 0) + amt;
         byAccount[acct.id] = (byAccount[acct.id] || 0) + amt;
+        countByAccount[acct.id] = (countByAccount[acct.id] || 0) + 1;
         totalIncome += amt;
       } else if (acct.type === 'expense') {
         expenseByCategory[acct.name] = (expenseByCategory[acct.name] || 0) + amt;
         byAccount[acct.id] = (byAccount[acct.id] || 0) + amt;
+        countByAccount[acct.id] = (countByAccount[acct.id] || 0) + 1;
         totalExpenses += amt;
       }
     }
@@ -301,11 +352,11 @@ module.exports = function(makeIO) {
         if (!acct) continue;
         if (acct.type === 'income') {
           const credit = line.credit || 0;
-          if (credit > 0) { incomeByCategory[acct.name] = (incomeByCategory[acct.name] || 0) + credit; byAccount[acct.id] = (byAccount[acct.id] || 0) + credit; totalIncome += credit; }
+          if (credit > 0) { incomeByCategory[acct.name] = (incomeByCategory[acct.name] || 0) + credit; byAccount[acct.id] = (byAccount[acct.id] || 0) + credit; countByAccount[acct.id] = (countByAccount[acct.id] || 0) + 1; totalIncome += credit; }
         }
         if (acct.type === 'expense') {
           const debit = line.debit || 0;
-          if (debit > 0) { expenseByCategory[acct.name] = (expenseByCategory[acct.name] || 0) + debit; byAccount[acct.id] = (byAccount[acct.id] || 0) + debit; totalExpenses += debit; }
+          if (debit > 0) { expenseByCategory[acct.name] = (expenseByCategory[acct.name] || 0) + debit; byAccount[acct.id] = (byAccount[acct.id] || 0) + debit; countByAccount[acct.id] = (countByAccount[acct.id] || 0) + 1; totalExpenses += debit; }
         }
       }
     }
@@ -324,8 +375,69 @@ module.exports = function(makeIO) {
       income: { total: totalIncome, byCategory: incomeByCategory },
       expenses: { total: totalExpenses, byCategory: expenseByCategory },
       byAccount,
+      countByAccount,
       netIncome: totalIncome - totalExpenses,
       propertyPL
+    });
+  });
+
+  // ── P&L drawer: the transactions behind one category (subtree) ──────────
+  // Returns the rows that rolled up into `coaId` (and any descendants) for the
+  // same period, enriched with account name + category path, so the UI can show
+  // exact transactions on demand without bloating the main /pl payload.
+  router.get('/pl/transactions', async (req, res) => {
+    const { coaId, startDate, endDate, propertyId } = req.query;
+    if (!coaId) return res.status(400).json({ error: 'coaId is required' });
+
+    const coa = loadChart(req);
+    const coaById = new Map(coa.map(a => [a.id, a]));
+    const node = coaById.get(coaId);
+    if (!node) return res.status(404).json({ error: 'Unknown category' });
+
+    const ids = subtreeIds(coa, coaId);
+    const txs = req.read('transactions.json') || [];
+    const start = startDate || new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const end   = endDate   || new Date().toISOString().split('T')[0];
+
+    let filtered = txs.filter(t => t.date >= start && t.date <= end);
+    if (propertyId) filtered = filtered.filter(t => t.propertyId === propertyId || t.account === propertyId);
+
+    // Resolve account ids → display names (best-effort; falls back to the raw id).
+    const acctName = {};
+    try { for (const a of (await require('../core/banking-store').listAccounts(req.user.id)) || []) acctName[a.id] = a.name; } catch {}
+
+    const out = [];
+    for (const tx of filtered) {
+      const acct = effectiveAcct(tx, coaById);
+      if (!acct || !ids.has(acct.id)) continue;
+      out.push({
+        id: tx.id,
+        date: tx.date,
+        amount: Math.abs(Number(tx.amount) || 0),
+        signed: Number(tx.amount) || 0,
+        merchant: cleanMerchant(tx),
+        desc: tx.desc || '',
+        account: acctName[tx.account] || tx.account || '',
+        accountId: tx.account || null,
+        coaId: acct.id,
+        categoryPath: categoryPath(coaById, acct.id),
+        pending: !!tx.pending,
+        auto: !!tx.coaAuto,
+        note: tx.note || tx.memo || null,
+      });
+    }
+    out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));   // newest first
+
+    res.json({
+      coaId,
+      name: node.name,
+      type: node.type,
+      parentName: node.parentId ? (coaById.get(node.parentId)?.name || null) : null,
+      categoryPath: categoryPath(coaById, coaId),
+      period: { start, end },
+      total: out.reduce((s, t) => s + t.amount, 0),
+      count: out.length,
+      transactions: out,
     });
   });
 
