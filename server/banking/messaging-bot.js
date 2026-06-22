@@ -139,14 +139,53 @@ async function deliverPending({ query, makeIO, transport, transports }) {
   }
 }
 
-// Live transports + their inbound handlers, keyed by channel. Populated by start();
+// Live transports + their inbound handlers, keyed by channel. Populated by startTransports();
 // the Twilio webhook route reads _inbound.sms to dispatch incoming SMS/MMS.
 let _transports = {};
 let _inbound = {};
+let _deliverTimer = null;
+let _reminderTimer = null;
+let _lockClient = null;       // dedicated pg connection that holds the single-instance lock
+let _lockKeepalive = null;
 
-// Boot every configured transport (Discord if DISCORD_BOT_TOKEN, Twilio if TWILIO_* set) and a
-// single multi-channel delivery loop. Returns { transports } (or null if none configured).
-function start({ makeIO, query, intervalMs = 8000 } = {}) {
+const BOT_LOCK_KEY = 776699;  // arbitrary constant identifying the categorizer-bot advisory lock
+
+// Periodically DM each linked user about any overdue (un-uploaded) bank statement.
+async function checkReminders({ query, makeIO }) {
+  const reminder = require('./statement-reminder');
+  const links = await query(`SELECT user_id, channel, external_id FROM messaging_links`);
+  const today = new Date().toISOString().slice(0, 10);
+  for (const { user_id, channel, external_id } of links.rows) {
+    const t = _transports[channel];
+    if (!t) continue;
+    try { await reminder.sendReminders(query, user_id, (text) => t.send(external_id, text), today); }
+    catch (e) { console.error('[bot] reminder', user_id, e.message); }
+  }
+}
+
+// Win a process-lifetime Postgres advisory lock so only ONE running instance starts the bot —
+// even if two server processes are up at once (e.g. `npm start` + `npm run dev`). Returns
+// 'acquired' (we hold it), 'held' (another instance has it), or 'error' (couldn't check).
+async function acquireBotLock() {
+  let getPool;
+  try { ({ getPool } = require('../core/db')); } catch { return 'error'; }
+  try {
+    const client = await getPool().connect();
+    const r = await client.query('SELECT pg_try_advisory_lock($1) AS ok', [BOT_LOCK_KEY]);
+    if (r.rows[0] && r.rows[0].ok) {
+      _lockClient = client;                                      // hold the connection ⇒ hold the lock
+      _lockKeepalive = setInterval(() => client.query('SELECT 1').catch(() => {}), 20000);
+      if (_lockKeepalive.unref) _lockKeepalive.unref();
+      return 'acquired';
+    }
+    client.release();
+    return 'held';
+  } catch (e) { console.error('[bot] advisory-lock check failed:', e.message); return 'error'; }
+}
+
+// Boot every configured transport (Discord if DISCORD_BOT_TOKEN, Twilio if TWILIO_* set) and the
+// multi-channel delivery loop. Called only once the single-instance lock is held.
+function startTransports({ makeIO, query, intervalMs = 8000 } = {}) {
   _transports = {}; _inbound = {};
   const boots = [];
 
@@ -169,17 +208,36 @@ function start({ makeIO, query, intervalMs = 8000 } = {}) {
       .catch(e => { delete _transports.sms; console.error('[bot] twilio start failed:', e.message); }));
   } else console.warn('[bot] Twilio not configured — SMS channel disabled.');
 
-  if (!boots.length) { console.warn('[bot] no messaging transports configured — categorizer bot idle.'); return null; }
+  if (!boots.length) { console.warn('[bot] no messaging transports configured — categorizer bot idle.'); return; }
 
   Promise.allSettled(boots).then(() => {
     if (!Object.keys(_transports).length) return;
     const tick = () => deliverPending({ query, makeIO, transports: _transports })
       .catch(e => console.error('[bot] deliver loop:', e.message));
-    setInterval(tick, intervalMs);
+    _deliverTimer = setInterval(tick, intervalMs);
     tick();
-  });
 
-  return { transports: _transports };
+    // Overdue-statement reminders — far less frequent than question delivery.
+    const remTick = () => checkReminders({ query, makeIO }).catch(e => console.error('[bot] reminder loop:', e.message));
+    _reminderTimer = setInterval(remTick, 12 * 60 * 60 * 1000);   // every 12h
+    const warm = setTimeout(remTick, 30000); if (warm.unref) warm.unref();
+  });
+}
+
+// Public entry: acquire the single-instance lock, THEN boot. If another instance holds it, keep
+// retrying so this process takes over cleanly when that instance exits (e.g. a nodemon reload).
+function start({ makeIO, query, intervalMs = 8000 } = {}) {
+  const tryStart = () => acquireBotLock().then((status) => {
+    if (status === 'held') {
+      console.warn('[bot] another instance already runs the categorizer — standing by (retry 15s).');
+      const t = setTimeout(tryStart, 15000); if (t.unref) t.unref();
+      return;
+    }
+    if (status === 'error') console.warn('[bot] single-instance lock unavailable — starting anyway.');
+    startTransports({ makeIO, query, intervalMs });
+  });
+  tryStart();
+  return null;
 }
 
 // Express handler for Twilio's inbound webhook (mounted public in index.js). Verifies the
@@ -209,4 +267,15 @@ async function twilioWebhook(req, res) {
   } catch (e) { console.error('[twilio] webhook dispatch:', e.message); }
 }
 
-module.exports = { handleInbound, deliverPending, makeInboundHandler, start, twilioWebhook, formatReceiptReply, HELP };
+// Clean shutdown: stop the delivery loop, destroy transports (so a reload leaves no zombie
+// Discord connection), and release the advisory lock so the next instance can take over.
+async function stop() {
+  if (_deliverTimer) { clearInterval(_deliverTimer); _deliverTimer = null; }
+  if (_reminderTimer) { clearInterval(_reminderTimer); _reminderTimer = null; }
+  if (_lockKeepalive) { clearInterval(_lockKeepalive); _lockKeepalive = null; }
+  for (const t of Object.values(_transports)) { try { await t.stop(); } catch { /* best effort */ } }
+  _transports = {}; _inbound = {};
+  if (_lockClient) { try { _lockClient.release(); } catch { /* best effort */ } _lockClient = null; }
+}
+
+module.exports = { handleInbound, deliverPending, makeInboundHandler, start, stop, twilioWebhook, formatReceiptReply, HELP };

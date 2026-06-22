@@ -152,6 +152,82 @@ module.exports = function makeReceiptRouter(makeIO, DATA_DIR) {
     }
   });
 
+  // GET /by-txn — { txnId → [receipt summary] } for ALL attached receipts (inline thumbnails).
+  // Declared before /:txnId so the literal path isn't captured by the param route.
+  router.get('/by-txn', async (req, res) => {
+    try {
+      const r = await query(
+        `SELECT id, txn_id, mime_type, original_name, merchant_name, total_amount, receipt_date, match_status, created_at
+           FROM receipts WHERE user_id=$1 AND txn_id IS NOT NULL ORDER BY created_at DESC`, [req.user.id]);
+      const map = {};
+      for (const row of r.rows) (map[row.txn_id] = map[row.txn_id] || []).push(row);
+      res.json(map);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // GET /unattached — receipts not yet linked to a transaction (the manual "pick" picker).
+  router.get('/unattached', async (req, res) => {
+    try {
+      const r = await query(
+        `SELECT id, mime_type, original_name, merchant_name, total_amount, receipt_date, created_at
+           FROM receipts WHERE user_id=$1 AND txn_id IS NULL
+             AND (payment_method IS NULL OR payment_method <> 'cash')
+             AND (review_status IS NULL OR review_status <> 'rejected_duplicate')
+           ORDER BY created_at DESC LIMIT 200`, [req.user.id]);
+      res.json(r.rows);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /match-pending — auto-match unattached, non-cash receipts to transactions (amount+date,
+  // Groq confirms merchant on ties). Idempotent; safe to call on every Banking-page load.
+  router.post('/match-pending', async (req, res) => {
+    try {
+      const { matchPendingReceipts } = require('./receipt-match');
+      const matched = await matchPendingReceipts(query, makeIO(req.user.id), req.user.id);
+      res.json({ matched });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /:id/attach-existing { txnId } — link an existing (unattached) receipt to a transaction.
+  router.post('/:id/attach-existing', async (req, res) => {
+    try {
+      const userId = req.user.id;
+      const txnId  = req.body && req.body.txnId;
+      if (!txnId) return res.status(400).json({ error: 'txnId required' });
+      const io = makeIO(userId);
+      const rr = await query(`SELECT id, ocr_data FROM receipts WHERE id=$1 AND user_id=$2`, [req.params.id, userId]);
+      if (!rr.rows.length) return res.status(404).json({ error: 'Receipt not found' });
+      const txns = io.read('transactions.json') || [];
+      const txn  = txns.find(t => t.id === txnId);
+      if (!txn) return res.status(404).json({ error: 'Transaction not found' });
+      await query(`UPDATE receipts SET txn_id=$1, match_status='matched' WHERE id=$2 AND user_id=$3`, [txnId, req.params.id, userId]);
+      io.write('transactions.json', txns.map(t => t.id === txnId ? { ...t, receiptId: req.params.id } : t));
+      try {
+        const ocrData = typeof rr.rows[0].ocr_data === 'string' ? JSON.parse(rr.rows[0].ocr_data) : rr.rows[0].ocr_data;
+        await recordReceiptRemodel(query, { userId, receiptId: req.params.id, txnId, txn, ocrData, matchScore: 1 });
+      } catch (e) { console.error('[receipt/attach-existing/remodel]', e.message); }
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /:id/detach — unclip a receipt from its transaction (keeps the receipt on file).
+  router.post('/:id/detach', async (req, res) => {
+    try {
+      const userId = req.user.id;
+      const io = makeIO(userId);
+      const rr = await query(`SELECT txn_id FROM receipts WHERE id=$1 AND user_id=$2`, [req.params.id, userId]);
+      if (!rr.rows.length) return res.status(404).json({ error: 'Not found' });
+      const txnId = rr.rows[0].txn_id;
+      await query(`UPDATE receipts SET txn_id=NULL, match_status='unreviewed' WHERE id=$1 AND user_id=$2`, [req.params.id, userId]);
+      await query(`DELETE FROM matched_transaction_sources WHERE user_id=$1 AND source_transaction_id=$2`, [userId, 'rcptxn_' + req.params.id]);
+      if (txnId) {
+        const txns = io.read('transactions.json') || [];
+        io.write('transactions.json', txns.map(t => (t.id === txnId && t.receiptId === req.params.id) ? { ...t, receiptId: null } : t));
+      }
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // GET /file/:id — the receipt bytes themselves (image/PDF preview + download).
   // R2 for migrated/new rows (doc_id set); disk for legacy rows. Auth comes from
   // the /api JWT middleware — the client fetches with the token and shows a blob.

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import axios from 'axios'
 import { fmtFull, CAT_COLOR, TYPE_LABELS, TYPE_COLORS } from './bankingFormat'
+import ReceiptThumb from './ReceiptThumb'
 
 const API = '/api'
 
@@ -18,13 +19,36 @@ function csvCell(val) {
   return s
 }
 
+// Inline receipt control per row: a thumbnail (click → enlarge) when a receipt is attached,
+// else a ghost paper-clip button to attach one. Stops row-click propagation either way.
+function AttachmentCell({ tx, receipts = [], onView, onAttach }) {
+  if (receipts.length) {
+    return (
+      <span style={{ display:'inline-flex', alignItems:'center', gap:3 }} onClick={e => e.stopPropagation()}>
+        <ReceiptThumb receipt={receipts[0]} onClick={() => onView?.(receipts[0])} />
+        {receipts.length > 1 && (
+          <span title={`${receipts.length} receipts attached`} style={{ fontSize:10, color:'var(--text-muted)' }}>+{receipts.length - 1}</span>
+        )}
+      </span>
+    )
+  }
+  return (
+    <button onClick={e => { e.stopPropagation(); onAttach?.(tx) }} title="Attach a receipt"
+      style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)', padding:4, display:'inline-flex', borderRadius:4 }}
+      onMouseEnter={e => e.currentTarget.style.color='var(--blue)'}
+      onMouseLeave={e => e.currentTarget.style.color='var(--text-muted)'}>
+      <i className="ti ti-paperclip" style={{ fontSize:15 }} aria-hidden="true" />
+    </button>
+  )
+}
+
 // ── Transactions table (QuickBooks-style) — extracted from Banking.jsx ──────────
 // Owns the table-local features: row selection + bulk actions, pagination, and
 // CSV export / print. Filtering, search, status tabs, and totals stay in Banking
 // and arrive here already applied via the `txs` prop.
 export default function TransactionsTable({
   txs, bankAccounts, showAccount, sortDir, onToggleSort, onRowClick,
-  coaById, reconcileFlags = {}, receiptCounts = {}, reload,
+  coaById, reconcileFlags = {}, receiptsByTxn = {}, onViewReceipt, onAttachReceipt, reload,
 }) {
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [page,        setPage]        = useState(1)
@@ -180,6 +204,7 @@ export default function TransactionsTable({
               {th('Category')}
               {th('Spent', {align:'right'})}
               {th('Received', {align:'right'})}
+              {th('Receipt', {align:'center'})}
             </tr>
           </thead>
           <tbody>
@@ -207,11 +232,6 @@ export default function TransactionsTable({
                   <td style={{padding:'9px 12px',maxWidth:340}}>
                     <span style={{display:'flex',alignItems:'center',gap:6,minWidth:0}}>
                       <span style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',minWidth:0}} title={tx.desc||''}>{tx.desc||'—'}</span>
-                      {receiptCounts[tx.id] > 0 && (
-                        <i className="ti ti-paperclip" aria-hidden="true"
-                          title={`${receiptCounts[tx.id]} receipt${receiptCounts[tx.id]>1?'s':''} attached — open the transaction to view`}
-                          style={{fontSize:12,color:'var(--text-secondary)',flexShrink:0}}/>
-                      )}
                     </span>
                   </td>
                   {showAccount && <td style={{padding:'9px 12px',color:'var(--text-secondary)',whiteSpace:'nowrap'}}>{acct?.name||'—'}</td>}
@@ -232,6 +252,9 @@ export default function TransactionsTable({
                   </td>
                   <td style={{padding:'9px 12px',textAlign:'right',color:'var(--teal)',whiteSpace:'nowrap',fontVariantNumeric:'tabular-nums'}}>
                     {!debit ? fmtFull(tx.amount) : ''}
+                  </td>
+                  <td onClick={e=>e.stopPropagation()} style={{padding:'9px 8px',textAlign:'center',width:64}}>
+                    <AttachmentCell tx={tx} receipts={receiptsByTxn[tx.id]} onView={onViewReceipt} onAttach={onAttachReceipt}/>
                   </td>
                 </tr>
               )

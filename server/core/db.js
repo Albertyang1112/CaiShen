@@ -224,4 +224,4 @@ async function initSchema() {
   await require('./db-receipts-schema').init(query);
 }
 
-module.exports = { query, initSchema, withTransaction };
+module.exports = { query, initSchema, withTransaction, getPool };
