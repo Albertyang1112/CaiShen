@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import axios from 'axios'
 import TransactionsTable from './TransactionsTable'
 import ReconcileVerify from './ReconcileVerify'
+import ReceiptThumb from './ReceiptThumb'
 import { fd, fmtFull, TYPE_LABELS, TYPE_COLORS } from './bankingFormat'
 
 const API = '/api'
@@ -1071,6 +1072,73 @@ function StatementMatchPanel({ tx, onChanged }) {
   )
 }
 
+// ── Manual attach: upload a new receipt (OCR'd) or pick an existing unattached one ───────────
+function AttachReceiptModal({ tx, onClose, onAttached }) {
+  const [unattached, setUnattached] = useState([])
+  const [uploading,  setUploading]  = useState(false)
+  const [busyId,     setBusyId]     = useState(null)
+  const [err,        setErr]        = useState('')
+
+  useEffect(() => { axios.get(`${API}/receipts/unattached`).then(r => setUnattached(Array.isArray(r.data) ? r.data : [])).catch(() => {}) }, [])
+
+  async function uploadFiles(fileList) {
+    const files = [...(fileList || [])].filter(Boolean)
+    if (!files.length || uploading) return
+    setUploading(true); setErr('')
+    try {
+      for (const f of files) { const fd = new FormData(); fd.append('file', f); await axios.post(`${API}/receipts/attach/${tx.id}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } }) }
+      onAttached?.(); onClose()
+    } catch (e) { setErr(e.response?.data?.error || `Upload failed: ${e.message}`); setUploading(false) }
+  }
+  async function attachExisting(id) {
+    if (busyId) return
+    setBusyId(id); setErr('')
+    try { await axios.post(`${API}/receipts/${id}/attach-existing`, { txnId: tx.id }); onAttached?.(); onClose() }
+    catch (e) { setErr(e.response?.data?.error || e.message); setBusyId(null) }
+  }
+
+  const money = (v) => (v == null ? '' : `$${Number(v).toFixed(2)}`)
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:1100,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}
+      onClick={e => e.target===e.currentTarget && onClose()}>
+      <div style={{background:'var(--bg-card)',border:'0.5px solid var(--border)',borderRadius:'var(--radius-lg)',width:'min(520px,94vw)',maxHeight:'88vh',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
+          <span style={{fontSize:14,fontWeight:600}}>Attach a receipt</span>
+          <button onClick={onClose} style={{background:'none',border:'none',color:'var(--text-muted)',fontSize:16,cursor:'pointer'}} aria-label="Close">✕</button>
+        </div>
+        <div style={{padding:'14px 16px',overflowY:'auto'}}>
+          <p style={{fontSize:12,color:'var(--text-secondary)',margin:'0 0 12px'}}>{tx.desc} · {tx.date} · {money(Math.abs(tx.amount))}</p>
+          {err && <p style={{fontSize:12,color:'var(--coral)',margin:'0 0 10px'}}><i className="ti ti-alert-triangle" style={{marginRight:5}} aria-hidden="true"/>{err}</p>}
+
+          <label style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'14px',border:'1.5px dashed var(--border)',borderRadius:'var(--radius-md)',cursor:uploading?'default':'pointer',color:'var(--blue)',fontSize:13,marginBottom:16}}>
+            <i className={uploading?'ti ti-loader-2':'ti ti-upload'} style={uploading?{animation:'spin 1s linear infinite'}:{}} aria-hidden="true"/>
+            {uploading ? 'Scanning…' : 'Upload a new receipt (image or PDF)'}
+            <input type="file" accept="image/*,.pdf" multiple style={{display:'none'}} disabled={uploading}
+              onChange={e => { uploadFiles(e.target.files); e.target.value='' }}/>
+          </label>
+
+          <div style={{fontSize:11,fontWeight:600,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:8}}>Or pick an existing receipt</div>
+          {unattached.length === 0
+            ? <p style={{fontSize:12,color:'var(--text-muted)',fontStyle:'italic',margin:0}}>No unattached receipts.</p>
+            : unattached.map(r => (
+                <button key={r.id} onClick={() => attachExisting(r.id)} disabled={!!busyId}
+                  style={{display:'flex',alignItems:'center',gap:10,width:'100%',textAlign:'left',padding:'8px 10px',marginBottom:6,background:'var(--bg-secondary)',border:'0.5px solid var(--border)',borderRadius:'var(--radius-sm)',cursor:busyId?'default':'pointer',opacity:(busyId&&busyId!==r.id)?0.5:1}}>
+                  <ReceiptThumb receipt={r} size={34}/>
+                  <span style={{flex:1,minWidth:0}}>
+                    <span style={{display:'block',fontSize:13,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.merchant_name || r.original_name || 'Receipt'}</span>
+                    <span style={{display:'block',fontSize:11,color:'var(--text-muted)'}}>{[money(r.total_amount), r.receipt_date].filter(Boolean).join(' · ')}</span>
+                  </span>
+                  {busyId===r.id
+                    ? <i className="ti ti-loader-2" style={{animation:'spin 1s linear infinite'}} aria-hidden="true"/>
+                    : <i className="ti ti-paperclip" style={{color:'var(--text-muted)'}} aria-hidden="true"/>}
+                </button>
+              ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Transaction detail + QuickBooks-style categorization modal ────────────────
 function TxDetailModal({ tx, bankAccounts, coa, coaById, onUpdate, reload, onClose, onCreateCategory, onReceiptsChanged, onReconciled }) {
   const [coaId,  setCoaId]  = useState(tx.coaId || '')
@@ -1221,15 +1289,17 @@ export default function Banking({ accounts, transactions, onUpdate }) {
   const [reconcileFlags, setReconcileFlags] = useState({})        // {plaid_txn_id → status} for inline badges
   const [acctSettings, setAcctSettings] = useState({})            // {accountId → {business, propertyId}}
   const [properties, setProperties]     = useState([])            // rentals, for the business property tag
-  const [receiptCounts, setReceiptCounts] = useState({})          // {txn_id → receipt count} for the 📎 row indicator
+  const [receiptsByTxn, setReceiptsByTxn] = useState({})          // {txn_id → [receipt]} for inline thumbnails
+  const [viewReceipt, setViewReceipt]     = useState(null)        // receipt open in the full-size lightbox
+  const [attachTx, setAttachTx]           = useState(null)        // transaction whose attach modal is open
   const [recStatus, setRecStatus]         = useState(null)        // GET /reconcile/status — matched/plaid-only/stmt-only counts
   const [idxRunning, setIdxRunning]       = useState(false)       // index-statements request in flight
   const [idxResult, setIdxResult]         = useState(null)        // last index-statements summary
   const [idxErr, setIdxErr]               = useState('')          // index-statements error
 
-  // Refetched after every attach/remove in the detail modal so row 📎s stay current.
-  const reloadReceiptCounts = useCallback(() => {
-    axios.get(`${API}/receipts/counts`).then(r => setReceiptCounts(r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? r.data : {})).catch(() => {})
+  // Refetched after every attach/detach so the inline row thumbnails stay current.
+  const reloadReceiptsByTxn = useCallback(() => {
+    axios.get(`${API}/receipts/by-txn`).then(r => setReceiptsByTxn(r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? r.data : {})).catch(() => {})
   }, [])
 
   // Reconciliation summary (matched / plaid-only / statement-only / conflict) for the
@@ -1244,9 +1314,13 @@ export default function Banking({ accounts, transactions, onUpdate }) {
     axios.get(`${API}/reconcile/txn-flags`).then(r => setReconcileFlags(r.data || {})).catch(() => {})
     axios.get(`${API}/account-settings`).then(r => setAcctSettings(r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? r.data : {})).catch(() => {})
     axios.get(`${API}/properties`).then(r => setProperties(Array.isArray(r.data) ? r.data : [])).catch(() => {})
-    reloadReceiptCounts()
+    reloadReceiptsByTxn()
     loadRecStatus()
-  }, [reloadReceiptCounts, loadRecStatus])
+    // Auto-match existing/chatbot receipts to transactions (excludes cash), then refresh.
+    axios.post(`${API}/receipts/match-pending`).then(r => {
+      if (r.data && r.data.matched) { reloadReceiptsByTxn(); axios.get(`${API}/transactions`).then(rr => onUpdate(rr.data)).catch(() => {}) }
+    }).catch(() => {})
+  }, [reloadReceiptsByTxn, loadRecStatus])
 
   // Lookup a COA entry by id — tolerant of missing (deleted) accounts.
   const coaById = useMemo(() => new Map(coa.map(a => [a.id, a])), [coa])
@@ -1497,7 +1571,7 @@ export default function Banking({ accounts, transactions, onUpdate }) {
                 <TransactionsTable txs={filteredTxs} bankAccounts={bankAccounts} showAccount={!selectedAcct}
                   sortDir={sortDir} onToggleSort={()=>setSortDir(d=>d==='desc'?'asc':'desc')}
                   onRowClick={setDetailTx} coaById={coaById} reconcileFlags={reconcileFlags}
-                  receiptCounts={receiptCounts} reload={reload}/>
+                  receiptsByTxn={receiptsByTxn} onViewReceipt={setViewReceipt} onAttachReceipt={setAttachTx} reload={reload}/>
               </div>
             </div>
           )}
@@ -1617,10 +1691,17 @@ export default function Banking({ accounts, transactions, onUpdate }) {
           onUpdate={onUpdate}
           reload={reload}
           onCreateCategory={createCategory}
-          onReceiptsChanged={reloadReceiptCounts}
+          onReceiptsChanged={reloadReceiptsByTxn}
           onReconciled={reloadFlags}
           onClose={()=>setDetailTx(null)}
         />
+      )}
+
+      {viewReceipt && <ReceiptViewModal receipt={viewReceipt} onClose={()=>setViewReceipt(null)}/>}
+
+      {attachTx && (
+        <AttachReceiptModal tx={attachTx} onClose={()=>setAttachTx(null)}
+          onAttached={()=>{ reloadReceiptsByTxn(); reload() }}/>
       )}
     </div>
   )

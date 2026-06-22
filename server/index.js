@@ -824,6 +824,11 @@ app.get('/{*path}', (req, res) => {
     }
   });
 
+  // Categorizer bot (in-process, single-instance via a DB advisory lock so two server processes
+  // can never both connect a Discord bot). Decoupled from the HTTP listener on purpose.
+  try { require('./banking/messaging-bot').start({ makeIO, query: require('./core/db').query }); }
+  catch (e) { console.error('[bot] start error:', e.message); }
+
   // ── Start ───────────────────────────────────────────────────────────
   const PORT = process.env.PORT || 3001;
   app.listen(PORT, async () => {
@@ -832,10 +837,6 @@ app.get('/{*path}', (req, res) => {
     console.log(`✓ Auto-sync every ${intervalMinutes} minutes`);
     console.log(`\nOpen http://localhost:${PORT} in your browser\n`);
     try { require('open')(`http://localhost:${PORT}`); } catch(e) {}
-
-    // Categorizer bot (in-process): DMs users to confirm/correct new transaction categories.
-    try { require('./banking/messaging-bot').start({ makeIO, query: require('./core/db').query }); }
-    catch (e) { console.error('[bot] start error:', e.message); }
 
     // Run startup verification for all existing users
     const { verifyUser } = require('./core/verify');
@@ -857,6 +858,7 @@ app.get('/{*path}', (req, res) => {
 // Drain any in-flight DB writes on graceful shutdown so no buffered write is lost.
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, async () => {
+    try { await require('./banking/messaging-bot').stop(); } catch (e) { /* best effort */ }
     try { await dataStore.flush(); } catch (e) { /* best effort */ }
     process.exit(0);
   });
