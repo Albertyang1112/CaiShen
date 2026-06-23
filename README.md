@@ -1,8 +1,4 @@
-# CaiShen 财神
-
-**CaiShen** (财神, the Chinese god of wealth) is a personal-finance OS — a local Node.js + React app that runs on your own machine, so your financial data (banking, real estate, crypto, taxes, documents) stays private.
-
-## Running the project
+# CaiShen 
 
 **Prerequisite:** make sure [Node.js](https://nodejs.org) is installed and up to date.
 
