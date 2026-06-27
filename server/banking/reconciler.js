@@ -31,6 +31,7 @@ const crypto = require('crypto');
 // the worker found no transactions in, i.e. real bank PDFs, never generated ones.
 const { extractStatementMeta } = require('../core/pdf-parser');
 const { findOrCreatePeriod } = require('./periods');
+const matching = require('./matching');   // centralized matched_transaction_sources writer
 
 // ── Text normalisation for name similarity ────────────────────────────────────
 const norm = s => String(s || '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -354,6 +355,42 @@ async function mirrorStatement(query, userId, rows, sourceFile, opts = {}) {
     } catch (e) { bankStatementId = null; }   // never let a statement-record hiccup drop the rows
   }
 
+  // ── Re-upload / re-scan dedup ────────────────────────────────────────────────
+  // If this (account, period) already has statement rows from a DIFFERENT file, decide
+  // whether this parse is a true duplicate, a correction, or possibly tampered (fudge).
+  // Without this, a re-scan saved under a new filename double-counts the period (the
+  // source_transactions id includes the file). Only runs when account+period resolved.
+  if (accountId && periodId) {
+    let dedup = { decision: 'new' };
+    try {
+      const prior = (await query(
+        `SELECT txn_date::text AS date, amount::float AS amount
+           FROM source_transactions
+          WHERE user_id=$1 AND source='statement' AND account_id=$2 AND bank_account_period_id=$3 AND source_file <> $4`,
+        [userId, accountId, periodId, sourceFile]
+      )).rows;
+      dedup = require('./statement-dedup').decide(rows.map(r => ({ date: r.date, amount: r.amount })), prior);
+    } catch { /* non-fatal — treat as 'new' */ }
+
+    if (dedup.decision === 'fudge') {
+      // Contradictory re-upload — keep the original rows, flag this statement, insert nothing.
+      if (bankStatementId) { try { await query(`UPDATE bank_statements SET parser_status='flagged', updated_at=NOW() WHERE id=$1`, [bankStatementId]); } catch {} }
+      console.warn(`[reconciler] statement re-upload FLAGGED (possible tampering) ${last4} ${meta?.year}-${meta?.month}: ${dedup.fudgeCount}/${dedup.dateMatched} rows differ`);
+      return 0;
+    }
+    if (dedup.decision === 'duplicate' || dedup.decision === 'changed') {
+      // True re-upload or a correction supersedes the prior file's rows for this period,
+      // so the period holds exactly one statement's worth of rows (no double count).
+      try {
+        await query(
+          `DELETE FROM source_transactions
+            WHERE user_id=$1 AND source='statement' AND account_id=$2 AND bank_account_period_id=$3 AND source_file <> $4`,
+          [userId, accountId, periodId, sourceFile]
+        );
+      } catch {}
+    }
+  }
+
   const year = meta?.year || parseInt((sourceFile || '').match(/20\d{2}/)?.[0] || new Date().getFullYear());
   let inserted = 0;
   for (const row of rows) {
@@ -632,33 +669,17 @@ async function reconcileUser(query, userId, io, year) {
       );
     }
 
-    // Remodel evidence links (matched_transaction_sources): the generalized form of
-    // the statement↔plaid matches above. transaction_id = the displayed Plaid txn
-    // (transactions.id, which equals the plaid source_transactions.id), source = the
-    // statement row, role 'bank_statement'. Scoped to THIS run's statement rows (year-
-    // agnostic) so a single-year reconcile never wipes another year's links.
+    // Remodel evidence links (matched_transaction_sources) — the generalized form of the
+    // statement↔plaid matches above, written through the centralized matching engine.
+    // transaction_id = the displayed Plaid txn; source = the statement row; role
+    // 'bank_statement'. Scoped to THIS run's statement rows so a single-year reconcile
+    // never wipes another year's links.
     const stmtIds = stmtRows.map(r => r.id);
-    await client.query(
-      `DELETE FROM matched_transaction_sources
-        WHERE user_id=$1 AND source_role='bank_statement' AND source_transaction_id = ANY($2)`,
-      [userId, stmtIds]
-    );
-    const mts = decisions
-      .filter(d => d.m)
-      .map(d => [crypto.randomUUID(), userId, d.m.p.id, d.s.id, 'bank_statement', Number(d.m.score).toFixed(4)]);
-    for (let i = 0; i < mts.length; i += CHUNK) {
-      const chunk  = mts.slice(i, i + CHUNK);
-      const values = chunk.map((_, r) =>
-        `(${Array.from({ length: 6 }, (_, c) => '$' + (r * 6 + c + 1)).join(',')})`).join(',');
-      await client.query(
-        `INSERT INTO matched_transaction_sources
-           (id, user_id, transaction_id, source_transaction_id, source_role, match_confidence)
-         VALUES ${values}
-         ON CONFLICT (transaction_id, source_transaction_id) DO UPDATE SET
-           source_role=EXCLUDED.source_role, match_confidence=EXCLUDED.match_confidence, updated_at=NOW()`,
-        chunk.flat()
-      );
-    }
+    const mtsRows = decisions.filter(d => d.m).map(d => ({
+      transactionId: d.m.p.id, sourceTransactionId: d.s.id,
+      sourceRole: 'bank_statement', confidence: Number(d.m.score).toFixed(4),
+    }));
+    await matching.replaceRoleLinks(client, userId, 'bank_statement', stmtIds, mtsRows, { chunk: CHUNK });
   });
 
   // Keep the auditable statements.csv in the DB current (extracted statement data).

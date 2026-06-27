@@ -45,13 +45,24 @@ async function listTransactions(userId) {
   return r.rows.map(row => row.data);
 }
 
-// ── Write-through mirror (full-replace; called from writeData at one choke point) ──
-// Full-replace, run atomically (BEGIN…COMMIT) so a concurrent GET never sees the
-// table mid-rewrite (the bug that briefly showed "Transactions (0)").
+// ── Write-through mirror (NON-DESTRUCTIVE; called from writeData at one choke point) ──
+// Upsert every row in the canonical set (a stable id ⇒ an in-place UPDATE, no churn),
+// then delete ONLY the ids that are no longer present (a genuine removal). This replaces
+// the old DELETE-all + INSERT-all, which rewrote every row on every sync AND — because
+// bank_account_periods.account_id / matched_transaction_sources etc. point here — fired
+// ON DELETE CASCADE on the whole table each sync (wiping periods' finalized status and
+// statement balances, which mirrorPlaid then re-created as 'open'). With the targeted
+// delete, a cascade fires only when a row truly disappears. Runs atomically (BEGIN…COMMIT)
+// so a concurrent GET never sees the table mid-rewrite (the old "Transactions (0)" bug).
+//
+// `list` is always the FULL accumulated set (store.write passes the whole accounts.json /
+// transactions.json), so "delete ids not in list" removes only genuinely-gone rows and
+// preserves out-of-Plaid-window history. An empty list still clears the table (the
+// "removed the last account/txn" case) — `NOT (id = ANY('{}'))` is true for every row.
 async function mirrorAccounts(userId, accounts) {
   const list = Array.isArray(accounts) ? accounts : [];
+  const ids  = list.map(a => a.id);
   await withTransaction(async (client) => {
-    await client.query(`DELETE FROM accounts WHERE user_id = $1`, [userId]);
     for (const a of list) {
       let itemId = null;
       if (a.source === 'plaid' && a.institution) {
@@ -61,30 +72,56 @@ async function mirrorAccounts(userId, accounts) {
       await client.query(
         `INSERT INTO accounts (id,user_id,plaid_item_id,source,account_class,plaid_type,plaid_subtype,name,official_name,mask,current_balance,available_balance,currency,details,updated_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
-         ON CONFLICT (id) DO UPDATE SET current_balance=EXCLUDED.current_balance, available_balance=EXCLUDED.available_balance,
-           name=EXCLUDED.name, account_class=EXCLUDED.account_class, details=EXCLUDED.details, updated_at=NOW()`,
+         ON CONFLICT (id) DO UPDATE SET plaid_item_id=EXCLUDED.plaid_item_id, source=EXCLUDED.source,
+           account_class=EXCLUDED.account_class, plaid_type=EXCLUDED.plaid_type, plaid_subtype=EXCLUDED.plaid_subtype,
+           name=EXCLUDED.name, official_name=EXCLUDED.official_name, mask=EXCLUDED.mask,
+           current_balance=EXCLUDED.current_balance, available_balance=EXCLUDED.available_balance,
+           currency=EXCLUDED.currency, details=EXCLUDED.details, updated_at=NOW()`,
         [a.id, userId, itemId, a.source || 'manual', accountClass(a), a.type || null, a.subtype || null, a.name || null,
          a.officialName || null, a.last4 || null, a.balance ?? null, a.availableBalance ?? null, a.currency || 'USD',
          JSON.stringify({ institution: a.institution || null, lastUpdated: a.lastUpdated || null, createdAt: a.createdAt || null })]
       );
     }
+    // Remove only accounts that genuinely vanished (e.g. a reconnect that issued new ids).
+    await client.query(`DELETE FROM accounts WHERE user_id = $1 AND NOT (id = ANY($2::text[]))`, [userId, ids]);
   });
 }
 
 async function mirrorTransactions(userId, txs) {
   const list = Array.isArray(txs) ? txs : [];
+  const ids  = list.map(t => t.id);
   await withTransaction(async (client) => {
-    await client.query(`DELETE FROM transactions WHERE user_id = $1`, [userId]);
     for (const t of list) {
       await client.query(
         `INSERT INTO transactions (id,user_id,account,txn_date,month,description,amount,category,plaid_category,institution,pending,source,data,updated_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
-         ON CONFLICT (id) DO UPDATE SET amount=EXCLUDED.amount, category=EXCLUDED.category, description=EXCLUDED.description, data=EXCLUDED.data, updated_at=NOW()`,
+         ON CONFLICT (id) DO UPDATE SET account=EXCLUDED.account, txn_date=EXCLUDED.txn_date, month=EXCLUDED.month,
+           description=EXCLUDED.description, amount=EXCLUDED.amount, category=EXCLUDED.category,
+           plaid_category=EXCLUDED.plaid_category, institution=EXCLUDED.institution, pending=EXCLUDED.pending,
+           source=EXCLUDED.source, data=EXCLUDED.data, updated_at=NOW()`,
         [t.id, userId, t.account || null, t.date || null, t.month || null, t.desc || null, t.amount ?? null,
          t.category || null, t.plaidCategory || null, t.institution || null, !!t.pending, t.source || null, JSON.stringify(t)]
       );
     }
+    // Remove only transactions no longer in the canonical set (settled-pending prune,
+    // disconnect, manual delete). History outside Plaid's window is in `list`, so kept.
+    await client.query(`DELETE FROM transactions WHERE user_id = $1 AND NOT (id = ANY($2::text[]))`, [userId, ids]);
   });
 }
 
-module.exports = { listAccounts, listTransactions, mirrorAccounts, mirrorTransactions };
+// Drop evidence links (matched_transaction_sources) whose DISPLAYED transaction no longer
+// exists. transaction_id is a deliberate soft ref (not a DB FK) because the display layer
+// is rebuilt from JSON; with the non-destructive mirror those ids are now stable across
+// syncs, so the only orphans are genuine removals (a disconnected institution's txns).
+// source_transaction_id orphans are already handled by its real ON DELETE CASCADE FK.
+async function pruneOrphanMatchSources(userId) {
+  const r = await query(
+    `DELETE FROM matched_transaction_sources mts
+      WHERE mts.user_id = $1 AND mts.transaction_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM transactions t WHERE t.id = mts.transaction_id AND t.user_id = $1)`,
+    [userId]
+  );
+  return r.rowCount || 0;
+}
+
+module.exports = { listAccounts, listTransactions, mirrorAccounts, mirrorTransactions, pruneOrphanMatchSources };

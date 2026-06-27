@@ -470,8 +470,53 @@ A JS port of a previously-built Python cost-basis engine, wired into the Crypto 
 - **Fudge detection isolated in child process** — `execFileSync(process.execPath, ['fudge-detect-worker.js', ...])` gives pdf2json a clean process each time. Do not parse two PDFs in the main server process for comparison — the shared state causes hangs or wrong results.
 - **Fudge threshold: 20% of date-matched transactions** — `isFudge = total >= 2 && (fudgeCount / total) >= 0.20` where fudgeCount = transactions with amount diff > $0.02 vs same-date original transaction.
 - **Flagged files keep their own copy** — a fudge-flagged file is renamed to `{canonical}_FLAGGED.pdf` and stays in the vault (not deleted); the `tags.fudge = true` and `tags.fudgeOf = <origId>` fields distinguish it from the legitimate original.
+- **From/To (vendor) is a first-class transaction field** — the Banking table's "From/To" column (who a txn was paid to / received from) writes `vendor` + `vendorAuto` directly onto the transaction (both added to `KEEP` in `plaid.js` so a Plaid re-sync preserves them), NOT to `tx_overrides` — the old `vendor` override path was removed, so the transaction is the single source of truth. Edits go through `PATCH /api/transactions/:id/vendor` → `banking/vendor-learn.js` `setVendorAndLearn`, which learns the merchant pattern into per-user `vendor_memory.json` (keyed by `suggestKeyword(desc)`, e.g. both `Audible*8D5…` and `Audible*JR9…` → `AUDIBLE`) and back-fills every matching txn (past + future). Each Plaid sync re-applies learned labels deterministically (`applyLearnedVendors`), then a capped Groq pass (`banking/vendor-ai.js`, `VENDOR_GROQ_CAP=20`, gated on `GROQ_API_KEY`, best-effort) cleans never-seen merchants and learns those too. Manual values (`vendorAuto:false`) are never auto-overwritten; auto-filled ones show an "auto" chip and are overwritable. The Report tab already surfaces this — `accounting/index.js` `cleanMerchant(tx)` returns `tx.vendor` first, cleaned Plaid description as fallback — so P&L drill-down subcategories group by From/To when set, Plaid naming otherwise.
 
 ---
+
+## Backend Remodel — June 2026 (source-of-truth hardening, Increments 1–6)
+Six increments hardened the data path so the DB (not CSV) is the source of truth and the
+remodel tables are fully wired. All migrations additive (`IF NOT EXISTS`); ~26 unit tests
+added (run `npm test` → 34 suites / 492 tests).
+
+1. **Non-destructive mirror** — `core/banking-store.js` `mirrorTransactions`/`mirrorAccounts`
+   now UPSERT + delete-only-missing-ids (was DELETE-all+INSERT-all). Fixes a latent bug where
+   `mirrorAccounts`' `DELETE FROM accounts` cascaded via `bank_account_periods.account_id ON
+   DELETE CASCADE` and wiped every period's finalized status/balances each sync. Added
+   `pruneOrphanMatchSources(userId)` (run at end of Plaid sync).
+2. **Centralized matching** — `banking/matching.js` is the ONE writer of
+   `matched_transaction_sources` (`linkSource`/`linkSourcesBulk`/`replaceRoleLinks`, validated
+   `ROLES`). `reconciler.js`, `receipt-store.js`, `receipt-match.js` route through it.
+   `statement_matches` stays as reconciliation's status ledger (Banking badges read it).
+3. **Audit CSVs gated + manual-CSV intake** — `csv-store.js`/`statement-csv.js` audit writes
+   are OFF unless `DEBUG_AUDIT_CSV` is set (they were write-only dev-verify snapshots).
+   `/api/import-history` now also records `source_transactions(source='manual_csv')` + evidence
+   links via `banking/manual-import.js`.
+4. **Mortgage domain (NEW)** — `core/db-mortgage-schema.js`: `mortgage_accounts`,
+   `mortgage_statements`, `mortgage_payments`, `mortgage_escrow_transactions`.
+   `banking/mortgage-parse.js` (label-driven text extractor, best-effort/heuristic),
+   `banking/mortgage.js` (recorder: upsert account/statement/payment/escrow, match payment→bank
+   txn, emit alerts to `mortgage_alerts.json`), `banking/mortgage-routes.js` (`/api/mortgage`).
+   Wired into `scrapers/scraper-import.js` `importMortgage` (parses freshly-ingested statement
+   PDFs; `ingestPdf` now returns the doc id instead of a boolean).
+5. **Statement re-upload dedup** — `banking/statement-dedup.js` `decide(new, prior)` (reuses the
+   vault fudge heuristic). `reconciler.mirrorStatement` flags a 'fudge' (keeps original,
+   `bank_statements.parser_status='flagged'`, inserts nothing) and supersedes a true
+   duplicate/correction (deletes the prior file's period rows) so a re-scan under a new filename
+   never double-counts the period.
+6. **COA promoted + index.js fully decomposed** — `chart_of_accounts` table (flat rows)
+   mirrored write-through from `chart_of_accounts.json` via `core/coa-store.js` (JSON stays
+   source; `loadChart` unchanged). Inline routes extracted to modules: properties + tax-years →
+   `core/user-routes.js`; backup/restore + import-history(+preview) → `core/backup-routes.js`;
+   tax-estimate (+crypto FIFO) → `tax/estimate-routes.js`; crypto txns + wallets + wallet-lookup →
+   `crypto/wallet-routes.js`; parse-statement + pdf-render → `core/pdf-routes.js`. `index.js` now
+   holds only mounts + SSE + settings + status + catch-all (multer moved into pdf-routes).
+   Extracted routers covered by a supertest integration test (`tests/extractedRoutes.test.js`).
+
+**Deliberately deferred:** hard FKs on the soft `transaction_id` links (display layer is
+JSON-rebuilt; the non-destructive mirror makes ids stable but the schema author's soft-ref
+choice stands — orphans pruned in code). COA read path still reads JSON (table is forward
+scaffolding for `categorization_memory.coa_id`).
 
 ## Key Implementation Notes
 

@@ -62,6 +62,10 @@ function write(file, data, uid) {
      ON CONFLICT (user_id, doc_key) DO UPDATE SET text_data = EXCLUDED.text_data, data = NULL, updated_at = NOW()`,
     [uid, file, JSON.stringify(data)]
   );
+  // The chart of accounts also mirrors into its relational table (JSON above stays source).
+  if (file === 'chart_of_accounts.json') {
+    track(require('./coa-store').mirrorChartOfAccounts(uid, data).catch(e => console.error('[store] coa mirror:', e.message)));
+  }
   track(Promise.resolve(p).catch(e => console.error(`[store] persist ${file}:`, e.message)));
   return true;
 }
