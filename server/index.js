@@ -48,8 +48,7 @@ const cors    = require('cors');
 const path    = require('path');
 const fs      = require('fs');
 const cron    = require('node-cron');
-const multer  = require('multer');
-const upload  = multer({ storage: multer.memoryStorage() });
+// (multer now lives in the route modules that need it — core/pdf-routes.js, etc.)
 
 const app = express();
 app.use(cors());
@@ -225,32 +224,8 @@ app.get('/api/settings', (req, res) => res.json(readData('settings.json')));
 // Extracted to banking/routes.js — see that file for the Banking page's API.
 app.use('/api', require('./banking/routes')({ readData, writeData }));
 
-// ── Routes: Properties (real estate) + tax-years read ─────────────────
-app.get('/api/properties',  (req, res) => res.json(readData('properties.json', req.user?.id)));
-app.get('/api/tax-years',   (req, res) => res.json(readData('tax_years.json', req.user?.id)));
-
-app.post('/api/properties', (req, res) => {
-  const uid  = req.user.id;
-  const props = readData('properties.json', uid) || [];
-  const newProp = { id: Date.now().toString(), ...req.body };
-  props.push(newProp);
-  writeData('properties.json', props, uid);
-  res.json(newProp);
-});
-app.put('/api/properties/:id', (req, res) => {
-  const uid  = req.user.id;
-  const props = readData('properties.json', uid) || [];
-  const idx  = props.findIndex(p => p.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  props[idx] = { ...props[idx], ...req.body };
-  writeData('properties.json', props, uid);
-  res.json(props[idx]);
-});
-app.delete('/api/properties/:id', (req, res) => {
-  const uid = req.user.id;
-  writeData('properties.json', (readData('properties.json', uid) || []).filter(p => p.id !== req.params.id), uid);
-  res.json({ success: true });
-});
+// ── Routes: Properties (real estate) + tax-years — extracted to core/user-routes.js ──
+app.use('/api', require('./core/user-routes')(makeIO));
 
 // ── Routes: Vault (per-user) ──────────────────────────────────────────
 app.use('/api/vault', require('./vault')(VAULT_DIR, makeIO));
@@ -307,6 +282,9 @@ app.use('/api/plaid', plaidRouter);
 
 // ── Routes: Reconciliation (Phase 3) ─────────────────────────────────
 app.use('/api/reconcile', require('./banking/reconcile-routes')(makeIO));
+
+// ── Routes: Mortgage domain (read-only; written during scraper import) ──
+app.use('/api/mortgage', require('./banking/mortgage-routes')(makeIO));
 // DEV-ONLY reconciliation verification (localhost only; delete this line + banking/dev-verify.js to remove).
 app.use('/api/dev-verify', localhostOnly, require('./banking/dev-verify')(makeIO));
 
@@ -367,414 +345,20 @@ app.use('/api/tax-advisor', makeTaxAdvisorRouter());
 const { makeRouter: makeTaxNormalizeRouter } = require('./tax/normalize');
 app.use('/api/tax-normalize', makeTaxNormalizeRouter(makeIO));
 
-// ── Import preview — dry-run before actual import ─────────────────────
-app.post('/api/import-history/preview', (req, res) => {
-  const { transactions } = req.body;
-  const uid = req.user.id;
-  if (!Array.isArray(transactions) || !transactions.length)
-    return res.status(400).json({ error: 'No transactions provided' });
-
-  const existing = readData('transactions.json', uid) || [];
-
-  // Build lookup maps
-  const exactKeys  = new Set(
-    existing.map(t => `${t.date}|${Number(t.amount).toFixed(2)}|${String(t.desc||'').toLowerCase().slice(0,20)}`)
-  );
-  const descKeyMap = new Map(); // date|desc20 -> existing tx
-  for (const t of existing) {
-    const k = `${t.date}|${String(t.desc||'').toLowerCase().slice(0,20)}`;
-    if (!descKeyMap.has(k)) descKeyMap.set(k, t);
-  }
-
-  const exactDuplicates = [], conflicts = [], newTxs = [];
-  for (const t of transactions) {
-    const eKey = `${t.date}|${Number(t.amount).toFixed(2)}|${String(t.desc||'').toLowerCase().slice(0,20)}`;
-    const dKey = `${t.date}|${String(t.desc||'').toLowerCase().slice(0,20)}`;
-    if (exactKeys.has(eKey)) {
-      exactDuplicates.push(t);
-    } else if (descKeyMap.has(dKey)) {
-      conflicts.push({ incoming: t, existing: descKeyMap.get(dKey) });
-    } else {
-      newTxs.push(t);
-    }
-  }
-
-  res.json({
-    new:              newTxs.length,
-    duplicates:       exactDuplicates.length,
-    conflicts:        conflicts.length,
-    conflictDetails:  conflicts.slice(0, 15),
-    duplicateDetails: exactDuplicates.slice(0, 10),
-  });
-});
-
-// ── Import historical CSV transactions ───────────────────────────────
-app.post('/api/import-history', (req, res) => {
-  const { transactions, accountId } = req.body;
-  const uid = req.user.id;
-  if (!Array.isArray(transactions) || !transactions.length)
-    return res.status(400).json({ error: 'No transactions provided' });
-
-  const accounts = readData('accounts.json', uid) || [];
-  const account  = accounts.find(a => a.id === accountId);
-  if (!account) return res.status(404).json({ error: 'Account not found' });
-
-  const existing    = readData('transactions.json', uid) || [];
-  const existingKeys = new Set(
-    existing.map(t => `${t.date}|${Number(t.amount).toFixed(2)}|${String(t.desc||'').toLowerCase().slice(0,20)}`)
-  );
-
-  const toAdd = [];
-  for (const t of transactions) {
-    const key = `${t.date}|${Number(t.amount).toFixed(2)}|${String(t.desc||'').toLowerCase().slice(0,20)}`;
-    if (existingKeys.has(key)) continue;
-    existingKeys.add(key);
-    const [y, m] = t.date.split('-');
-    toAdd.push({
-      id: `csv_${t.date}_${String(t.desc||'').replace(/\W/g,'').slice(0,8).toLowerCase()}_${Math.random().toString(36).slice(2,6)}`,
-      date: t.date, month: `${y}-${m}`, desc: t.desc || '',
-      amount: t.amount, category: t.category || 'Other',
-      account: accountId, institution: account.institution,
-      pending: false, source: 'csv_import', lastUpdated: new Date().toISOString()
-    });
-  }
-
-  writeData('transactions.json', [...existing, ...toAdd], uid);
-  res.json({ imported: toAdd.length, skipped: transactions.length - toAdd.length });
-});
-
-// ── Routes: Tax Years ─────────────────────────────────────────────────
-app.post('/api/tax-years', (req, res) => {
-  const uid   = req.user.id;
-  const years = readData('tax_years.json', uid) || [];
-  const entry = { ...req.body, savedAt: new Date().toISOString() };
-  const idx   = years.findIndex(y => y.year === entry.year);
-  if (idx >= 0) years[idx] = entry; else years.push(entry);
-  years.sort((a, b) => b.year - a.year);
-  writeData('tax_years.json', years, uid);
-  res.json(entry);
-});
-
-// ── FIFO crypto gain computation (mirrors Crypto.jsx, used by /api/tax-estimate) ──
-function computeCryptoGainsByYear(txns, targetYear) {
-  const sorted = [...txns].sort((a, b) => new Date(a.date) - new Date(b.date));
-  const lots = {}; // asset -> [{date, qty, costPerUnit}]
-  let stGains = 0, ltGains = 0, stCount = 0, ltCount = 0;
-  for (const tx of sorted) {
-    const asset = (tx.asset || '').toUpperCase();
-    if (!asset) continue;
-    if (!lots[asset]) lots[asset] = [];
-    const qty   = parseFloat(tx.quantity)    || 0;
-    const price = parseFloat(tx.pricePerUnit) || 0;
-    const fees  = parseFloat(tx.fees)         || 0;
-    if (tx.type === 'buy' || tx.type === 'receive' || tx.type === 'transfer_in') {
-      if (qty > 0) lots[asset].push({ date: tx.date, qty, costPerUnit: price + (qty > 0 ? fees / qty : 0) });
-    } else if (tx.type === 'sell') {
-      const txYear = (tx.date || '').slice(0, 4);
-      const proceeds = price * qty - fees;
-      let remaining = qty;
-      while (remaining > 1e-9 && lots[asset]?.length > 0) {
-        const lot  = lots[asset][0];
-        const used = Math.min(lot.qty, remaining);
-        const gain = used * price - used * lot.costPerUnit - (remaining === qty ? fees : 0);
-        const days = (new Date(tx.date) - new Date(lot.date)) / 86400000;
-        if (txYear === targetYear) {
-          if (days >= 365) { ltGains += gain; ltCount++; }
-          else             { stGains += gain; stCount++; }
-        }
-        lot.qty   -= used;
-        remaining -= used;
-        if (lot.qty < 1e-9) lots[asset].shift();
-      }
-    }
-  }
-  return { stGains: Math.round(stGains * 100) / 100, ltGains: Math.round(ltGains * 100) / 100, stCount, ltCount };
-}
-
-// ── GET /api/tax-estimate?year=YYYY ──────────────────────────────────
-// Estimates income fields from Plaid transactions, vault PDF stats, and crypto FIFO.
-app.get('/api/tax-estimate', (req, res) => {
-  const uid        = req.user.id;
-  const targetYear = (req.query.year || (new Date().getFullYear() - 1)).toString();
-
-  const transactions = readData('transactions.json', uid) || [];
-  const cryptoTxns   = readData('crypto_txns.json',  uid) || [];
-  const vault        = readData('vault.json',         uid) || { files: [] };
-
-  const yearTxs   = transactions.filter(t => (t.month || '').startsWith(targetYear));
-  const incomeTxs = yearTxs.filter(t => t.amount > 0 && t.category === 'Income');
-
-  // ── W-2: payroll-like Plaid income transactions ───────────────────
-  const PAYROLL_KW = ['payroll','paycheck','direct dep','adp','paychex','gusto','salary','wages','employer'];
-  const w2Txs  = incomeTxs.filter(t => PAYROLL_KW.some(kw => (t.desc || '').toLowerCase().includes(kw)));
-  const w2Total = Math.round(w2Txs.reduce((s, t) => s + t.amount, 0) * 100) / 100;
-
-  // ── Schedule E: vault property statement stats (property-tagged folders) ─
-  const properties = readData('properties.json', uid) || [];
-  const propNames  = properties.map(p => String(p.name || '').toLowerCase()).filter(Boolean);
-  const PROP_IDS   = [...properties.map(p => String(p.id)), ...propNames];
-  const propFiles = (vault.files || []).filter(f =>
-    f.tags?.year === targetYear &&
-    f.tags?.income !== undefined &&
-    PROP_IDS.some(p => f.tags?.property === p || (f.folderPath || '').toLowerCase().includes(p))
-  );
-  const reGross    = propFiles.reduce((s, f) => s + (f.tags.income   || 0), 0);
-  const reExpenses = propFiles.reduce((s, f) => s + Math.abs(f.tags.spending || 0), 0);
-  const reNet      = Math.round((reGross - reExpenses) * 100) / 100;
-
-  // ── Schedule E fallback: rent deposits in Plaid transactions ─────
-  // Catches rent checks deposited to checking when no property-folder PDFs exist.
-  // Excludes anything that also looks like a payroll deposit (already counted above).
-  const RENTAL_KW  = ['rent','rental','lease',...propNames]; // real property names only — no hardcoded demo ids/addresses
-  const rentalTxs  = incomeTxs.filter(t =>
-    !w2Txs.includes(t) &&
-    RENTAL_KW.some(kw => (t.desc || '').toLowerCase().includes(kw))
-  );
-  const rentalTotal = Math.round(rentalTxs.reduce((s, t) => s + t.amount, 0) * 100) / 100;
-
-  // Use vault stats if available, otherwise fall back to Plaid rental deposits
-  const reEstimate   = propFiles.length > 0 ? reNet : rentalTotal;
-  const reSource     = propFiles.length > 0
-    ? `${propFiles.length} property statement PDF${propFiles.length !== 1 ? 's' : ''} in vault`
-    : rentalTxs.length > 0
-      ? `${rentalTxs.length} rent deposit${rentalTxs.length !== 1 ? 's' : ''} via Plaid`
-      : null;
-  const reConfidence = propFiles.length > 0 ? 'medium' : rentalTxs.length > 0 ? 'low' : 'none';
-
-  // ── Capital gains: crypto FIFO ────────────────────────────────────
-  const { stGains, ltGains, stCount, ltCount } = computeCryptoGainsByYear(cryptoTxns, targetYear);
-  const totalCapGains = Math.round((stGains + ltGains) * 100) / 100;
-
-  res.json({
-    year: targetYear,
-    estimates: {
-      w2: {
-        value:    w2Total,
-        txCount:  w2Txs.length,
-        source:   'Plaid payroll deposits',
-        confidence: w2Txs.length > 0 ? 'medium' : 'none',
-      },
-      capitalGains: {
-        value:    totalCapGains,
-        stGains,  ltGains,
-        txCount:  stCount + ltCount,
-        source:   'Crypto FIFO (exact)',
-        confidence: (stCount + ltCount) > 0 ? 'high' : 'none',
-      },
-      scheduleEIncome: {
-        value:      reEstimate,
-        gross:      propFiles.length > 0 ? Math.round(reGross * 100) / 100 : rentalTotal,
-        expenses:   propFiles.length > 0 ? Math.round(reExpenses * 100) / 100 : 0,
-        statements: propFiles.length,
-        txCount:    rentalTxs.length,
-        source:     reSource || 'No rental data found',
-        confidence: reConfidence,
-      },
-    },
-  });
-});
-
-// ── Routes: Crypto transactions ───────────────────────────────────────
-app.get('/api/crypto/transactions', (req, res) => {
-  res.json(readData('crypto_txns.json', req.user.id) || []);
-});
-app.post('/api/crypto/transactions', (req, res) => {
-  const uid  = req.user.id;
-  const txns = readData('crypto_txns.json', uid) || [];
-  const tx   = { ...req.body, id: `ctx_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, createdAt: new Date().toISOString() };
-  txns.push(tx);
-  writeData('crypto_txns.json', txns, uid);
-  res.json(tx);
-});
-app.patch('/api/crypto/transactions/:id', (req, res) => {
-  const uid  = req.user.id;
-  const txns = readData('crypto_txns.json', uid) || [];
-  const idx  = txns.findIndex(t => t.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  txns[idx] = { ...txns[idx], ...req.body };
-  writeData('crypto_txns.json', txns, uid);
-  res.json(txns[idx]);
-});
-app.delete('/api/crypto/transactions/:id', (req, res) => {
-  const uid = req.user.id;
-  writeData('crypto_txns.json', (readData('crypto_txns.json', uid) || []).filter(t => t.id !== req.params.id), uid);
-  res.json({ success: true });
-});
+// ── Routes extracted to modules: backup/restore + import-history(+preview), tax-estimate,
+// crypto txns + wallets + wallet-lookup. crypto-wallet is mounted BEFORE the crypto report
+// router below so /api/crypto/transactions resolves to the CRUD router. ──
+app.use('/api', require('./core/backup-routes')({ readData, writeData }));
+app.use('/api', require('./tax/estimate-routes')(makeIO));
+app.use('/api', require('./crypto/wallet-routes')(makeIO));
 
 // ── Routes: Crypto tax report (read-only; cost-basis engine parity) ───
 // Adds GET /api/crypto/report and /report/download only. The Crypto tab does not call these
 // yet — they exist so the ported engine can be verified against the Python reference first.
 app.use('/api/crypto', require('./crypto')(makeIO));
 
-// ── Routes: Wallets ───────────────────────────────────────────────────
-app.get('/api/wallets', (req, res) => {
-  res.json(readData('wallets.json', req.user.id) || []);
-});
-app.post('/api/wallets', (req, res) => {
-  const uid     = req.user.id;
-  const wallets = readData('wallets.json', uid) || [];
-  const wallet  = { ...req.body, id: `wallet_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, createdAt: new Date().toISOString() };
-  wallets.push(wallet);
-  writeData('wallets.json', wallets, uid);
-  res.json(wallet);
-});
-app.delete('/api/wallets/:id', (req, res) => {
-  const uid = req.user.id;
-  writeData('wallets.json', (readData('wallets.json', uid) || []).filter(w => w.id !== req.params.id), uid);
-  res.json({ success: true });
-});
-
-// ── On-chain wallet lookup ─────────────────────────────────────────────
-function detectChain(addr) {
-  const a = addr.trim()
-  if (/^(1|3)[a-km-zA-HJ-NP-Z1-9]{25,34}$/.test(a) || /^bc1[ac-hj-np-z02-9]{6,87}$/i.test(a)) return 'BTC'
-  if (/^0x[0-9a-fA-F]{40}$/.test(a)) return 'ETH'
-  if (/^[LM][a-km-zA-HJ-NP-Z1-9]{26,33}$/.test(a) || /^ltc1[a-z0-9]{6,87}$/i.test(a)) return 'LTC'
-  if (/^D[5-9A-HJ-NP-U][1-9A-HJ-NP-Za-km-z]{32}$/.test(a)) return 'DOGE'
-  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a)) return 'SOL'
-  return null
-}
-
-app.get('/api/wallet-lookup', async (req, res) => {
-  const address = (req.query.address || '').trim();
-  if (!address) return res.status(400).json({ error: 'Address required' });
-  const chain = detectChain(address);
-  if (!chain) return res.status(400).json({ error: 'Unrecognized address format. Supported: BTC, ETH, SOL, LTC, DOGE' });
-  const ax = require('axios');
-  try {
-    if (chain === 'BTC') {
-      const [infoRes, txRes] = await Promise.all([
-        ax.get(`https://blockstream.info/api/address/${address}`),
-        ax.get(`https://blockstream.info/api/address/${address}/txs`),
-      ]);
-      const d = infoRes.data;
-      const balance = (d.chain_stats.funded_txo_sum - d.chain_stats.spent_txo_sum) / 1e8;
-      const transactions = (txRes.data || []).slice(0, 25).map(tx => {
-        const received = (tx.vout || []).filter(o => o.scriptpubkey_address === address).reduce((s, o) => s + (o.value || 0), 0);
-        const sent = (tx.vin || []).filter(i => i.prevout?.scriptpubkey_address === address).reduce((s, i) => s + (i.prevout?.value || 0), 0);
-        return { hash: tx.txid, date: tx.status.confirmed ? new Date(tx.status.block_time * 1000).toISOString().split('T')[0] : 'Pending', amount: (received - sent) / 1e8, confirmed: tx.status.confirmed };
-      });
-      return res.json({ chain, address, balance, transactions });
-    }
-
-    if (chain === 'ETH') {
-      const key = process.env.ETHERSCAN_API_KEY || 'YourApiKeyToken';
-      const base = 'https://api.etherscan.io/api';
-      const [balRes, txRes] = await Promise.all([
-        ax.get(`${base}?module=account&action=balance&address=${address}&apikey=${key}`),
-        ax.get(`${base}?module=account&action=txlist&address=${address}&sort=desc&page=1&offset=25&apikey=${key}`),
-      ]);
-      const balance = parseInt(balRes.data.result || '0') / 1e18;
-      const rawTxs = Array.isArray(txRes.data.result) ? txRes.data.result : [];
-      const transactions = rawTxs.slice(0, 25).map(tx => {
-        const isSend = tx.from.toLowerCase() === address.toLowerCase();
-        return { hash: tx.hash, date: new Date(parseInt(tx.timeStamp) * 1000).toISOString().split('T')[0], amount: (parseInt(tx.value || '0') / 1e18) * (isSend ? -1 : 1), confirmed: parseInt(tx.confirmations || '0') > 0, from: tx.from, to: tx.to };
-      });
-      return res.json({ chain, address, balance, transactions });
-    }
-
-    if (chain === 'SOL') {
-      const rpc = 'https://api.mainnet-beta.solana.com';
-      const [balRes, sigRes] = await Promise.all([
-        ax.post(rpc, { jsonrpc: '2.0', id: 1, method: 'getBalance', params: [address] }),
-        ax.post(rpc, { jsonrpc: '2.0', id: 2, method: 'getSignaturesForAddress', params: [address, { limit: 25 }] }),
-      ]);
-      const balance = (balRes.data.result?.value || 0) / 1e9;
-      const transactions = (sigRes.data.result || []).map(s => ({ hash: s.signature, date: s.blockTime ? new Date(s.blockTime * 1000).toISOString().split('T')[0] : 'Pending', amount: null, confirmed: !s.err }));
-      return res.json({ chain, address, balance, transactions });
-    }
-
-    if (chain === 'LTC' || chain === 'DOGE') {
-      const coin = chain === 'LTC' ? 'ltc' : 'doge';
-      const [balRes, txRes] = await Promise.all([
-        ax.get(`https://api.blockcypher.com/v1/${coin}/main/addrs/${address}/balance`),
-        ax.get(`https://api.blockcypher.com/v1/${coin}/main/addrs/${address}/full?limit=25`),
-      ]);
-      const balance = (balRes.data.final_balance || 0) / 1e8;
-      const transactions = (txRes.data.txs || []).slice(0, 25).map(tx => {
-        const received = (tx.outputs || []).filter(o => (o.addresses || []).includes(address)).reduce((s, o) => s + (o.value || 0), 0);
-        const sent = (tx.inputs || []).filter(i => (i.addresses || []).includes(address)).reduce((s, i) => s + (i.output_value || 0), 0);
-        return { hash: tx.hash, date: tx.received ? tx.received.split('T')[0] : 'Pending', amount: (received - sent) / 1e8, confirmed: (tx.confirmations || 0) > 0 };
-      });
-      return res.json({ chain, address, balance, transactions });
-    }
-
-    res.status(400).json({ error: 'Chain not supported' });
-  } catch (e) {
-    console.error('Wallet lookup error:', e.response?.data || e.message);
-    res.status(500).json({ error: e.response?.data?.error_message || e.message });
-  }
-});
-
-// ── Routes: Backup & Export ───────────────────────────────────────────
-app.get('/api/backup', (req, res) => {
-  const uid = req.user.id;
-  const backup = { exportedAt: new Date().toISOString(), version: '1.0.0',
-    accounts: readData('accounts.json', uid), transactions: readData('transactions.json', uid),
-    properties: readData('properties.json', uid), taxYears: readData('tax_years.json', uid),
-    settings: readData('settings.json'),
-    invoices: readData('invoices.json', uid), bills: readData('bills.json', uid),
-    vendors: readData('vendors.json', uid), journalEntries: readData('journal_entries.json', uid),
-    chartOfAccounts: readData('chart_of_accounts.json', uid),
-    cryptoTransactions: readData('crypto_txns.json', uid),
-    wallets: readData('wallets.json', uid),
-  };
-  res.setHeader('Content-Disposition', `attachment; filename=caishen-backup-${Date.now()}.json`);
-  res.setHeader('Content-Type', 'application/json');
-  res.json(backup);
-});
-
-app.post('/api/restore', (req, res) => {
-  const uid = req.user.id;
-  const { accounts, transactions, properties, taxYears, settings, invoices, bills, vendors, journalEntries, chartOfAccounts } = req.body;
-  if (accounts)        writeData('accounts.json', accounts, uid);
-  if (transactions)    writeData('transactions.json', transactions, uid);
-  if (properties)      writeData('properties.json', properties, uid);
-  if (taxYears)        writeData('tax_years.json', taxYears, uid);
-  if (settings)        writeData('settings.json', settings);        // global
-  if (invoices)        writeData('invoices.json', invoices, uid);
-  if (bills)           writeData('bills.json', bills, uid);
-  if (vendors)         writeData('vendors.json', vendors, uid);
-  if (journalEntries)  writeData('journal_entries.json', journalEntries, uid);
-  if (chartOfAccounts) writeData('chart_of_accounts.json', chartOfAccounts, uid);
-  res.json({ success: true, restoredAt: new Date().toISOString() });
-});
-
-app.post('/api/parse-statement', upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  try {
-    const axios = require('axios');
-    const base64 = req.file.buffer.toString('base64');
-    const response = await axios.post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-opus-4-7', max_tokens: 2000,
-      messages: [{ role: 'user', content: [
-        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
-        { type: 'text', text: 'Extract all transactions from this bank statement. Return ONLY a JSON array with objects: { date: "YYYY-MM-DD", desc: "merchant name", amount: -123.45 }. Negative amounts for expenses, positive for deposits. No markdown, no explanation, just the JSON array.' }
-      ]}]
-    }, { headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' } });
-    const text = response.data.content[0].text;
-    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-    const transactions = parsed.map((t, i) => {
-      const date = new Date(t.date);
-      return { id: `pdf_${i}_${Date.now()}`, date: t.date, desc: t.desc, amount: t.amount, category: 'Other', source: 'pdf', month: `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}` };
-    });
-    res.json({ transactions });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/pdf-render', upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  try {
-    const PDFParser = require('pdf2json');
-    const parser = new PDFParser();
-    await new Promise((resolve, reject) => {
-      parser.on('pdfParser_dataReady', resolve);
-      parser.on('pdfParser_dataError', reject);
-      parser.parseBuffer(req.file.buffer);
-    });
-    res.json({ text: parser.getRawTextContent(), pages: parser.data?.Pages?.length || 0 });
-  } catch (e) { res.status(500).json({ error: e.message, text: '', pages: 0 }); }
-});
+// ── Routes extracted to core/pdf-routes.js: parse-statement (Claude Vision), pdf-render ──
+app.use('/api', require('./core/pdf-routes')());
 
 // ── Routes: Status (public) ───────────────────────────────────────────
 app.get('/api/status', (req, res) => {

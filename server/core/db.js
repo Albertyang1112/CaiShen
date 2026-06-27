@@ -222,6 +222,7 @@ async function initSchema() {
   await require('./db-accounts-schema').init(query);
   await require('./db-remodel-schema').init(query);
   await require('./db-receipts-schema').init(query);
+  await require('./db-mortgage-schema').init(query);
 }
 
 module.exports = { query, initSchema, withTransaction, getPool };

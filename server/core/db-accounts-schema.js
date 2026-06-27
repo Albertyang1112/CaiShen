@@ -121,5 +121,24 @@ module.exports.init = async (query) => {
     )
   `);
 
-  console.log('✓ Accounts/documents schema ready (plaid_items, accounts, documents, user_kv; users.phone)');
+  // ── chart_of_accounts: the COA tree promoted out of user_kv JSON into real rows. ──
+  // chart_of_accounts.json stays the source of truth (loadChart reads it); core/coa-store
+  // mirrors it here write-through so the tree is queryable and categorization_memory.coa_id
+  // has real rows to reference. Flat: each node is one row, parent_id → its parent's id.
+  await query(`
+    CREATE TABLE IF NOT EXISTS chart_of_accounts (
+      user_id    TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      id         TEXT        NOT NULL,                  -- deterministic 'cat_…' slug
+      parent_id  TEXT,
+      name       TEXT,
+      type       TEXT,                                  -- asset|liability|equity|income|expense
+      scope      TEXT,                                  -- personal|business
+      data       JSONB,                                 -- the full node (lib flag, custom fields)
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, id)
+    )
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS idx_coa_parent ON chart_of_accounts(user_id, parent_id)`);
+
+  console.log('✓ Accounts/documents schema ready (plaid_items, accounts, documents, user_kv, chart_of_accounts; users.phone)');
 };

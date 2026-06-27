@@ -71,16 +71,11 @@ async function recordReceiptRemodel(query, { userId, receiptId, txnId, txn, ocrD
      date, merchant, merchant, amount, sourceHash, JSON.stringify(ocrData || {})]
   );
 
-  // 4. Evidence link to the transaction it backs (role 'receipt').
+  // 4. Evidence link to the transaction it backs (role 'receipt'), via the matching engine.
   if (txnId) {
-    await query(
-      `INSERT INTO matched_transaction_sources
-         (id,user_id,transaction_id,source_transaction_id,source_role,match_confidence)
-       VALUES ($1,$2,$3,$4,'receipt',$5)
-       ON CONFLICT (transaction_id, source_transaction_id)
-         DO UPDATE SET match_confidence=EXCLUDED.match_confidence, updated_at=NOW()`,
-      [crypto.randomUUID(), userId, txnId, stId, matchScore]
-    );
+    await require('./matching').linkSource(query, userId, {
+      transactionId: txnId, sourceTransactionId: stId, sourceRole: 'receipt', confidence: matchScore,
+    });
   }
   return stId;
 }

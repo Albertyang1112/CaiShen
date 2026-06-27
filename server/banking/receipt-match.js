@@ -42,9 +42,9 @@ async function createCashTransaction(query, io, userId, receipt) {
   };
   io.write('transactions.json', [...(io.read('transactions.json') || []), tx]);
   await query(`UPDATE receipts SET txn_id=$1, payment_method='cash', match_status='matched' WHERE id=$2 AND user_id=$3`, [id, receipt.id, userId]);
-  await query(`INSERT INTO matched_transaction_sources (id,user_id,transaction_id,source_transaction_id,source_role,match_confidence)
-     VALUES ($1,$2,$3,$4,'receipt',1.0) ON CONFLICT (transaction_id, source_transaction_id) DO UPDATE SET match_confidence=1.0, updated_at=NOW()`,
-    [crypto.randomUUID(), userId, id, 'rcptxn_' + receipt.id]);
+  await require('./matching').linkSource(query, userId, {
+    transactionId: id, sourceTransactionId: 'rcptxn_' + receipt.id, sourceRole: 'receipt', confidence: 1.0,
+  });
   return tx;
 }
 
@@ -107,9 +107,9 @@ async function matchPendingReceipts(query, io, userId, deps = {}) {
       : (await groqPick(ocr.merchant || rec.merchant_name, cands)) || cands.slice().sort((a, b) => daysBetween(a.date, date) - daysBetween(b.date, date))[0];
     if (!pick) continue;
     await query(`UPDATE receipts SET txn_id=$1, match_status='matched' WHERE id=$2 AND user_id=$3`, [pick.id, rec.id, userId]);
-    await query(`INSERT INTO matched_transaction_sources (id,user_id,transaction_id,source_transaction_id,source_role,match_confidence)
-       VALUES ($1,$2,$3,$4,'receipt',0.9) ON CONFLICT (transaction_id, source_transaction_id) DO UPDATE SET match_confidence=0.9, updated_at=NOW()`,
-      [crypto.randomUUID(), userId, pick.id, 'rcptxn_' + rec.id]);
+    await require('./matching').linkSource(query, userId, {
+      transactionId: pick.id, sourceTransactionId: 'rcptxn_' + rec.id, sourceRole: 'receipt', confidence: 0.9,
+    });
     txns = txns.map(t => t.id === pick.id ? { ...t, receiptId: rec.id } : t);
     changed = true; matched++;
   }

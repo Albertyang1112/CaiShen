@@ -7,6 +7,8 @@ const { applyRules } = require('./categorize');
 const { guessCategory, resolveCtx } = require('./auto-categorize');
 const { verifyUser } = require('../core/verify');
 const plaidItems = require('../core/plaid-items');   // Plaid connections live in the DB (encrypted), not connections.json
+const { applyLearnedVendors, vendorKey, isManual, learnAuto } = require('./vendor-learn');
+const { suggestVendorNames } = require('./vendor-ai');
 
 const PLAID_CAT_MAP = {
   FOOD_AND_DRINK:           'Dining',
@@ -40,7 +42,11 @@ const RAW_COLUMNS = ['id', 'date', 'month', 'desc', 'amount', 'category', 'plaid
 // Slim columns for the stored audit CSV — drops 'month' (= date's YYYY-MM), 'pending'
 // (transient), and 'source' (always 'plaid' here) as redundant/noise for a CSV view.
 const CSV_COLUMNS = ['id', 'date', 'desc', 'amount', 'category', 'plaidCategory', 'account', 'institution', 'lastUpdated'];
-const KEEP        = ['coaId', 'coaAuto', 'capital', 'note', 'reconciled', 'isSplit', 'splitOf', 'splitNote', 'propertyId', 'approved', 'categorizedBy', 'verification', 'taxCategory', 'bucket', 'attachments', 'notified'];
+const KEEP        = ['coaId', 'coaAuto', 'capital', 'note', 'reconciled', 'isSplit', 'splitOf', 'splitNote', 'propertyId', 'approved', 'categorizedBy', 'verification', 'taxCategory', 'bucket', 'attachments', 'notified', 'vendor', 'vendorAuto'];
+// Max never-seen merchants sent to Groq per sync for From/To auto-fill — keeps it under
+// Groq's free-tier token/min cap. Deterministic fills from learned memory are unlimited.
+// Set to 0 to disable the Groq pass entirely (deterministic learning still works).
+const VENDOR_GROQ_CAP = 20;
 
 const rawRow    = t => { const o = {}; for (const c of RAW_COLUMNS) o[c] = t[c]; return o; };
 const coerceRow = r => ({ ...r, amount: r.amount === '' || r.amount == null ? 0 : Number(r.amount), pending: r.pending === 'true' || r.pending === true });
@@ -231,6 +237,40 @@ module.exports = function(makeIO, notifyClients = () => {}) {
       });
       if (r.count || auto) { io.write('transactions.json', txns); console.log(`[Auto-cat] user ${userId}: ${r.count} by rule, ${auto} auto (${capital} capital)`); }
     } catch (e) { console.error('[Auto-cat] error:', e.message); }
+    // Auto-fill the From/To (vendor) field: learned labels first (deterministic, free),
+    // then a capped Groq pass to clean never-seen merchants. Manual values are never touched;
+    // Groq names are learned into memory so the next sync is deterministic and re-uses no quota.
+    try {
+      let txns = io.read('transactions.json') || [];
+      let mem  = io.read('vendor_memory.json') || {};
+      const fromMem = applyLearnedVendors(txns, mem);
+      txns = fromMem.transactions;
+
+      const needing = [], seenKeys = new Set();
+      for (const t of txns) {
+        if (t.vendorAuto === false || t.vendor) continue;   // manual or already filled
+        const k = vendorKey(t.desc);
+        if (!k || mem[k] || seenKeys.has(k)) continue;       // unknown desc or already learned
+        seenKeys.add(k);
+        needing.push({ id: t.id, key: k, desc: t.desc });
+        if (needing.length >= VENDOR_GROQ_CAP) break;        // protect Groq's free-tier limit
+      }
+      let viaGroq = 0;
+      if (needing.length) {
+        const named = await suggestVendorNames(needing.map(n => ({ id: n.id, desc: n.desc })));
+        const entries = needing.filter(n => named[n.id]).map(n => ({ key: n.key, vendor: named[n.id] }));
+        if (entries.length) {
+          mem = learnAuto(mem, entries, { source: 'groq' });
+          txns = applyLearnedVendors(txns, mem).transactions;   // spread the new names across all matching rows
+          viaGroq = entries.length;
+        }
+      }
+      if (fromMem.count || viaGroq) {
+        io.write('transactions.json', txns);
+        io.write('vendor_memory.json', mem);
+        console.log(`[Auto-vendor] user ${userId}: ${fromMem.count} from memory, ${viaGroq} via Groq`);
+      }
+    } catch (e) { console.error('[Auto-vendor] error:', e.message); }
     try { const m = await require('./neon-mirror').mirrorPlaid(userId, io.read('transactions.json') || []); console.log(`[Neon] user ${userId}: mirrored ${m} plaid rows`); } catch (e) { console.error('[Neon mirror] error:', e.message); }
     // Prune audit rows for pending charges that settled this sync — stageAndImport already
     // dropped them from transactions.json; clear the source_transactions twins too.
@@ -266,6 +306,13 @@ module.exports = function(makeIO, notifyClients = () => {}) {
         console.log(`[Reconcile] user ${userId}: ${r.matched} matched, ${r.conflicts} conflicts, ${r.stmtOnly} stmt-only, ${r.plaidOnly} Plaid-only`);
       }
     } catch (e) { console.error('[Reconcile] error:', e.message); }
+    // Prune evidence links whose displayed transaction was removed this sync (settled
+    // pending twins, a disconnected institution). Cheap; the non-destructive mirror keeps
+    // ids stable, so this only ever clears genuine removals.
+    try {
+      const p = await require('../core/banking-store').pruneOrphanMatchSources(userId);
+      if (p) console.log(`[Neon] user ${userId}: pruned ${p} orphaned match-source link(s)`);
+    } catch (e) { console.error('[Neon prune-orphans] error:', e.message); }
     notifyClients();
     // Run verification checks and print report to server terminal
     try { await verifyUser(userId, io); } catch (e) { console.error('[Verify] Error:', e.message); }

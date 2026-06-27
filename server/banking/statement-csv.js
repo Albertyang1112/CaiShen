@@ -26,7 +26,9 @@ function statementCsv(rows) {
 }
 
 // Side-effecting: write the per-user statement CSV via io.writeText (non-fatal).
+// Audit-only snapshot — gated behind DEBUG_AUDIT_CSV like the other audit CSVs.
 function stageStatementCsv(io, rows) {
+  if (!/^(1|true|yes|on)$/i.test(process.env.DEBUG_AUDIT_CSV || '')) return;
   try { io.writeText(STMT_CSV, statementCsv(rows)); }
   catch (e) { console.error('[statement-csv] stage failed:', e.message); }
 }
