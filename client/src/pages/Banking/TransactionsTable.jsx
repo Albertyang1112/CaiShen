@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import axios from 'axios'
 import { fmtFull, CAT_COLOR, TYPE_LABELS, TYPE_COLORS } from './bankingFormat'
 import ReceiptThumb from './ReceiptThumb'
@@ -42,6 +43,124 @@ function AttachmentCell({ tx, receipts = [], onView, onAttach }) {
   )
 }
 
+// Inline From/To (vendor / counterparty) editor. Clicking the cell opens a searchable
+// dropdown of every From/To name already in use, so a name can be reused without retyping;
+// you can also type a new one, or clear it. The menu is portaled to <body> with fixed
+// positioning so the table's overflow clipping can't cut it off. Selecting a value saves via
+// PATCH /transactions/:id/vendor, which learns the merchant pattern and back-fills matching
+// rows server-side — hence the reload(). An "auto" chip marks a memory/Groq-filled value.
+function VendorCell({ tx, knownVendors = [], reload }) {
+  const [open, setOpen]     = useState(false)
+  const [query, setQuery]   = useState('')
+  const [hi, setHi]         = useState(0)          // highlighted row (keyboard nav)
+  const [saving, setSaving] = useState(false)
+  const [pos, setPos]       = useState(null)       // {left, top, width} for the portal menu
+  const cellRef = useRef(null)
+
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return (q ? knownVendors.filter(v => v.toLowerCase().includes(q)) : knownVendors).slice(0, 50)
+  }, [knownVendors, query])
+
+  const typed = query.trim()
+  const showAdd = !!typed && !knownVendors.some(v => v.toLowerCase() === typed.toLowerCase())
+  // Heterogeneous, keyboard-navigable rows: optional Clear, the name matches, optional Add-new.
+  const rows = [
+    ...(tx.vendor && !typed ? [{ type: 'clear' }] : []),
+    ...matches.map(v => ({ type: 'opt', value: v })),
+    ...(showAdd ? [{ type: 'add', value: typed }] : []),
+  ]
+
+  const openMenu = () => {
+    const r = cellRef.current?.getBoundingClientRect()
+    if (r) setPos({ left: r.left, top: r.bottom + 2, width: Math.max(r.width, 220) })
+    setQuery(''); setHi(-1); setOpen(true)   // nothing highlighted until the user types/arrows
+  }
+
+  const save = async (value) => {
+    setOpen(false)
+    const v = String(value ?? '').trim()
+    if (v === (tx.vendor || '')) return            // no change
+    setSaving(true)
+    try { await axios.patch(`${API}/transactions/${tx.id}/vendor`, { vendor: v }); if (reload) await reload() }
+    catch (e) { console.error('From/To save failed:', e.message) }
+    setSaving(false)
+  }
+  const choose = (row) => { if (row) (row.type === 'clear' ? save('') : save(row.value)) }
+
+  const onKeyDown = (e) => {
+    if (e.key === 'ArrowDown')      { e.preventDefault(); setHi(h => Math.min(h + 1, rows.length - 1)) }
+    else if (e.key === 'ArrowUp')   { e.preventDefault(); setHi(h => Math.max(h - 1, 0)) }
+    else if (e.key === 'Enter')     { e.preventDefault(); if (hi >= 0 && rows[hi]) choose(rows[hi]); else if (typed) save(typed) }
+    else if (e.key === 'Escape')    { e.preventDefault(); setOpen(false) }
+  }
+
+  const item = (active, extra = {}) => ({
+    padding:'7px 10px', fontSize:12, cursor:'pointer', whiteSpace:'nowrap', overflow:'hidden',
+    textOverflow:'ellipsis', background: active ? 'var(--bg-hover)' : 'transparent', color:'var(--text-primary)', ...extra,
+  })
+
+  return (
+    <>
+      <span ref={cellRef} onClick={e => { e.stopPropagation(); openMenu() }}
+        title="Set who this was paid to / received from"
+        style={{ display:'inline-flex', alignItems:'center', gap:6, cursor:'pointer', minHeight:18, maxWidth:170 }}>
+        {tx.vendor
+          ? <>
+              <span style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{tx.vendor}</span>
+              {tx.vendorAuto && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:99, background:'var(--blue-light)', color:'var(--blue)', textTransform:'uppercase', letterSpacing:'0.3px', flexShrink:0 }}>auto</span>}
+            </>
+          : <span style={{ color:'var(--text-muted)', fontSize:12 }}>+ Add</span>}
+      </span>
+
+      {open && pos && createPortal(
+        <div onClick={e => e.stopPropagation()}>
+          {/* click-away closes without saving (selection is the only commit) */}
+          <div onMouseDown={() => setOpen(false)} style={{ position:'fixed', inset:0, zIndex:1000 }} />
+          <div style={{ position:'fixed', left:pos.left, top:pos.top, width:pos.width, zIndex:1001,
+            background:'var(--bg-card)', border:'0.5px solid var(--border)', borderRadius:'var(--radius-sm)',
+            boxShadow:'0 8px 24px rgba(0,0,0,0.35)', overflow:'hidden' }}>
+            <input autoFocus value={query} disabled={saving}
+              onChange={e => { setQuery(e.target.value); setHi(0) }} onKeyDown={onKeyDown}
+              placeholder="Search or add a name…"
+              style={{ width:'100%', boxSizing:'border-box', padding:'8px 10px', fontSize:12, border:'none',
+                borderBottom:'0.5px solid var(--border)', background:'var(--bg-secondary)', color:'var(--text-primary)', outline:'none' }} />
+            <div style={{ maxHeight:220, overflowY:'auto' }}>
+              {rows.map((row, i) => {
+                if (row.type === 'clear') return (
+                  <div key="__clear" onMouseDown={() => choose(row)} onMouseEnter={() => setHi(i)}
+                    style={item(hi === i, { color:'var(--text-muted)', borderBottom:'0.5px solid var(--border)' })}>
+                    <i className="ti ti-x" style={{ fontSize:11, marginRight:6 }} aria-hidden="true"/>Clear From/To
+                  </div>
+                )
+                if (row.type === 'add') return (
+                  <div key="__add" onMouseDown={() => choose(row)} onMouseEnter={() => setHi(i)}
+                    style={item(hi === i, { color:'var(--blue)', borderTop: matches.length ? '0.5px solid var(--border)' : 'none' })}>
+                    + Add &ldquo;{row.value}&rdquo;
+                  </div>
+                )
+                return (
+                  <div key={row.value} onMouseDown={() => choose(row)} onMouseEnter={() => setHi(i)}
+                    style={item(hi === i)} title={row.value}>
+                    {row.value}
+                    {tx.vendor === row.value && <i className="ti ti-check" style={{ fontSize:11, marginLeft:6, color:'var(--blue)' }} aria-hidden="true"/>}
+                  </div>
+                )
+              })}
+              {!rows.length && (
+                <div style={{ padding:'8px 10px', fontSize:12, color:'var(--text-muted)' }}>
+                  {knownVendors.length ? 'No matches' : 'No saved names yet — type to add one'}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
+  )
+}
+
 // ── Transactions table (QuickBooks-style) — extracted from Banking.jsx ──────────
 // Owns the table-local features: row selection + bulk actions, pagination, and
 // CSV export / print. Filtering, search, status tabs, and totals stay in Banking
@@ -49,6 +168,7 @@ function AttachmentCell({ tx, receipts = [], onView, onAttach }) {
 export default function TransactionsTable({
   txs, bankAccounts, showAccount, sortDir, onToggleSort, onRowClick,
   coaById, reconcileFlags = {}, receiptsByTxn = {}, onViewReceipt, onAttachReceipt, reload,
+  knownVendors = [],
 }) {
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [page,        setPage]        = useState(1)
@@ -94,7 +214,7 @@ export default function TransactionsTable({
 
   // Export the full filtered set (not just the current page) to CSV.
   const exportCsv = () => {
-    const header = ['Date','Description','Account','Category','Spent','Received','Status']
+    const header = ['Date','Description','From/To','Account','Category','Spent','Received','Status']
     const rows = txs.map(tx => {
       const acct  = bankAccounts.find(a => a.id === tx.account)
       const gl    = coaById?.get(tx.coaId)
@@ -102,6 +222,7 @@ export default function TransactionsTable({
       return [
         tx.date || '',
         tx.desc || '',
+        tx.vendor || '',
         acct?.name || '',
         gl ? gl.name : (tx.category || ''),
         debit  ? Math.abs(tx.amount).toFixed(2) : '',
@@ -125,7 +246,7 @@ export default function TransactionsTable({
       const acct  = bankAccounts.find(a => a.id === tx.account)
       const gl    = coaById?.get(tx.coaId)
       const debit = tx.amount < 0
-      return `<tr><td>${esc(tx.date)}</td><td>${esc(tx.desc)}</td><td>${esc(acct?.name || '')}</td>`
+      return `<tr><td>${esc(tx.date)}</td><td>${esc(tx.desc)}</td><td>${esc(tx.vendor || '')}</td><td>${esc(acct?.name || '')}</td>`
         + `<td>${esc(gl ? gl.name : (tx.category || ''))}</td>`
         + `<td class="r">${debit  ? '$' + Math.abs(tx.amount).toFixed(2) : ''}</td>`
         + `<td class="r">${!debit ? '$' + Math.abs(tx.amount).toFixed(2) : ''}</td></tr>`
@@ -136,7 +257,7 @@ export default function TransactionsTable({
       + `th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}`
       + `th{text-transform:uppercase;font-size:10px;color:#555}td.r,th.r{text-align:right}</style></head>`
       + `<body><h2>Transactions (${txs.length})</h2><table><thead><tr>`
-      + `<th>Date</th><th>Description</th><th>Account</th><th>Category</th><th class="r">Spent</th><th class="r">Received</th>`
+      + `<th>Date</th><th>Description</th><th>From/To</th><th>Account</th><th>Category</th><th class="r">Spent</th><th class="r">Received</th>`
       + `</tr></thead><tbody>${body}</tbody></table></body></html>`
     const w = window.open('', '_blank')
     if (!w) return
@@ -200,6 +321,7 @@ export default function TransactionsTable({
               </th>
               {th('Date', {onClick:onToggleSort, sortable:true})}
               {th('Description')}
+              {th('From / To')}
               {showAccount && th('Account')}
               {th('Category')}
               {th('Spent', {align:'right'})}
@@ -233,6 +355,9 @@ export default function TransactionsTable({
                     <span style={{display:'flex',alignItems:'center',gap:6,minWidth:0}}>
                       <span style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',minWidth:0}} title={tx.desc||''}>{tx.desc||'—'}</span>
                     </span>
+                  </td>
+                  <td style={{padding:'9px 12px'}} onClick={e=>e.stopPropagation()}>
+                    <VendorCell tx={tx} knownVendors={knownVendors} reload={reload}/>
                   </td>
                   {showAccount && <td style={{padding:'9px 12px',color:'var(--text-secondary)',whiteSpace:'nowrap'}}>{acct?.name||'—'}</td>}
                   <td style={{padding:'9px 12px'}}>
