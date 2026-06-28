@@ -285,12 +285,16 @@ app.use('/api/reconcile', require('./banking/reconcile-routes')(makeIO));
 
 // ── Routes: Mortgage domain (read-only; written during scraper import) ──
 app.use('/api/mortgage', require('./banking/mortgage-routes')(makeIO));
-// DEV-ONLY reconciliation verification (localhost only; delete this line + banking/dev-verify.js to remove).
-app.use('/api/dev-verify', localhostOnly, require('./banking/dev-verify')(makeIO));
-
-// DEV-ONLY CSV inspector — lists stored plaid/statement/confirmed CSVs (localhost only;
-// delete this line + banking/dev-csv.js to remove).
-app.use('/api/dev-csv', localhostOnly, require('./banking/dev-csv')());
+// DEV-ONLY reconciliation verification (localhost only). These two files are gitignored, so a
+// fresh clone/deploy may not have them — guard the require so the server still boots (mirrors
+// the bank-scraper guard). Delete the file to remove the route.
+if (fs.existsSync(_path.join(__dirname, 'banking', 'dev-verify.js'))) {
+  app.use('/api/dev-verify', localhostOnly, require('./banking/dev-verify')(makeIO));
+}
+// DEV-ONLY CSV inspector — lists stored plaid/statement/confirmed CSVs (localhost only; gitignored).
+if (fs.existsSync(_path.join(__dirname, 'banking', 'dev-csv.js'))) {
+  app.use('/api/dev-csv', localhostOnly, require('./banking/dev-csv')());
+}
 
 // ── Routes: Receipts / OCR (Phase 4) ─────────────────────────────────
 app.use('/api/receipts', require('./banking/receipt-routes')(makeIO, DATA_DIR));
