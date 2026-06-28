@@ -7,7 +7,9 @@
     "start": "node server/index.js",
     "dev": "nodemon server/index.js",
     "build": "cd client && npm install && npm run build",
-    "test": "jest --forceExit --runInBand"
+    "test": "jest --forceExit --runInBand",
+    "db:seed": "node server/scripts/seed-dev.js",
+    "db:status": "node server/scripts/db-info.js"
   },
   "jest": {
     "testEnvironment": "node",

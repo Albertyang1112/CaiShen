@@ -2,17 +2,58 @@ const { Pool } = require('pg');
 
 let pool = null;
 
+// ── DB environment classification + safety guard ──────────────────────────────
+// This app handles personal financial data, so dev must never read/write the
+// production database. classifyDbUrl/dbSafety are pure + exported for tests; getPool
+// enforces them and logs (without secrets) which database the process is using.
+function classifyDbUrl(url) {
+  const u = String(url || '');
+  const host = (u.match(/@([^/:?]+)/) || [])[1] || '';
+  const isLocal = /^(localhost|127\.0\.0\.1|::1|host\.docker\.internal)$/i.test(host);
+  return { host, isLocal };
+}
+
+// Guard the REAL production database EXPLICITLY (opts.prodHost / PROD_DB_HOST), not by
+// guessing from the host string — because hosted Supabase is a perfectly valid build/dev
+// database here, while the eventual production DB (e.g. AWS RDS/Aurora) is a different host.
+// → { action:'ok'|'warn'|'throw', message, host, isLocal }
+//   non-prod process pointed at PROD_DB_HOST → THROW (the dangerous direction)
+//   production process pointed at a local DB → WARN  (legit for Postgres on the same box)
+//   anything else (incl. dev → hosted Supabase) → OK
+function dbSafety(nodeEnv, url, opts = {}) {
+  const env = String(nodeEnv || 'development').toLowerCase();
+  const { host, isLocal } = classifyDbUrl(url);
+  const prodHost = String(opts.prodHost || '').trim().toLowerCase();
+  const hitsProd = !!prodHost && host.toLowerCase() === prodHost;
+  if (hitsProd && env !== 'production' && !opts.allowUnsafe) {
+    return { host, isLocal, action: 'throw',
+      message: `NODE_ENV=${env} but DATABASE_URL points at the production host (PROD_DB_HOST=${host}). `
+             + `Refusing to start so dev/testing can't touch production. Set DB_ALLOW_UNSAFE=1 to override.` };
+  }
+  if (env === 'production' && isLocal) {
+    return { host, isLocal, action: 'warn',
+      message: `NODE_ENV=production but DATABASE_URL is LOCAL (${host}). Confirm this is intentional.` };
+  }
+  return { host, isLocal, action: 'ok' };
+}
+
 function getPool() {
   if (!pool) {
     if (!process.env.DATABASE_URL) {
-      throw new Error('DATABASE_URL not set in .env — create a free Supabase project and paste the connection string');
+      throw new Error('DATABASE_URL not set — see .env.example / DATABASE_SETUP.md (local Postgres for dev, hosted Supabase for prod)');
     }
     const connectionString = process.env.DATABASE_URL;
-    // Local Postgres doesn't speak SSL; Neon (and other hosted DBs) require it.
-    const isLocal = /localhost|127\.0\.0\.1|::1/.test(connectionString);
+    const safety = dbSafety(process.env.NODE_ENV, connectionString, {
+      prodHost: process.env.PROD_DB_HOST,
+      allowUnsafe: /^(1|true|yes)$/i.test(process.env.DB_ALLOW_UNSAFE || ''),
+    });
+    const label  = safety.isLocal ? 'LOCAL' : 'remote';
+    if (safety.action === 'throw') throw new Error('[DB] Refusing to start — ' + safety.message);
+    if (safety.action === 'warn')  console.warn('[DB] ⚠ ' + safety.message);
+    console.log(`[DB] env=${String(process.env.NODE_ENV || 'development')} → ${label} db @ ${safety.host || 'unknown-host'}`);
     pool = new Pool({
       connectionString,
-      ssl: isLocal ? false : { rejectUnauthorized: false },
+      ssl: safety.isLocal ? false : { rejectUnauthorized: false },   // local PG has no SSL; hosted (Neon/Supabase) requires it
       max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
@@ -225,4 +266,4 @@ async function initSchema() {
   await require('./db-mortgage-schema').init(query);
 }
 
-module.exports = { query, initSchema, withTransaction, getPool };
+module.exports = { query, initSchema, withTransaction, getPool, classifyDbUrl, dbSafety };
