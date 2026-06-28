@@ -6,6 +6,7 @@ import Projections from './pages/Projections/Projections'
 import PersonalSpending from './pages/PersonalSpending/PersonalSpending'
 import DataVault from './pages/DataVault/DataVault'
 import Accounting from './pages/Accounting/Accounting'
+import ChartOfAccounts from './pages/ChartOfAccounts/ChartOfAccounts'
 import Crypto from './pages/Crypto/Crypto'
 import Scrapers from './pages/Scrapers/Scrapers'
 import CsvFiles from './pages/DevTools/CsvFiles'
@@ -107,6 +108,7 @@ const IS_LOCALHOST =
 const NAV_TOOLS = [
   {id:'connections',   label:'Connections',   icon:'ti-plug',             adminOnly:false, localhostOnly:false},
   {id:'data',          label:'Data Vault',    icon:'ti-database',         adminOnly:false, localhostOnly:false},
+  {id:'coa',           label:'Chart of Accounts', icon:'ti-list-details', adminOnly:false, localhostOnly:false},
   {id:'accounting',    label:'Report',        icon:'ti-building-bank',    adminOnly:false, localhostOnly:false},
   {id:'scrapers',      label:'Scrapers',      icon:'ti-cloud-download',   adminOnly:false, localhostOnly:true},
   {id:'dev-csv',       label:'CSV Files',     icon:'ti-file-spreadsheet', adminOnly:false, localhostOnly:true},
@@ -684,15 +686,74 @@ function NetWorthVerification({ accounts }) {
   )
 }
 
+// ── Plaid Link hook ───────────────────────────────────────────────────
+// One place that owns the connect flow: fetch a link token, auto-open Plaid
+// Link as soon as it's ready, exchange the public token on success. Shared by
+// the global "Add Account" button (MainApp) and the Connections screen so the
+// connect logic lives in exactly one spot.
+function usePlaidConnect({ onConnected } = {}) {
+  const [linkToken, setLinkToken]   = useState(null)
+  const [connecting, setConnecting] = useState(false)
+  const [linkError, setLinkError]   = useState(null)
+
+  const connect = async () => {
+    setConnecting(true)
+    setLinkError(null)
+    try {
+      const res = await axios.post(`${API}/plaid/create-link-token`)
+      setLinkToken(res.data.link_token)
+    } catch (e) {
+      setLinkError(e.response?.data?.error || e.message)
+      setConnecting(false)
+    }
+  }
+
+  const plaidConfig = {
+    token: linkToken,
+    onSuccess: async (publicToken, metadata) => {
+      try {
+        await axios.post(`${API}/plaid/exchange-token`, {
+          public_token: publicToken,
+          institution_name: metadata.institution?.name || 'Unknown'
+        })
+        setLinkToken(null)
+        await onConnected?.()
+      } catch (e) {
+        setLinkError('Failed to connect account: ' + e.message)
+      }
+      setConnecting(false)
+    },
+    onExit: () => { setLinkToken(null); setConnecting(false) },
+    onEvent: () => {}
+  }
+
+  const { open: openPlaidLink, ready: plaidReady } = usePlaidLink(
+    linkToken ? plaidConfig : { token: null, onSuccess: () => {} }
+  )
+
+  // Auto-open Plaid Link once the token is ready
+  useEffect(() => {
+    if (linkToken && plaidReady) openPlaidLink()
+  }, [linkToken, plaidReady, openPlaidLink])
+
+  return { connect, connecting, linkError, setLinkError }
+}
+
 function ConnectionsScreen({status, accounts, onSync}) {
   const [syncing, setSyncing]               = useState(false)
   const [historyRunning, setHistoryRunning] = useState(false)
   const [plaidConns, setPlaidConns]         = useState([])
-  const [linkToken, setLinkToken]           = useState(null)
-  const [linkError, setLinkError]           = useState(null)
   const [qbStatus, setQbStatus]             = useState(null)
-  const [connecting, setConnecting]         = useState(false)
   const [showHistoryWarning, setShowHistoryWarning] = useState(false)
+
+  // Plaid connect flow (shared hook); on success refresh connections + parent data.
+  const { connect, connecting, linkError, setLinkError } = usePlaidConnect({
+    onConnected: async () => {
+      const res = await axios.get(`${API}/plaid/connections`)
+      setPlaidConns(Array.isArray(res.data) ? res.data : [])
+      onSync?.()
+    }
+  })
 
   const plaidAccounts = (accounts || []).filter(a => a.source === 'plaid')
 
@@ -705,19 +766,6 @@ function ConnectionsScreen({status, accounts, onSync}) {
       .then(r => setQbStatus(r.data))
       .catch(() => {})
   }, [])
-
-  // Get Plaid Link token from backend
-  const getLinkToken = async () => {
-    setConnecting(true)
-    setLinkError(null)
-    try {
-      const res = await axios.post(`${API}/plaid/create-link-token`)
-      setLinkToken(res.data.link_token)
-    } catch (e) {
-      setLinkError(e.response?.data?.error || e.message)
-      setConnecting(false)
-    }
-  }
 
   // Pull full 2-year transaction history from Plaid (statements are upload-only — none generated).
   const syncFullHistory = async () => {
@@ -739,42 +787,6 @@ function ConnectionsScreen({status, accounts, onSync}) {
       setHistoryRunning(false)
     }
   }
-
-  // Plaid Link config
-  const plaidConfig = {
-    token: linkToken,
-    onSuccess: async (publicToken, metadata) => {
-      try {
-        await axios.post(`${API}/plaid/exchange-token`, {
-          public_token: publicToken,
-          institution_name: metadata.institution?.name || 'Unknown'
-        })
-        const res = await axios.get(`${API}/plaid/connections`)
-        setPlaidConns(Array.isArray(res.data) ? res.data : [])
-        setLinkToken(null)
-        onSync?.()
-      } catch (e) {
-        setLinkError('Failed to connect account: ' + e.message)
-      }
-      setConnecting(false)
-    },
-    onExit: () => {
-      setLinkToken(null)
-      setConnecting(false)
-    },
-    onEvent: () => {}
-  }
-
-  const { open: openPlaidLink, ready: plaidReady } = usePlaidLink(
-    linkToken ? plaidConfig : { token: null, onSuccess: () => {} }
-  )
-
-  // Auto-open Plaid Link once token is ready
-  useEffect(() => {
-    if (linkToken && plaidReady) {
-      openPlaidLink()
-    }
-  }, [linkToken, plaidReady, openPlaidLink])
 
   const syncAll = async () => {
     setSyncing(true)
@@ -859,7 +871,7 @@ function ConnectionsScreen({status, accounts, onSync}) {
           )}
 
           <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-            <button onClick={getLinkToken} disabled={connecting || !status?.plaidConfigured}
+            <button onClick={connect} disabled={connecting || !status?.plaidConfigured}
               style={{ fontSize:12, background:'var(--blue-light)', color:'var(--blue)', borderColor:'var(--blue)' }}>
               <i className="ti ti-plug" aria-hidden="true"/> {connecting ? 'Opening...' : 'Connect account'}
             </button>
@@ -1376,8 +1388,22 @@ function MainApp({ auth, onLogout }) {
   const navBC = idx => { const t=trail.slice(0,idx+1); setTrail(t); setNav(t[t.length-1].id) }
   const go = (id, label) => { setNav(id); setTrail([{id:label||id,label:label||id}]) }
 
+  // Connect a bank from anywhere via Plaid Link; refresh data when it succeeds.
+  const { connect: connectPlaid, connecting: plaidConnecting, linkError: plaidLinkError, setLinkError: setPlaidLinkError } = usePlaidConnect({
+    onConnected: () => {
+      axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])).catch(()=>{})
+      axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])).catch(()=>{})
+    }
+  })
+  // "Add Account" anywhere: open the Plaid popup when configured, otherwise fall
+  // back to the Connections page (which explains the missing setup).
+  const addAccount = () => {
+    if (status?.plaidConfigured) connectPlaid()
+    else go('connections', 'Connections')
+  }
+
   const renderContent = () => {
-    if(nav==='dashboard') return <MainDashboard onDrill={drill} accounts={accounts} transactions={transactions} properties={properties} onConnect={()=>go('connections','Connections')} enabledClasses={enabledClasses} hasTransactions={transactions.length>0}/>
+    if(nav==='dashboard') return <MainDashboard onDrill={drill} accounts={accounts} transactions={transactions} properties={properties} onConnect={addAccount} enabledClasses={enabledClasses} hasTransactions={transactions.length>0}/>
     const refreshProps = () => axios.get(`${API}/properties`).then(r=>setProperties(r.data||[])).catch(()=>{})
     if(nav==='re') return <RealEstateDash onProp={(id,name)=>drill('prop_'+id,name)} properties={properties} onRefresh={refreshProps}/>
     if(nav.startsWith('prop_')) return <PropertyDetail propId={nav.replace('prop_','')} properties={properties} onRefresh={refreshProps}/>
@@ -1388,6 +1414,7 @@ function MainApp({ auth, onLogout }) {
     if(nav==='crypto') return <Crypto/>
     if(nav==='cash') return <Banking accounts={accounts} transactions={transactions} onUpdate={setTransactions}/>
     if(nav==='projections') return <Projections/>
+    if(nav==='coa') return <ChartOfAccounts/>
     if(nav==='accounting') return <Accounting/>
     if(nav==='scrapers' && IS_LOCALHOST) return <Scrapers/>
     if(nav==='dev-csv'  && IS_LOCALHOST) return <CsvFiles/>
@@ -1478,11 +1505,17 @@ function MainApp({ auth, onLogout }) {
               </p>
             </div>
             <div style={{display:'flex',gap:8}}>
-              <button onClick={()=>go('connections','Connections')} style={{fontSize:12,background:'var(--teal-light)',color:'var(--teal)',borderColor:'var(--teal)'}}>
-                <Icon name="ti-plus" size={14}/> Add Account
+              <button onClick={addAccount} disabled={plaidConnecting} style={{fontSize:12,background:'var(--teal-light)',color:'var(--teal)',borderColor:'var(--teal)'}}>
+                <Icon name="ti-plus" size={14}/> {plaidConnecting ? 'Opening…' : 'Add Account'}
               </button>
             </div>
           </div>
+          {plaidLinkError && (
+            <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'var(--coral-light)',borderRadius:'var(--radius-md)',marginBottom:16,fontSize:13,color:'var(--coral)',border:'0.5px solid var(--coral)'}}>
+              <Icon name="ti-alert-circle" size={15}/> {plaidLinkError}
+              <button onClick={()=>setPlaidLinkError(null)} style={{marginLeft:'auto',background:'none',border:'none',color:'var(--coral)',padding:0}}>✕</button>
+            </div>
+          )}
           <ErrorBoundary key={nav}>{renderContent()}</ErrorBoundary>
         </main>
       </div>

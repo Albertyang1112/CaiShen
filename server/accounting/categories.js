@@ -52,7 +52,7 @@ const SECTIONS = [
       { name: 'Airbnb / Short-Term', lib: true }, { name: 'Parking Income', lib: true }, { name: 'Laundry Income', lib: true }, { name: 'Pet Fees', lib: true }, { name: 'Utility Reimbursement', lib: true },
     ]},
     { name: 'Other Income', children: [
-      { name: 'Tax Refund' }, { name: 'Cashback & Rewards' }, { name: 'Gifts Received' }, { name: 'Refunds' },
+      { name: 'Tax Refund' }, { name: 'Cashback & Rewards' }, { name: 'Gifts Received' }, { name: 'Refunds' }, { name: 'Other / Uncategorized' },
       { name: 'Gambling Winnings', lib: true }, { name: 'Inheritance', lib: true }, { name: 'Jury Duty', lib: true }, { name: 'Crowdfunding', lib: true },
       { name: 'Government Benefits', lib: true }, { name: 'Child Support Received', lib: true }, { name: 'Alimony Received', lib: true },
     ]},

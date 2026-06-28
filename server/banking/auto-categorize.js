@@ -16,7 +16,7 @@
  *   1. Transfers / credit-card payments → null (excluded from the reports entirely).
  *   2. Business + expense + fixed-asset merchant + amount ≥ threshold → a Fixed Asset
  *      leaf with { capital:true } (balance-sheet item, flagged for review by the caller).
- *   3. Income (amount > 0)  → an income leaf by description, else an "Other Income" group.
+ *   3. Income (amount > 0)  → an income leaf by description, else the "Other / Uncategorized" income leaf.
  *   4. Expense (amount < 0) → a MERCHANT match (leaf-level), else the spending-bucket
  *      fallback (tx.category → leaf).
  *
@@ -76,7 +76,7 @@ const MERCHANT_RULES = [
   [/\b(ikea|wayfair|home goods|bed bath|williams.?sonoma|crate & barrel|west elm)\b/i, PE('Household & Supplies', 'Home Appliances')],
 ];
 
-// Personal income description → income leaf (or the "Other Income" group as a catch-all).
+// Personal income description → income leaf (or the "Other / Uncategorized" income leaf as a catch-all).
 const INCOME_RULES = [
   [/\b(payroll|direct dep|direct deposit|salary|adp|gusto|paychex|wages|biweekly)\b/i, PI('Employment', 'Salary & Wages')],
   [/\binterest\b/i, PI('Investment Income', 'Interest')],
@@ -86,7 +86,7 @@ const INCOME_RULES = [
   [/\b(cash ?back|rewards|redemption|points)\b/i, PI('Other Income', 'Cashback & Rewards')],
   [/\b(tax ref|irs treas|tax refund|state refund)\b/i, PI('Other Income', 'Tax Refund')],
 ];
-const INCOME_FALLBACK  = PI('Other Income');                 // the group, as a catch-all
+const INCOME_FALLBACK  = PI('Other Income', 'Other / Uncategorized');   // a real leaf, so nothing lands on a group node
 const EXPENSE_FALLBACK = PE('Miscellaneous', 'Other / Uncategorized');
 
 // CaiShen spending bucket (tx.category) → default personal expense leaf, when no merchant matched.

@@ -1325,6 +1325,13 @@ export default function Banking({ accounts, transactions, onUpdate }) {
   // Lookup a COA entry by id — tolerant of missing (deleted) accounts.
   const coaById = useMemo(() => new Map(coa.map(a => [a.id, a])), [coa])
 
+  // Every From/To name in use across ALL transactions (not just the filtered view) — feeds
+  // the From/To column's searchable dropdown so any saved name can be reused on any row.
+  const knownVendors = useMemo(
+    () => [...new Set((transactions || []).map(t => (t.vendor || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [transactions]
+  )
+
   // Refetch the full transaction list after server-side rule application.
   const reload = () => axios.get(`${API}/transactions`).then(r => onUpdate(r.data)).catch(() => {})
   const reloadCoa = () => axios.get(`${API}/accounting/coa`).then(r => setCoa(r.data || [])).catch(() => {})
@@ -1570,7 +1577,7 @@ export default function Banking({ accounts, transactions, onUpdate }) {
                 )}
                 <TransactionsTable txs={filteredTxs} bankAccounts={bankAccounts} showAccount={!selectedAcct}
                   sortDir={sortDir} onToggleSort={()=>setSortDir(d=>d==='desc'?'asc':'desc')}
-                  onRowClick={setDetailTx} coaById={coaById} reconcileFlags={reconcileFlags}
+                  onRowClick={setDetailTx} coaById={coaById} reconcileFlags={reconcileFlags} knownVendors={knownVendors}
                   receiptsByTxn={receiptsByTxn} onViewReceipt={setViewReceipt} onAttachReceipt={setAttachTx} reload={reload}/>
               </div>
             </div>

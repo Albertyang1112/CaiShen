@@ -18,6 +18,7 @@
 const express = require('express');
 const { applyRules: applyCatRules, suggestKeyword: suggestCatKeyword } = require('./categorize');
 const { guessCategory, resolveCtx } = require('./auto-categorize');
+const { setVendorAndLearn } = require('./vendor-learn');
 const store = require('../core/banking-store');   // DB-backed reads for accounts/transactions
 
 module.exports = function makeBankingRouter({ readData, writeData }) {
@@ -85,7 +86,6 @@ module.exports = function makeBankingRouter({ readData, writeData }) {
           ...t,
           ...(o.category    !== undefined ? { category:    o.category }    : {}),
           ...(o.excluded    !== undefined ? { excluded:    o.excluded }    : {}),
-          ...(o.vendor      !== undefined ? { vendor:      o.vendor }      : {}),
           ...(o.attachments !== undefined ? { attachments: o.attachments } : {}),
         };
       }));
@@ -119,9 +119,27 @@ module.exports = function makeBankingRouter({ readData, writeData }) {
     res.json({ success: true });
   });
 
+  // ── From/To (vendor / counterparty) ────────────────────────────────────
+  // The user types who a transaction was paid to / received from. We mark it as a manual
+  // value, learn the merchant pattern, and back-fill every other matching transaction so
+  // labeling a merchant once applies everywhere (past + future). Cleared (empty) value
+  // forgets the pattern. Reports read this first (accounting cleanMerchant), Plaid desc
+  // is the fallback. See banking/vendor-learn.js.
+  router.patch('/transactions/:id/vendor', (req, res) => {
+    const uid = req.user.id;
+    const txs = readData('transactions.json', uid) || [];
+    if (!txs.find(t => t.id === req.params.id)) return res.status(404).json({ error: 'Not found' });
+    const mem = readData('vendor_memory.json', uid) || {};
+    const r = setVendorAndLearn(txs, req.params.id, (req.body || {}).vendor, mem);
+    writeData('transactions.json', r.transactions, uid);
+    writeData('vendor_memory.json', r.memory, uid);
+    res.json({ updated: r.updated, transactions: r.transactions });
+  });
+
   // Per-transaction overrides (sync-safe; never wiped by Plaid re-sync).
-  // Body may include: category, excluded, vendor, attachments (full array),
+  // Body may include: category, excluded, attachments (full array),
   // or addAttachment / removeAttachment (vault file id helpers).
+  // (From/To lives on the transaction itself — see PATCH /transactions/:id/vendor.)
   router.patch('/tx-overrides/:id', (req, res) => {
     const uid = req.user.id;
     const ov  = readData('tx_overrides.json', uid) || {};
@@ -129,12 +147,11 @@ module.exports = function makeBankingRouter({ readData, writeData }) {
     const b = req.body || {};
     if (b.category    !== undefined) next.category    = b.category;
     if (b.excluded    !== undefined) next.excluded    = !!b.excluded;
-    if (b.vendor      !== undefined) next.vendor      = b.vendor;
     if (b.attachments !== undefined) next.attachments = b.attachments;
     if (b.addAttachment)    next.attachments = [...new Set([...(next.attachments || []), b.addAttachment])];
     if (b.removeAttachment) next.attachments = (next.attachments || []).filter(x => x !== b.removeAttachment);
     // Prune an override that no longer carries anything, to keep the store tidy.
-    if (next.category === undefined && !next.excluded && next.vendor === undefined && !(next.attachments && next.attachments.length)) {
+    if (next.category === undefined && !next.excluded && !(next.attachments && next.attachments.length)) {
       delete ov[req.params.id];
     } else {
       ov[req.params.id] = next;
