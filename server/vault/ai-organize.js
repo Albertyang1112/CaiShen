@@ -160,31 +160,9 @@ module.exports = function makeAiOrganize({ getUserVaultDir, makeIO, readMeta, wr
 
       // ── Per-doc-type derived helpers ─────────────────────────────────────────
       const mm = (d) => d.month ? String(d.month).padStart(2, '0') : null;
-      // Tags written on an organized file. `institution` doubles as the "already
-      // sorted" marker the auto-load flow checks. mortgage:true keeps the bank-only
-      // extract-stats/verify passes from touching mortgage/escrow files; tax forms
-      // carry no month so those passes skip them too.
-      const baseTags = (d) => {
-        const t = { docType: d.docType, aiSorted: true };
-        if (d.year) t.year = String(d.year);
-        // Coverage dates — recorded so future uploads can be matched by date RANGE.
-        if (d.periodStart) t.periodStart = d.periodStart;
-        if (d.periodEnd)   t.periodEnd   = d.periodEnd;
-        if (d.docType === 'bank_statement') {
-          t.institution = d.institution || 'Bank';
-          if (d.accountName) t.account = d.accountName;
-          if (d.last4) t.last4 = String(d.last4);
-          if (mm(d)) t.month = mm(d);
-        } else if (d.docType === 'mortgage_statement' || d.docType === 'escrow') {
-          t.institution = d.institution || 'Mortgage'; t.mortgage = true;
-          if (d.propertyAddress) t.street = d.propertyAddress;
-          if (mm(d) && d.docType === 'mortgage_statement') t.month = mm(d);
-        } else if (d.docType === 'tax_form') {
-          t.institution = d.institution || 'Tax';
-          if (d.formType) t.formType = d.formType;
-        }
-        return t;
-      };
+      // Tags written on an organized file — shared with the chatbot doc-ingest path so
+      // both filers stamp identical tags (see vault/helpers.js decisionTags).
+      const baseTags = require('./helpers').decisionTags;
       const dupPeriod = (d) => ({
         last4:  d.last4 || undefined,
         year:   d.year ? String(d.year) : undefined,
@@ -220,6 +198,12 @@ module.exports = function makeAiOrganize({ getUserVaultDir, makeIO, readMeta, wr
           return f2.tags?.docType === 'escrow' && f2.tags?.year === String(d.year);
         if (d.docType === 'tax_form')
           return f2.tags?.docType === 'tax_form' && f2.tags?.year === String(d.year) && (f2.tags?.formType || '') === (d.formType || '');
+        if (d.docType === 'insurance_statement') {
+          // Same policy (last-4) + same billing month = the same bill.
+          const p4 = d.policyNumber ? String(d.policyNumber).replace(/[^A-Za-z0-9]/g, '').slice(-4) : null;
+          return f2.tags?.docType === 'insurance_statement' && !!p4 && f2.tags?.last4 === p4
+              && f2.tags?.year === String(d.year) && f2.tags?.month === mm(d);
+        }
         return false;
       };
 
@@ -230,9 +214,12 @@ module.exports = function makeAiOrganize({ getUserVaultDir, makeIO, readMeta, wr
       // the rate limit and abandoning the genuinely-new uploads.) This applies to
       // the folder-scoped path too; a re-sort of an already-filed file isn't needed.
       const unsorted = (f) => !f.tags?.institution && !f.tags?.aiSorted;
+      // Images too: a photographed insurance bill / disclosure classifies via the Groq
+      // vision path classifyDocument already supports (parserSort just returns null).
+      const sortable = (f) => (f.type === 'pdf' || f.type === 'image') && unsorted(f);
       let pdfFiles = folderId
-        ? meta.files.filter(f => f.folderId === folderId && f.type === 'pdf' && unsorted(f))
-        : meta.files.filter(f => f.type === 'pdf' && unsorted(f));
+        ? meta.files.filter(f => f.folderId === folderId && sortable(f))
+        : meta.files.filter(f => sortable(f));
       if (hasResolutions) {
         const ids = new Set(Object.keys(duplicateResolutions).flatMap(k => k.split('|')));
         pdfFiles = pdfFiles.filter(f => ids.has(f.id));
@@ -240,6 +227,10 @@ module.exports = function makeAiOrganize({ getUserVaultDir, makeIO, readMeta, wr
       if (!pdfFiles.length) return res.json(zero({ duplicates: duplicatesFound }));
 
       const folders = meta.folders; // reuse-context for the classifier
+      // The user's own properties — lets the classifier file "Insurance/{property name}/…"
+      // and the domain recorder link policies to the right property. Never hardcoded.
+      let userProps = [];
+      try { userProps = makeIO(userId).read('properties.json') || []; } catch {}
 
       // ── Classify (Groq) -> file -> PERSIST, one small batch at a time ────────
       // Persisting after EVERY batch means a rate-limited or interrupted run keeps
@@ -255,17 +246,19 @@ module.exports = function makeAiOrganize({ getUserVaultDir, makeIO, readMeta, wr
             if (!buffer) return { file, error: 'File bytes unavailable' };
             // Known-type files (e.g. scraped mortgage statements) skip Groq entirely.
             const det = await deterministicDecision(buffer, file, folders);
-            if (det && det.docType !== 'other' && det.folder) return { file, decision: det, ok: true };
+            if (det && det.docType !== 'other' && det.folder) return { file, decision: det, ok: true, buffer };
             // A scraped file whose type is already known should NEVER fall through to
             // Groq in a big batch - one unreadable one would burn the rate limit in
             // retries and stall everything. Leave it for a later targeted pass.
             if (file.tags?.source === 'mortgage') return { file, error: 'deterministic read failed (skipped Groq for scraped batch)' };
-            const r = await classifyDocument({ buffer, filename: file.name, mimeType: file.mimeType || 'application/pdf', folders });
-            return { file, decision: r.decision, ok: r.ok, error: r.ok ? null : (r.error || null) };
+            const r = await classifyDocument({ buffer, filename: file.name,
+              mimeType: file.mimeType || (file.type === 'image' ? 'image/jpeg' : 'application/pdf'),
+              folders, properties: userProps });
+            return { file, decision: r.decision, ok: r.ok, error: r.ok ? null : (r.error || null), buffer, text: r.text || null };
           } catch (e) { return { file, error: e.response?.data?.error?.message || e.message }; }
         }));
 
-        for (const { file, decision: d, error } of classified) {
+        for (const { file, decision: d, error, buffer, text } of classified) {
           results.processed++;
 
           if (error && !d) { results.failed++; results.details.push({ file: file.name, status: 'failed', reason: error }); continue; }
@@ -334,6 +327,17 @@ module.exports = function makeAiOrganize({ getUserVaultDir, makeIO, readMeta, wr
           }
           results.organized++;
           results.details.push({ file: dstName, status: 'organized', targetPath, docType: d.docType, year: d.year, month: d.month });
+
+          // ── Domain recorder (insurance / tax / action letters) — best-effort, success
+          // path only. Duplicates/fudge never reach here, so a re-upload can't
+          // double-record; the recorders' deterministic ids make replays idempotent.
+          if (d.docType === 'insurance_statement' || d.docType === 'tax_form' || d.docType === 'disclosure') {
+            try {
+              const { runDomainRecorder } = require('./domain-hooks');
+              const rec = await runDomainRecorder(makeIO(userId), userId, { docType: d.docType, fileId: file.id, buffer, text, decision: d });
+              if (rec && rec.recorded) results.details[results.details.length - 1].recorded = true;
+            } catch (e) { console.error('[vault/ai-organize] domain recorder:', e.message); }
+          }
         }
 
         writeMeta(meta, userId);   // persist after every batch (resumable)

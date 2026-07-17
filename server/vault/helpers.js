@@ -120,4 +120,85 @@ function wordJaccard(text1, text2) {
   return inter / (a.size + b.size - inter);
 }
 
-module.exports = { validateUploadFile, getFileType, detectTaxFormTags, autoTag, titleCase, stmtFilename, MONTH_ABBR, wordJaccard, upload, DUPE_SIMILARITY_THRESHOLD };
+// ── Tags for a classified filing decision ────────────────────────────────────
+// The tags written on an organized file (vault auto-organize AND chatbot doc-ingest use
+// this — one builder so bot filings carry identical tags). `institution` doubles as the
+// "already sorted" marker the auto-load flow checks; mortgage:true / no-month keep the
+// bank-only extract-stats/verify passes off non-bank files.
+function decisionTags(d) {
+  const mm = d.month ? String(d.month).padStart(2, '0') : null;
+  const t = { docType: d.docType, aiSorted: true };
+  if (d.year) t.year = String(d.year);
+  if (d.periodStart) t.periodStart = d.periodStart;
+  if (d.periodEnd)   t.periodEnd   = d.periodEnd;
+  if (d.docType === 'bank_statement') {
+    t.institution = d.institution || 'Bank';
+    if (d.accountName) t.account = d.accountName;
+    if (d.last4) t.last4 = String(d.last4);
+    if (mm) t.month = mm;
+  } else if (d.docType === 'mortgage_statement' || d.docType === 'escrow') {
+    t.institution = d.institution || 'Mortgage'; t.mortgage = true;
+    if (d.propertyAddress) t.street = d.propertyAddress;
+    if (mm && d.docType === 'mortgage_statement') t.month = mm;
+  } else if (d.docType === 'tax_form') {
+    t.institution = d.institution || 'Tax';
+    if (d.formType) t.formType = d.formType;
+  } else if (d.docType === 'insurance_statement') {
+    t.institution = d.institution || 'Insurance'; t.insurance = true;
+    if (d.coverageType) t.coverageType = d.coverageType;
+    if (d.propertyAddress) t.street = d.propertyAddress;
+    if (d.policyNumber) t.last4 = String(d.policyNumber).replace(/[^A-Za-z0-9]/g, '').slice(-4);
+    if (mm) t.month = mm;
+  } else if (d.docType === 'disclosure') {
+    t.institution = d.institution || 'Disclosure';
+    if (mm) t.month = mm;
+  }
+  return t;
+}
+
+// ── Register a file into a user's vault metadata ─────────────────────────────
+// The one shared "place a file in the vault" path: ensure the folder tree exists in meta,
+// de-dupe the filename within the folder, store bytes → R2 + documents row, append the
+// vault.json entry. Used by the HTTP upload handler's siblings (chatbot doc-ingest) so bot
+// filings go through the same code as browser uploads. Mutates `meta`; the CALLER persists
+// it (write vault.json). Returns the new file entry.
+async function registerVaultFile(meta, { userId, buffer, name, mimeType, folderPath, tags = {} }) {
+  const documents = require('../core/documents');
+  const now = new Date().toISOString();
+
+  const parts = String(folderPath || 'Uploads').split('/').filter(Boolean);
+  let parentId = null, folderId = null;
+  for (let i = 0; i < parts.length; i++) {
+    const fullPath = parts.slice(0, i + 1).join('/');
+    let folder = meta.folders.find(f => f.path === fullPath);
+    if (!folder) {
+      folder = { id: `folder_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+                 name: parts[i], path: fullPath, parentId, createdAt: now, tags: autoTag(fullPath) };
+      meta.folders.push(folder);
+    }
+    parentId = folder.id; folderId = folder.id;
+  }
+
+  // Name needs an extension for type detection; derive one from the mime type if missing.
+  let finalName = String(name || 'document').trim() || 'document';
+  if (!path.extname(finalName)) finalName += mimeType === 'application/pdf' ? '.pdf' : /^image\//.test(mimeType || '') ? '.jpg' : '';
+  const target = parts.join('/');
+  if (meta.files.some(f => f.folderPath === target && f.name === finalName)) {
+    const ext = path.extname(finalName);
+    finalName = `${path.basename(finalName, ext)}_${Date.now()}${ext}`;
+  }
+
+  const fileId = `file_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  await documents.saveDocument({
+    id: fileId, userId, name: finalName, mimeType, bytes: buffer, folderPath: target, tags,
+    periodYear: tags.year ? parseInt(tags.year) : null, periodMonth: tags.month ? parseInt(tags.month) : null,
+  });
+  const newFile = {
+    id: fileId, name: finalName, folderId, folderPath: target, size: buffer.length,
+    type: getFileType(finalName), mimeType, createdAt: now, updatedAt: now, version: 1, tags,
+  };
+  meta.files.push(newFile);
+  return newFile;
+}
+
+module.exports = { validateUploadFile, getFileType, detectTaxFormTags, autoTag, titleCase, stmtFilename, MONTH_ABBR, wordJaccard, upload, DUPE_SIMILARITY_THRESHOLD, registerVaultFile, decisionTags };

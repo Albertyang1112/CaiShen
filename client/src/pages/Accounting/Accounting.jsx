@@ -578,7 +578,11 @@ function BalanceSheet() {
         axios.get(`${API}/balance-sheet`),
       ])
       setCoa(Array.isArray(c.data) ? c.data : [])
-      setBalances(b.data && typeof b.data === 'object' && !Array.isArray(b.data) ? b.data : {})
+      // Prefer the balance-sheet response's post-heal manual balances — the parallel
+      // /category-balances fetch can race the server's loan-merge self-heal.
+      const manual = (l.data && typeof l.data.manualBalances === 'object' && l.data.manualBalances) ||
+                     (b.data && typeof b.data === 'object' && !Array.isArray(b.data) ? b.data : {})
+      setBalances(manual)
       setLive(l.data && typeof l.data === 'object' ? l.data : null)
     } catch {}
     setLoading(false)
@@ -724,14 +728,26 @@ function BalanceSheet() {
           <div className="card" style={{ borderLeft:'3px solid var(--teal)' }}>
             <p style={{ fontSize:13, fontWeight:600, color:'var(--teal)', margin:'0 0 12px' }}>EQUITY / NET WORTH</p>
             {hasEquityRows && <div style={{ marginBottom:8 }}>{renderTree(equity)}</div>}
-            <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--text-secondary)', padding:'2px 0' }}>
-              <span>Total Assets</span><span style={{ fontVariantNumeric:'tabular-nums' }}>{fd(totalAssets)}</span>
-            </div>
-            <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--text-secondary)', padding:'2px 0' }}>
-              <span>− Total Liabilities</span><span style={{ fontVariantNumeric:'tabular-nums' }}>{fd(totalLiab)}</span>
-            </div>
+            {hasEquityRows ? (
+              /* Itemized equity (QB-style): the residual between net worth and the entered
+                 equity accounts is retained earnings + current-period net income. */
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--text-secondary)', padding:'2px 0' }}
+                title="Net worth (assets − liabilities) minus the itemized equity accounts above">
+                <span>Retained earnings + net income (computed)</span>
+                <span style={{ fontVariantNumeric:'tabular-nums' }}>{fd(netWorth - rootTotal(equity))}</span>
+              </div>
+            ) : (
+              <>
+                <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--text-secondary)', padding:'2px 0' }}>
+                  <span>Total Assets</span><span style={{ fontVariantNumeric:'tabular-nums' }}>{fd(totalAssets)}</span>
+                </div>
+                <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--text-secondary)', padding:'2px 0' }}>
+                  <span>− Total Liabilities</span><span style={{ fontVariantNumeric:'tabular-nums' }}>{fd(totalLiab)}</span>
+                </div>
+              </>
+            )}
             <div style={{ display:'flex', justifyContent:'space-between', fontSize:16, fontWeight:700, borderTop:'1px solid var(--border)', paddingTop:10, marginTop:8 }}>
-              <span>Net Worth</span><span style={{ color: netWorth>=0?'var(--teal)':'var(--coral)' }}>{fd(netWorth)}</span>
+              <span>{hasEquityRows ? 'Total Equity' : 'Net Worth'}</span><span style={{ color: netWorth>=0?'var(--teal)':'var(--coral)' }}>{fd(netWorth)}</span>
             </div>
           </div>
         </div>

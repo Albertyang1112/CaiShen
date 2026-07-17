@@ -31,6 +31,16 @@ const STRONG_MORTGAGE = [/principal\s+balance/i, /unpaid\s+principal/i, /\bescro
                          /\bmortgage\s+(?:statement|loan|payment|servic)/i];
 const hasStrongMortgage = (t) => STRONG_MORTGAGE.some(re => re.test(t));
 
+// Markers of an INSURANCE bill / declarations page. A homeowner's insurance bill often
+// mentions "escrow" (mortgagee clause: "billed to your escrow account"), which trips
+// STRONG_MORTGAGE — so an insurance-looking document with NO principal-balance signal is
+// deferred to Groq rather than deterministically (mis)filed as a mortgage. Carriers vary
+// too much for confident Tier-1 filing anyway.
+const INSURANCE_SIG = [/\bpolicy\s+(?:number|no\.?|#)/i, /\bpremium\b/i, /\bdeclarations?\s+page\b/i,
+                       /\binsurance\s+(?:company|policy|bill|statement|premium)\b/i, /\bcoverage\s+(?:period|type|limit)/i];
+const PRINCIPAL_SIG = /principal\s+balance|unpaid\s+principal/i;
+const looksInsurance = (t) => INSURANCE_SIG.filter(re => re.test(t)).length >= 2 && !PRINCIPAL_SIG.test(t);
+
 const mk = (decision, type, confidence, reasoning) => ({ decision, type, confidence, reasoning, viaParser: true });
 
 /**
@@ -62,6 +72,9 @@ async function parserSort(buffer, file, folders) {
 
   const bankish    = hasBankSig(text);
   const strongMort = hasStrongMortgage(text);
+
+  // ── Insurance bill: defer to Groq (which knows the Insurance/ filing rules) ──
+  if (!bankish && looksInsurance(text)) return null;
 
   // ── Bank statement: a bank brand + a bank-account signature → bank (ignore address) ──
   // Grouping key is the LAST-4. The parser files deterministically only when this account
@@ -99,4 +112,4 @@ async function parserSort(buffer, file, folders) {
   return null;                                        // unknown / low-confidence → Groq
 }
 
-module.exports = { parserSort, hasBankSig, hasStrongMortgage };
+module.exports = { parserSort, hasBankSig, hasStrongMortgage, looksInsurance };

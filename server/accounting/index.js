@@ -452,6 +452,27 @@ module.exports = function(makeIO) {
     const settings   = req.read('account_settings.json') || {};
     const properties = req.read('properties.json') || [];
     const txs        = req.read('transactions.json') || [];
+    const coa        = loadChart(req);
+
+    // Entity merge (one loan = one row): a linked mortgage account whose property matches
+    // an imported book leaf ("Mortgages:Kobe Mortgage") is itemized ON that leaf — live
+    // balance, book section — instead of the generic hardcoded mortgage leaf. The import
+    // side skips the book balance for merged leaves, so nothing double-counts.
+    const leafByLoanAcct = new Map();
+    for (const [leafId, m] of await require('../core/loan-match').linkedMortgageLeaves(req.user.id, { chart: coa, properties, accounts })) {
+      if (m.accountId) leafByLoanAcct.set(m.accountId, leafId);
+    }
+    // Self-heal on read: a merged leaf must never ALSO carry a book/manual balance (a
+    // pre-merge import left one behind) — one entity, one number, the live loan's. Any
+    // intentional correction belongs in the books or the loan record, not stacked here.
+    if (leafByLoanAcct.size) {
+      const manual = req.read('category_balances.json') || {};
+      let healed = false;
+      for (const leafId of new Set(leafByLoanAcct.values())) {
+        if (manual[leafId]) { delete manual[leafId]; healed = true; }
+      }
+      if (healed) req.write('category_balances.json', manual);
+    }
 
     const L = (...names) => idForPath(names);
     const byLeaf = {};
@@ -485,11 +506,14 @@ module.exports = function(makeIO) {
       if (cls === 'card') {
         leafId = biz ? L('Business Liabilities', 'Credit Cards', 'Business Credit Card')
                      : L('Personal Liabilities', 'Credit Cards', 'Credit Card Balance');
-        amt = Math.abs(bal);
+        // SIGNED, not abs: a card balance is owed-positive; a negative balance means the
+        // card owes YOU (overpayment/refund) and nets against the others — QB parity.
+        amt = bal;
       } else if (cls === 'loan') {
-        leafId = sub.includes('mortgage') ? L('Personal Liabilities', 'Mortgage & Real Estate Debt', 'Primary Mortgage')
-               : biz                      ? L('Business Liabilities', 'Loans', 'Business Loan')
-               :                            L('Personal Liabilities', 'Loans', 'Personal Loan');
+        leafId = leafByLoanAcct.get(a.id)   // merged: live loan shown on its book leaf
+               || (sub.includes('mortgage') ? L('Personal Liabilities', 'Mortgage & Real Estate Debt', 'Primary Mortgage')
+               : biz                        ? L('Business Liabilities', 'Loans', 'Business Loan')
+               :                              L('Personal Liabilities', 'Loans', 'Personal Loan'));
         amt = Math.abs(bal);
       } else if (cls === 'investment') {
         leafId = L('Personal Assets', 'Investments', 'Brokerage');
@@ -522,7 +546,6 @@ module.exports = function(makeIO) {
     }
 
     // 4. Quick linked-only totals by chart type (the UI recomputes including manual balances).
-    const coa = loadChart(req);
     const typeById = new Map(coa.map(n => [n.id, n.type]));
     let assets = 0, liabilities = 0;
     for (const [id, e] of Object.entries(byLeaf)) {
@@ -535,6 +558,10 @@ module.exports = function(makeIO) {
       asOf: new Date().toISOString(),
       byLeaf,
       totals: { assets, liabilities, equity: assets - liabilities },
+      // Authoritative post-heal manual balances: the client renders THESE instead of its
+      // parallel /category-balances fetch, which can race the merge self-heal above and
+      // stack a just-deleted book balance on top of the linked loan.
+      manualBalances: req.read('category_balances.json') || {},
     });
   });
 

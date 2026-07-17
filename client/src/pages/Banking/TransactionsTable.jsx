@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import axios from 'axios'
 import { fmtFull, CAT_COLOR, TYPE_LABELS, TYPE_COLORS } from './bankingFormat'
 import ReceiptThumb from './ReceiptThumb'
+import ConfirmDialog from './ConfirmDialog'
 
 const API = '/api'
 
@@ -10,6 +11,14 @@ const API = '/api'
 const inputStyle = { padding:'7px 10px', fontSize:12, borderRadius:'var(--radius-sm)', border:'0.5px solid var(--border)', background:'var(--bg-secondary)', color:'var(--text-primary)' }
 const iconBtn    = { ...inputStyle, cursor:'pointer', display:'inline-flex', alignItems:'center', gap:6, whiteSpace:'nowrap' }
 const pgBtn      = (disabled) => ({ ...inputStyle, padding:'5px 9px', cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.4 : 1 })
+
+// Prettify Plaid's personal_finance_category.detailed enum for display.
+// FOOD_AND_DRINK_COFFEE → "Food And Drink Coffee"
+function prettyDetail(s) {
+  if (!s) return ''
+  return String(s).toLowerCase().split('_').filter(Boolean)
+    .map(w => w[0].toUpperCase() + w.slice(1)).join(' ')
+}
 
 // CSV cell encoder with a formula-injection guard (mirrors server/crypto-reports.js toCsv):
 // prefix a ' to any cell that begins with = + - @ TAB or CR, but let plain signed numbers through.
@@ -20,15 +29,24 @@ function csvCell(val) {
   return s
 }
 
-// Inline receipt control per row: a thumbnail (click → enlarge) when a receipt is attached,
-// else a ghost paper-clip button to attach one. Stops row-click propagation either way.
-function AttachmentCell({ tx, receipts = [], onView, onAttach }) {
+// Inline receipt control per row: a thumbnail (click → enlarge) when a receipt is attached
+// (plus a ✕ to remove it right here), else a ghost paper-clip button to attach one.
+// Stops row-click propagation either way.
+function AttachmentCell({ tx, receipts = [], onView, onAttach, onDelete }) {
   if (receipts.length) {
     return (
       <span style={{ display:'inline-flex', alignItems:'center', gap:3 }} onClick={e => e.stopPropagation()}>
         <ReceiptThumb receipt={receipts[0]} onClick={() => onView?.(receipts[0])} />
         {receipts.length > 1 && (
           <span title={`${receipts.length} receipts attached`} style={{ fontSize:10, color:'var(--text-muted)' }}>+{receipts.length - 1}</span>
+        )}
+        {onDelete && (
+          <button onClick={() => onDelete(receipts[0])} title="Remove this receipt"
+            style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)', padding:2, display:'inline-flex', borderRadius:4 }}
+            onMouseEnter={e => e.currentTarget.style.color='var(--coral)'}
+            onMouseLeave={e => e.currentTarget.style.color='var(--text-muted)'}>
+            <i className="ti ti-x" style={{ fontSize:12 }} aria-hidden="true" />
+          </button>
         )}
       </span>
     )
@@ -167,17 +185,20 @@ function VendorCell({ tx, knownVendors = [], reload }) {
 // and arrive here already applied via the `txs` prop.
 export default function TransactionsTable({
   txs, bankAccounts, showAccount, sortDir, onToggleSort, onRowClick,
-  coaById, reconcileFlags = {}, receiptsByTxn = {}, onViewReceipt, onAttachReceipt, reload,
-  knownVendors = [],
+  coaById, reconcileFlags = {}, receiptsByTxn = {}, onViewReceipt, onAttachReceipt, onDeleteReceipt, reload,
+  knownVendors = [], onSetApproved, onResetCategory,
 }) {
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [page,        setPage]        = useState(1)
   const [pageSize,    setPageSize]    = useState(50)
   const [busy,        setBusy]        = useState('')   // bulk-action feedback
+  const [confirm,     setConfirm]     = useState(null) // { message, label, action } for the styled confirm dialog
 
-  // Reset selection + page when the underlying filtered set changes.
+  // Reset selection when the underlying filtered set changes. Page is only reset on a
+  // page-size change — otherwise approving a row (which shrinks the Pending set) would
+  // bounce the user back to page 1; safePage clamps if the set shrinks below the page.
   useEffect(() => { setSelectedIds(new Set()) }, [txs.length])
-  useEffect(() => { setPage(1) },                [txs.length, pageSize])
+  useEffect(() => { setPage(1) },                [pageSize])
 
   const pageCount = Math.max(1, Math.ceil(txs.length / pageSize))
   const safePage  = Math.min(page, pageCount)
@@ -199,13 +220,19 @@ export default function TransactionsTable({
     return next
   })
 
-  // Bulk approve — server PATCH is a partial merge, so { approved:true } is enough.
-  const bulkApprove = async () => {
+  // Bulk approve / unapprove — server PATCH is a partial merge, so { approved } is enough.
+  // Which button(s) show depends on the selection: pending rows offer Approve, approved
+  // rows offer Unapprove (so the Approved tab gets an undo without an extra control).
+  const selectedTxs = txs.filter(t => selectedIds.has(t.id))
+  const anyPending  = selectedTxs.some(t => !t.approved)
+  const anyApproved = selectedTxs.some(t =>  t.approved)
+
+  const bulkSetApproved = async (approved) => {
     if (!selectedIds.size) return
-    setBusy('Approving…')
+    setBusy(approved ? 'Approving…' : 'Unapproving…')
     try {
       await Promise.all([...selectedIds].map(id =>
-        axios.patch(`${API}/transactions/${id}`, { approved: true })))
+        axios.patch(`${API}/transactions/${id}`, { approved })))
       setSelectedIds(new Set())
       if (reload) await reload()
     } catch (e) { console.error('bulk approve failed:', e.message) }
@@ -286,10 +313,19 @@ export default function TransactionsTable({
       {selectedIds.size > 0 && (
         <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10,padding:'8px 12px',background:'var(--bg-secondary)',border:'0.5px solid var(--green)',borderRadius:'var(--radius-sm)'}}>
           <span style={{fontSize:12,fontWeight:500}}>{selectedIds.size} selected</span>
-          <button onClick={bulkApprove} disabled={!!busy}
-            style={{...iconBtn,border:'0.5px solid var(--green)',color:'var(--green)',background:'var(--green-light)',opacity:busy?0.7:1}}>
-            <i className="ti ti-check" aria-hidden="true"/> {busy || 'Approve'}
-          </button>
+          {anyPending && (
+            <button onClick={()=>bulkSetApproved(true)} disabled={!!busy}
+              style={{...iconBtn,border:'0.5px solid var(--green)',color:'var(--green)',background:'var(--green-light)',opacity:busy?0.7:1}}>
+              <i className="ti ti-check" aria-hidden="true"/> {busy==='Approving…' ? busy : 'Approve'}
+            </button>
+          )}
+          {anyApproved && (
+            <button onClick={()=>{ const n = selectedTxs.filter(t=>t.approved).length; setConfirm({ message: `Move ${n} transaction${n===1?'':'s'} back to Pending?`, label: 'Move to Pending', action: () => bulkSetApproved(false) }) }}
+              disabled={!!busy} title="Move back to Pending"
+              style={{...iconBtn,border:'0.5px solid var(--amber)',color:'var(--amber)',background:'var(--amber-light)',opacity:busy?0.7:1}}>
+              <i className="ti ti-arrow-back-up" aria-hidden="true"/> {busy==='Unapproving…' ? busy : 'Unapprove'}
+            </button>
+          )}
           <button onClick={()=>setSelectedIds(new Set())} style={iconBtn}>Clear selection</button>
         </div>
       )}
@@ -298,9 +334,9 @@ export default function TransactionsTable({
       <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10,flexWrap:'wrap'}}>
         <span style={{fontSize:12,color:'var(--text-muted)'}}>{start+1}–{Math.min(start+pageSize,txs.length)} of {txs.length}</span>
         <div style={{display:'flex',alignItems:'center',gap:6}}>
-          <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={safePage<=1} style={pgBtn(safePage<=1)} aria-label="Previous page"><i className="ti ti-chevron-left" aria-hidden="true"/></button>
+          <button onClick={()=>setPage(Math.max(1,safePage-1))} disabled={safePage<=1} style={pgBtn(safePage<=1)} aria-label="Previous page"><i className="ti ti-chevron-left" aria-hidden="true"/></button>
           <span style={{fontSize:12,color:'var(--text-secondary)'}}>Page {safePage} of {pageCount}</span>
-          <button onClick={()=>setPage(p=>Math.min(pageCount,p+1))} disabled={safePage>=pageCount} style={pgBtn(safePage>=pageCount)} aria-label="Next page"><i className="ti ti-chevron-right" aria-hidden="true"/></button>
+          <button onClick={()=>setPage(Math.min(pageCount,safePage+1))} disabled={safePage>=pageCount} style={pgBtn(safePage>=pageCount)} aria-label="Next page"><i className="ti ti-chevron-right" aria-hidden="true"/></button>
         </div>
         <select value={pageSize} onChange={e=>setPageSize(Number(e.target.value))} style={inputStyle}>
           {[25,50,100].map(n => <option key={n} value={n}>{n} / page</option>)}
@@ -326,6 +362,7 @@ export default function TransactionsTable({
               {th('Category')}
               {th('Spent', {align:'right'})}
               {th('Received', {align:'right'})}
+              {th('Status', {align:'center'})}
               {th('Receipt', {align:'center'})}
             </tr>
           </thead>
@@ -367,10 +404,25 @@ export default function TransactionsTable({
                         <span style={{width:7,height:7,borderRadius:2,background:TYPE_COLORS[glAcct.type]||'var(--text-muted)',flexShrink:0}}/>
                         {glAcct.name}
                         {tx.coaAuto && <span style={{fontSize:9,padding:'1px 5px',borderRadius:99,background:'var(--amber-light)',color:'var(--amber)',textTransform:'uppercase',letterSpacing:'0.3px'}}>auto</span>}
+                        {!tx.coaAuto && onResetCategory && (
+                          <button onClick={e=>{ e.stopPropagation(); setConfirm({ message: `Revert "${glAcct.name}"? The automatic category is re-applied and the transaction returns to Pending.`, label: 'Revert', action: () => onResetCategory(tx) }) }}
+                            title="Revert to the automatic category"
+                            style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-muted)',padding:2,display:'inline-flex',borderRadius:4}}
+                            onMouseEnter={e=>e.currentTarget.style.color='var(--amber)'}
+                            onMouseLeave={e=>e.currentTarget.style.color='var(--text-muted)'}>
+                            <i className="ti ti-arrow-back-up" style={{fontSize:12}} aria-hidden="true"/>
+                          </button>
+                        )}
                       </span>
                     ) : tx.category ? (
                       <span style={{fontSize:11,padding:'2px 8px',borderRadius:99,background:catColor+'22',color:catColor,whiteSpace:'nowrap'}}>{tx.category}</span>
                     ) : null}
+                    {tx.plaidDetailed && (
+                      <div style={{fontSize:10,color:'var(--text-muted)',marginTop:3,whiteSpace:'nowrap'}}
+                        title={`Plaid detailed category: ${tx.plaidDetailed}`}>
+                        {prettyDetail(tx.plaidDetailed)}
+                      </div>
+                    )}
                   </td>
                   <td style={{padding:'9px 12px',textAlign:'right',color:'var(--coral)',whiteSpace:'nowrap',fontVariantNumeric:'tabular-nums'}}>
                     {debit ? fmtFull(Math.abs(tx.amount)) : ''}
@@ -378,8 +430,31 @@ export default function TransactionsTable({
                   <td style={{padding:'9px 12px',textAlign:'right',color:'var(--teal)',whiteSpace:'nowrap',fontVariantNumeric:'tabular-nums'}}>
                     {!debit ? fmtFull(tx.amount) : ''}
                   </td>
+                  <td onClick={e=>e.stopPropagation()} style={{padding:'9px 10px',textAlign:'center',whiteSpace:'nowrap'}}>
+                    {tx.approved ? (
+                      <span style={{display:'inline-flex',alignItems:'center',gap:4}}>
+                        <span style={{fontSize:10,fontWeight:600,padding:'2px 9px',borderRadius:99,whiteSpace:'nowrap',
+                          border:'0.5px solid var(--green)',background:'rgba(99,153,34,0.10)',color:'var(--green)'}}>
+                          <i className="ti ti-check" style={{fontSize:10,marginRight:3}} aria-hidden="true"/>Approved
+                        </span>
+                        <button onClick={()=>setConfirm({ message: 'Move this transaction back to Pending?', label: 'Move to Pending', action: () => onSetApproved?.(tx, false) })}
+                          title="Revert to Pending"
+                          style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-muted)',padding:2,display:'inline-flex',borderRadius:4}}
+                          onMouseEnter={e=>e.currentTarget.style.color='var(--amber)'}
+                          onMouseLeave={e=>e.currentTarget.style.color='var(--text-muted)'}>
+                          <i className="ti ti-arrow-back-up" style={{fontSize:13}} aria-hidden="true"/>
+                        </button>
+                      </span>
+                    ) : (
+                      <button onClick={()=>onSetApproved?.(tx, true)} title="Approve this transaction"
+                        style={{fontSize:10,fontWeight:600,padding:'2px 9px',borderRadius:99,cursor:'pointer',whiteSpace:'nowrap',
+                          border:'0.5px solid var(--border)',background:'var(--bg-secondary)',color:'var(--text-secondary)'}}>
+                        Approve
+                      </button>
+                    )}
+                  </td>
                   <td onClick={e=>e.stopPropagation()} style={{padding:'9px 8px',textAlign:'center',width:64}}>
-                    <AttachmentCell tx={tx} receipts={receiptsByTxn[tx.id]} onView={onViewReceipt} onAttach={onAttachReceipt}/>
+                    <AttachmentCell tx={tx} receipts={receiptsByTxn[tx.id]} onView={onViewReceipt} onAttach={onAttachReceipt} onDelete={onDeleteReceipt}/>
                   </td>
                 </tr>
               )
@@ -387,6 +462,11 @@ export default function TransactionsTable({
           </tbody>
         </table>
       </div>
+
+      {confirm && (
+        <ConfirmDialog message={confirm.message} confirmLabel={confirm.label} danger={confirm.danger}
+          onConfirm={()=>{ const a = confirm.action; setConfirm(null); a() }} onCancel={()=>setConfirm(null)}/>
+      )}
     </div>
   )
 }

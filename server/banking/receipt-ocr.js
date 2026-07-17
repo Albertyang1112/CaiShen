@@ -18,13 +18,19 @@ const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 const SYSTEM = `You are a receipt parser with a gatekeeper step. FIRST decide whether the
 image (or text) is a genuine PROOF OF PURCHASE — a store receipt, invoice, or order/purchase
-confirmation. Anything else (a random photo, selfie, a screenshot of an app or website that
-is not an order confirmation, a menu, a flyer, a meme) is NOT a proof of purchase.
+confirmation. Anything else is NOT a proof of purchase, but still classify WHAT it is:
+- "check"               : a personal/business bank check (pay to the order of …)
+- "insurance_statement" : an insurance bill / premium statement / declarations page
+- "tax_form"            : an IRS/tax form, property-tax bill, or estimated-tax voucher
+- "bank_statement"      : a bank/brokerage account statement
+- "disclosure"          : a bank/broker/lender disclosure or notice
+- "other"               : a random photo, selfie, menu, flyer, meme, unrelated screenshot
 Return ONLY valid JSON (no markdown, no prose) in exactly this shape:
-{"is_receipt": boolean, "doc_type": "receipt"|"invoice"|"order_confirmation"|"other", "merchant": string, "total": number, "date": "YYYY-MM-DD", "time": "HH:MM", "receipt_number": string, "order_number": string, "invoice_number": string, "card_last4": string, "rotate_cw_to_upright": 0, "items": [{"desc": string, "amount": number}]}
+{"is_receipt": boolean, "doc_type": "receipt"|"invoice"|"order_confirmation"|"check"|"insurance_statement"|"tax_form"|"bank_statement"|"disclosure"|"other", "merchant": string, "total": number, "date": "YYYY-MM-DD", "time": "HH:MM", "receipt_number": string, "order_number": string, "invoice_number": string, "card_last4": string, "payee": string, "check_number": string, "check_amount": number, "check_date": "YYYY-MM-DD", "rotate_cw_to_upright": 0, "items": [{"desc": string, "amount": number}]}
 Rules:
 - is_receipt is true ONLY for a receipt, invoice, or order/purchase confirmation; otherwise false.
-- If is_receipt is false, set every other field to null and items to [].
+- If is_receipt is false, set the receipt fields to null and items to [] — but ALWAYS set doc_type to the best classification above.
+- For doc_type "check": fill payee (who the check is written to), check_number (the number printed top-right / in the MICR line), check_amount (dollars), check_date. Leave them null for every other doc_type.
 - total = the final charged amount in dollars (e.g. 14.99).
 - time = 24-hour HH:MM if a purchase time is shown; card_last4 = the last 4 digits of the card if shown.
 - receipt_number / order_number / invoice_number = the document's identifier if shown.
@@ -59,6 +65,11 @@ function normalizeOcr(o) {
     order_number: s(o.order_number),
     invoice_number: s(o.invoice_number),
     card_last4: o.card_last4 != null ? (String(o.card_last4).replace(/\D/g, '').slice(-4) || null) : null,
+    // Check fields (doc_type "check" only — null otherwise).
+    payee: s(o.payee),
+    check_number: o.check_number != null ? (String(o.check_number).replace(/\D/g, '') || null) : null,
+    check_amount: num(o.check_amount),
+    check_date: s(o.check_date),
     rotate_cw_to_upright: [90, 180, 270].includes(Number(o.rotate_cw_to_upright)) ? Number(o.rotate_cw_to_upright) : 0,
     items: Array.isArray(o.items)
       ? o.items.map(it => ({ desc: (it && (it.desc ?? it.name)) ?? null, amount: num(it && it.amount) }))

@@ -34,6 +34,26 @@ module.exports.init = async (query) => {
   await query(`CREATE INDEX IF NOT EXISTS idx_mortgage_accts_user ON mortgage_accounts(user_id)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_mortgage_accts_acct ON mortgage_accounts(account_id)`);
 
+  // Plaid Liabilities fields (banking/liabilities.js fills these on sync once the item has
+  // liabilities consent). Additive — statement-parsed mortgages just leave them NULL.
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS rate_type              TEXT`);            // fixed | variable
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS loan_term              TEXT`);            // e.g. "30 year"
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS loan_type              TEXT`);            // e.g. conventional
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS origination_date       DATE`);
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS maturity_date          DATE`);
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS has_pmi                BOOLEAN`);
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS has_prepayment_penalty BOOLEAN`);
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS past_due_amount        DECIMAL(12,2)`);
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS current_late_fee       DECIMAL(12,2)`);
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS ytd_interest_paid      DECIMAL(12,2)`);
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS ytd_principal_paid     DECIMAL(12,2)`);
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS property_street        TEXT`);
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS property_city          TEXT`);
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS property_region        TEXT`);
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS property_postal_code   TEXT`);
+  // Full loan number (masked to last-4 in the UI by default; an eye toggle reveals it).
+  await query(`ALTER TABLE mortgage_accounts ADD COLUMN IF NOT EXISTS loan_number            TEXT`);
+
   // ── mortgage_statements — one parsed statement (PDF bytes stay in documents/R2) ──
   await query(`
     CREATE TABLE IF NOT EXISTS mortgage_statements (

@@ -102,6 +102,30 @@ module.exports.init = async (query) => {
       updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // Extracted Plaid transaction fields as real, viewable columns. The complete object
+  // still lives in `data` (nothing is lost); these just surface the useful fields for
+  // browsing/sorting. All ADD COLUMN IF NOT EXISTS — additive, safe on every boot.
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS merchant_name         TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS merchant_entity_id    TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS payment_channel       TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS category_detailed     TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS category_confidence   TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS authorized_date       DATE`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS currency              TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS logo_url              TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS website               TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transaction_type      TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transaction_code      TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS check_number          TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS account_owner         TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS location_city         TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS location_region       TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS location_address      TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS location_postal_code  TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS location_country      TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS location_store_number TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS counterparty_name     TEXT`);
+  await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS counterparty_type     TEXT`);
   await query(`CREATE INDEX IF NOT EXISTS idx_txns_user_date ON transactions(user_id, txn_date DESC)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_txns_user_acct ON transactions(user_id, account, txn_date DESC)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_txns_user_mon  ON transactions(user_id, month)`);

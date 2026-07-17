@@ -37,7 +37,9 @@ DOCUMENT TYPES — choose ONE for "docType":
 - "bank_statement"     : a checking / savings / brokerage account statement from a bank or brokerage. It lists transactions (deposits/withdrawals) and an account balance.
 - "mortgage_statement" : a monthly mortgage LOAN statement from a mortgage servicer. Shows principal balance, interest rate, escrow, amount due, and the PROPERTY address securing the loan.
 - "escrow"             : an escrow analysis / disclosure from a mortgage servicer (annual escrow account review).
-- "tax_form"           : an IRS / tax form (1098, 1099-INT/DIV/B/NEC/MISC/R, W-2, SSA-1099, 1040, Schedule K-1, or a property-tax bill).
+- "tax_form"           : an IRS / tax form (1098, 1099-INT/DIV/B/NEC/MISC/R, W-2, SSA-1099, 1040, Schedule K-1, a property-tax bill, or an estimated-tax voucher like 1040-ES/540-ES).
+- "insurance_statement": an insurance bill / premium statement / declarations page from an insurance carrier (homeowners, earthquake, flood, auto, umbrella, …). Shows a policy number, a premium or amount due, and usually the INSURED property or vehicle.
+- "disclosure"         : a bank / brokerage / lender disclosure or notice (privacy notice, fee schedule, terms update, regulatory disclosure). Informational — no transactions, no amount due.
 - "other"              : anything else.
 
 HOW TO TELL BANK vs MORTGAGE (critical):
@@ -58,6 +60,12 @@ FILING RULES — set "folder" (a forward-slash path) and "filename":
     filename = "{streetName} {Mon} {year}.pdf"  (streetName = address WITHOUT the house number, e.g. "Kobe Pl Jun 2026.pdf").
 - escrow             -> "Mortgage Statements/{propertyAddress}/{year}" , filename "{streetName} Escrow {year}.pdf".
 - tax_form           -> "Tax Documents/{year}" , filename "{formType} {issuer} {year}.pdf"  (e.g. "1098 Mr Cooper 2025.pdf").
+- insurance_statement-> "Insurance/{insured property address, else carrier}/{year}"
+    institution = the CARRIER brand only (e.g. "Farmers", "GeoVera", "State Farm").
+    propertyAddress = the INSURED property's street address (not the mailing or carrier address); null for auto/umbrella.
+    filename = "{carrier} {coverageType} {policyLast4} {Mon} {year}.pdf"  (e.g. "GeoVera Earthquake 5678 Aug 2026.pdf").
+    year/month = of the DUE DATE (or statement date if no due date).
+- disclosure         -> "Disclosures/{institution}/{year}" , filename "{institution} Disclosure {Mon} {year}.pdf" (omit {Mon} if unknown).
 - other              -> "Unsorted" , keep the original file name.
 
 REUSE EXISTING FOLDERS: You are given the folders that already exist. If the right institution / account / property already exists — even under different casing or minor spelling — reuse that EXACT existing name. Do not create a near-duplicate.
@@ -67,15 +75,16 @@ STATEMENT PERIOD (which month a statement is named after):
 - The statement is named by its CLOSING month — the month/year of periodEnd, NOT the opening month. So "January 17 through February 17, 2026" is named for FEBRUARY 2026, and "December 16, 2025 through January 16, 2026" is named for JANUARY 2026. Set "month" and "year" to the closing month/year accordingly. (If the period sits entirely within one month, use that month.)
 
 Also extract (null if unknown): institution, accountName, last4 (4 digits), propertyAddress, periodStart (YYYY-MM-DD), periodEnd (YYYY-MM-DD), year (4-digit int = closing year), month (1-12 int = closing month), formType.
+For insurance_statement also fill: policyNumber (as printed), coverageType (lowercase: homeowners|earthquake|flood|auto|umbrella|landlord|renters|condo|life|other), dueDate (YYYY-MM-DD payment due date), amountDue (number, dollars). Leave them null for other types.
 Add "confidence" (0..1) and "reasoning" (ONE short sentence on what told you the type).
 
 Respond with EXACTLY this JSON shape:
-{"docType":"...","institution":null,"accountName":null,"last4":null,"propertyAddress":null,"periodStart":null,"periodEnd":null,"year":null,"month":null,"formType":null,"folder":"...","filename":"...","confidence":0.0,"reasoning":"..."}`;
+{"docType":"...","institution":null,"accountName":null,"last4":null,"propertyAddress":null,"periodStart":null,"periodEnd":null,"year":null,"month":null,"formType":null,"policyNumber":null,"coverageType":null,"dueDate":null,"amountDue":null,"folder":"...","filename":"...","confidence":0.0,"reasoning":"..."}`;
 
 // ── Parse the existing folder tree into reuse candidates ─────────────────────
-function indexFolders(folders = []) {
+function indexFolders(folders = [], userProperties = []) {
   const paths = folders.map(f => (typeof f === 'string' ? f : f.path)).filter(Boolean);
-  const banks = new Set(), properties = new Set();
+  const banks = new Set(), properties = new Set(), insuranceSegs = new Set(), disclosureIssuers = new Set();
   const accountsByBank = {};
   const accountFolderByLast4 = {};   // { instKey: { last4: accountFolderSegment } } — last4 is the account identity
   const last4Of = (seg) => { const m = String(seg).match(/(\d{4})(?!.*\d)/); return m ? m[1] : null; };
@@ -91,14 +100,20 @@ function indexFolders(folders = []) {
       }
     } else if (parts[0] === 'Mortgage Statements' && parts[1]) {
       properties.add(parts[1]);
+    } else if (parts[0] === 'Insurance' && parts[1]) {
+      insuranceSegs.add(parts[1]);              // property name or carrier — reuse either way
+    } else if (parts[0] === 'Disclosures' && parts[1]) {
+      disclosureIssuers.add(parts[1]);
     }
   }
-  return { paths, banks, properties, accountsByBank, accountFolderByLast4 };
+  return { paths, banks, properties, accountsByBank, accountFolderByLast4,
+           insuranceSegs, disclosureIssuers,
+           userProperties: Array.isArray(userProperties) ? userProperties : [] };
 }
 
 // A compact view of the existing tree for the prompt (depths 1-3, deduped).
 function folderTreeForPrompt(folders) {
-  const keep = (p) => /^(Bank Statements|Mortgage Statements|Tax Documents)(\/|$)/.test(p);
+  const keep = (p) => /^(Bank Statements|Mortgage Statements|Tax Documents|Insurance|Disclosures)(\/|$)/.test(p);
   const paths = [...new Set((folders || [])
     .map(f => (typeof f === 'string' ? f : f.path))
     .filter(p => p && keep(p) && p.split('/').length <= 3))].sort();
@@ -126,7 +141,32 @@ function snap(proposed, candidates) {
 }
 
 const sanitize = (s) => String(s || '').replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, ' ').trim();
+// Folder paths sanitize per SEGMENT — plain sanitize() strips '/' and would collapse
+// "Insurance/CEA/2026" into the junk root folder "InsuranceCEA2026".
+const sanitizePath = (s) => String(s || '').split('/').map(sanitize).filter(Boolean).join('/');
 const streetNameOf = (addr) => sanitize(addr).replace(/^\d+\s+/, '').trim();   // drop house number
+
+// Match a printed insured address against the user's own properties ({id,name,address}) —
+// house number + a street token, or the property's name appearing in the text. Returns the
+// property's display NAME (the folder segment) or null. Nothing hardcoded.
+function matchUserProperty(address, userProperties = []) {
+  const a = norm(address);
+  if (!a) return null;
+  const aNum = (a.match(/\b\d{1,6}\b/) || [])[0] || null;
+  for (const p of userProperties) {
+    if (!p) continue;
+    const name = norm(p.name);
+    if (name && a.includes(name)) return sanitize(p.name);
+    const pa = norm(p.address);
+    if (!pa) continue;
+    const pNum = (pa.match(/\b\d{1,6}\b/) || [])[0] || null;
+    if (aNum && pNum && aNum === pNum) {
+      const streetTokens = pa.split(' ').filter(t => t.length >= 3 && !/^\d+$/.test(t));
+      if (streetTokens.some(t => a.includes(t))) return sanitize(p.name);
+    }
+  }
+  return null;
+}
 
 // ── Text / image extraction ──────────────────────────────────────────────────
 async function extractText(buffer, mimeType) {
@@ -150,7 +190,7 @@ async function groqJson(model, messages, maxTokens = 900) {
 // ── Reconcile the model's answer against existing folders + recompute the path ─
 function reconcile(ai, idx, originalName) {
   const d = ai || {};
-  const docType = ['bank_statement','mortgage_statement','escrow','tax_form','other'].includes(d.docType)
+  const docType = ['bank_statement','mortgage_statement','escrow','tax_form','insurance_statement','disclosure','other'].includes(d.docType)
     ? d.docType : 'other';
 
   // Naming month/year. Prefer the statement's COVERAGE dates (closing-month rule —
@@ -167,16 +207,16 @@ function reconcile(ai, idx, originalName) {
       nYear = naming.year; nMonth = naming.month;
     } else { nYear = pe.year; nMonth = pe.month; }
   }
-  const year  = nYear ? String(nYear) : null;
-  const month = nMonth || null;
-  const mon   = month ? MONTH_ABBR[month - 1] : null;
+  let year  = nYear ? String(nYear) : null;
+  let month = nMonth || null;
+  let mon   = month ? MONTH_ABBR[month - 1] : null;
   const last4 = d.last4 ? String(d.last4).replace(/[^\d]/g, '').slice(-4) : null;
   // Normalized coverage dates (YYYY-MM-DD) — used downstream for date-range
   // duplicate detection: two statements covering the same range are the same statement.
   const isoFmt = (x) => x ? `${x.year}-${String(x.month).padStart(2, '0')}-${String(x.day).padStart(2, '0')}` : null;
   const periodStart = isoFmt(ps), periodEnd = isoFmt(pe);
 
-  let folder = sanitize(d.folder || '').replace(/^\/+|\/+$/g, '');
+  let folder = sanitizePath(d.folder || '');
   let filename = sanitize(d.filename || originalName) || originalName;
   let institution = d.institution ? sanitize(d.institution) : null;
   let accountName = d.accountName ? sanitize(d.accountName) : null;
@@ -215,6 +255,38 @@ function reconcile(ai, idx, originalName) {
       const issuer = institution ? ` ${institution}` : '';
       filename = `${ft}${issuer} ${year}.pdf`;
     }
+  } else if (docType === 'insurance_statement') {
+    // Naming year/month for a bill = its DUE DATE — derive them when the model omitted
+    // year/month (photos especially), so the folder never degrades to the raw fallback
+    // and the tags/dedup keys still carry the billing month.
+    const dueISO = /^\d{4}-\d{2}-\d{2}$/.test(String(d.dueDate || '')) ? d.dueDate : null;
+    if (!year && dueISO) { year = dueISO.slice(0, 4); month = Number(dueISO.slice(5, 7)); mon = MONTH_ABBR[month - 1]; }
+    const iYear = year, iMon = mon;
+    // Second-level segment: the insured property's NAME when the address matches one of the
+    // user's properties (so "Insurance/Alcita/2026"), else the printed address snapped to an
+    // existing Insurance/ folder, else the carrier. Nothing hardcoded — properties come from
+    // the user's own properties.json, passed through indexFolders.
+    const propHit = property ? matchUserProperty(property, idx.userProperties) : null;
+    const seg = propHit
+      || (property ? snap(property, idx.insuranceSegs || new Set()) : null)
+      || (institution ? snap(institution, idx.insuranceSegs || new Set()) : null);
+    if (propHit) property = propHit;
+    if (seg) {
+      // No year at all → file under the carrier/property without a year folder (never junk).
+      folder = iYear ? `Insurance/${seg}/${iYear}` : `Insurance/${seg}`;
+      const cov = d.coverageType ? ` ${sanitize(String(d.coverageType)).replace(/^./, c => c.toUpperCase())}` : '';
+      // Policy last-4 in the filename keeps same-carrier same-month bills (one per property)
+      // from colliding into "_<timestamp>" rename suffixes.
+      const p4 = d.policyNumber ? String(d.policyNumber).replace(/[^A-Za-z0-9]/g, '').slice(-4) : null;
+      filename = `${institution || 'Insurance'}${cov}${p4 ? ` ${p4}` : ''}${iMon ? ` ${iMon}` : ''}${iYear ? ` ${iYear}` : ''}.pdf`;
+    }
+  } else if (docType === 'disclosure') {
+    const issuer = institution ? snap(institution, idx.disclosureIssuers || new Set()) : null;
+    if (issuer) {
+      institution = issuer;
+      folder = year ? `Disclosures/${issuer}/${year}` : `Disclosures/${issuer}`;
+      filename = `${issuer} Disclosure${mon ? ` ${mon}` : ''}${year ? ` ${year}` : ''}.pdf`;
+    }
   } else {
     if (!folder) folder = 'Unsorted';
     filename = originalName;
@@ -225,6 +297,12 @@ function reconcile(ai, idx, originalName) {
     docType, institution, accountName, last4, propertyAddress: property,
     year: year ? parseInt(year) : null, month, formType: d.formType || null,
     periodStart, periodEnd,
+    // Insurance fields (null for other types) — the domain recorder uses these as a
+    // fallback when the deterministic text parse misses them.
+    policyNumber: d.policyNumber ? sanitize(String(d.policyNumber)) : null,
+    coverageType: d.coverageType ? String(d.coverageType).toLowerCase().trim() : null,
+    dueDate: /^\d{4}-\d{2}-\d{2}$/.test(String(d.dueDate || '')) ? d.dueDate : null,
+    amountDue: typeof d.amountDue === 'number' && Number.isFinite(d.amountDue) ? d.amountDue : null,
     folder, filename,
     confidence: typeof d.confidence === 'number' ? d.confidence : null,
     reasoning: d.reasoning || null,
@@ -236,8 +314,8 @@ function reconcile(ai, idx, originalName) {
  * @param {{ buffer: Buffer, filename: string, mimeType?: string, folders?: any[] }} args
  * @returns {Promise<{ ok, decision, raw, textChars, needsOcr?, usage, model, error? }>}
  */
-async function classifyDocument({ buffer, filename, mimeType = 'application/pdf', folders = [] }) {
-  const idx  = indexFolders(folders);
+async function classifyDocument({ buffer, filename, mimeType = 'application/pdf', folders = [], properties = [] }) {
+  const idx  = indexFolders(folders, properties);
   const tree = folderTreeForPrompt(folders);
   const isImage = /^image\//.test(mimeType);
 
@@ -251,7 +329,7 @@ async function classifyDocument({ buffer, filename, mimeType = 'application/pdf'
         { type: 'image_url', image_url: { url: dataUrl } },
       ] },
     ]);
-    return finish(result, idx, filename, null);
+    return finish(result, idx, filename, null, null);
   }
 
   const text = await extractText(buffer, mimeType);
@@ -266,16 +344,16 @@ async function classifyDocument({ buffer, filename, mimeType = 'application/pdf'
       `EXISTING VAULT FOLDERS (reuse these names where they match):\n${tree}\n\n` +
       `UPLOADED FILE NAME: ${filename}\n\nDOCUMENT TEXT (truncated):\n${text.slice(0, 7000)}` },
   ]);
-  return finish(result, idx, filename, text.length);
+  return finish(result, idx, filename, text.length, text);
 }
 
-function finish(result, idx, filename, textChars) {
+function finish(result, idx, filename, textChars, text) {
   if (!result.parsed) {
     return { ok: false, error: 'Model did not return valid JSON', raw: result.raw,
-      decision: reconcile({ docType: 'other' }, idx, filename), usage: result.usage, model: result.model, textChars };
+      decision: reconcile({ docType: 'other' }, idx, filename), usage: result.usage, model: result.model, textChars, text };
   }
   return { ok: true, decision: reconcile(result.parsed, idx, filename),
-    raw: result.parsed, usage: result.usage, model: result.model, textChars };
+    raw: result.parsed, usage: result.usage, model: result.model, textChars, text };
 }
 
-module.exports = { classifyDocument, indexFolders, folderTreeForPrompt, snap, reconcile, TEXT_MODEL, VISION_MODEL };
+module.exports = { classifyDocument, indexFolders, folderTreeForPrompt, snap, reconcile, matchUserProperty, TEXT_MODEL, VISION_MODEL };

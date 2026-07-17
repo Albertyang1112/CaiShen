@@ -22,22 +22,33 @@ function mortgageAccountId(userId, { servicer, propertyId, loanMask } = {}) {
 }
 
 async function upsertMortgageAccount(query, userId, info = {}) {
-  const id = mortgageAccountId(userId, info);
+  let id = mortgageAccountId(userId, info);
   let accountId = null;
   if (info.accountId) {
     const a = await query(`SELECT 1 FROM accounts WHERE id=$1 AND user_id=$2`, [info.accountId, userId]);
     if (a.rows.length) accountId = info.accountId;
   }
+  // Merge with a row the Plaid Liabilities sync (or a differently-keyed earlier import)
+  // already created for this loan — matched by linked account or loan last-4 — so the same
+  // physical loan never splits into two mortgage_accounts rows.
+  if (accountId || info.loanMask) {
+    const existing = await query(
+      `SELECT id FROM mortgage_accounts WHERE user_id=$1
+        AND (($2::text IS NOT NULL AND account_id=$2) OR ($3::text IS NOT NULL AND loan_number_mask=$3)) LIMIT 1`,
+      [userId, accountId || null, info.loanMask || null]);
+    if (existing.rows.length) id = existing.rows[0].id;
+  }
   await query(
-    `INSERT INTO mortgage_accounts (id,user_id,account_id,property_id,servicer,loan_number_mask,interest_rate,created_at,updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NOW())
+    `INSERT INTO mortgage_accounts (id,user_id,account_id,property_id,servicer,loan_number_mask,loan_number,interest_rate,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
      ON CONFLICT (id) DO UPDATE SET
        account_id=COALESCE(EXCLUDED.account_id, mortgage_accounts.account_id),
        property_id=COALESCE(EXCLUDED.property_id, mortgage_accounts.property_id),
        servicer=COALESCE(EXCLUDED.servicer, mortgage_accounts.servicer),
        loan_number_mask=COALESCE(EXCLUDED.loan_number_mask, mortgage_accounts.loan_number_mask),
+       loan_number=COALESCE(EXCLUDED.loan_number, mortgage_accounts.loan_number),
        interest_rate=COALESCE(EXCLUDED.interest_rate, mortgage_accounts.interest_rate), updated_at=NOW()`,
-    [id, userId, accountId, info.propertyId || null, info.servicer || null, info.loanMask || null, info.interestRate ?? null]
+    [id, userId, accountId, info.propertyId || null, info.servicer || null, info.loanMask || null, info.loanNumber || null, info.interestRate ?? null]
   );
   return id;
 }
@@ -80,7 +91,14 @@ async function recordMortgageStatement(query, io, userId, { mortgageAccountId, d
   const sDate  = p.statementDate || null;
   const stmtId = `mstmt_${mortgageAccountId}_${ym(sDate)}`;
 
-  const prior = (await query(`SELECT monthly_payment, escrow_balance FROM mortgage_accounts WHERE id=$1`, [mortgageAccountId])).rows[0] || {};
+  const prior = (await query(`SELECT monthly_payment, escrow_balance, loan_number_mask FROM mortgage_accounts WHERE id=$1`, [mortgageAccountId])).rows[0] || {};
+
+  // Alert labels: name the exact statement and loan — "Rocket Mortgage" alone is ambiguous
+  // once every statement is from the same servicer.
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const fdate = (d) => d ? `${MON[Number(String(d).slice(5, 7)) - 1]} ${Number(String(d).slice(8, 10))}, ${String(d).slice(0, 4)}` : '?';
+  const stmtLabel = sDate ? `${MON[Number(String(sDate).slice(5, 7)) - 1]} ${String(sDate).slice(0, 4)} statement` : 'latest statement';
+  const loanLabel = `${servicer || 'servicer'}${prior.loan_number_mask ? ` ••••${prior.loan_number_mask}` : ''}`;
 
   let docId = documentId || null;
   if (docId) { const d = await query(`SELECT 1 FROM documents WHERE id=$1 AND user_id=$2`, [docId, userId]); if (!d.rows.length) docId = null; }
@@ -139,11 +157,11 @@ async function recordMortgageStatement(query, io, userId, { mortgageAccountId, d
   const alerts = [];
   const changed = (a, b) => a != null && b != null && Math.abs(Number(a) - Number(b)) > 0.01;
   if (changed(prior.monthly_payment, p.amountDue))
-    alerts.push(mkAlert('payment_changed', mortgageAccountId, `Monthly payment changed from $${fmt(prior.monthly_payment)} to $${fmt(p.amountDue)}.`, { from: Number(prior.monthly_payment), to: Number(p.amountDue) }));
+    alerts.push(mkAlert('payment_changed', mortgageAccountId, `Monthly payment changed from $${fmt(prior.monthly_payment)} to $${fmt(p.amountDue)} on the ${stmtLabel} (${loanLabel}).`, { from: Number(prior.monthly_payment), to: Number(p.amountDue), statementDate: sDate }));
   if (changed(prior.escrow_balance, p.escrowBalance))
-    alerts.push(mkAlert('escrow_changed', mortgageAccountId, `Escrow balance changed from $${fmt(prior.escrow_balance)} to $${fmt(p.escrowBalance)}.`, { from: Number(prior.escrow_balance), to: Number(p.escrowBalance) }));
+    alerts.push(mkAlert('escrow_changed', mortgageAccountId, `Escrow balance changed from $${fmt(prior.escrow_balance)} to $${fmt(p.escrowBalance)} on the ${stmtLabel} (${loanLabel}).`, { from: Number(prior.escrow_balance), to: Number(p.escrowBalance), statementDate: sDate }));
   if (totalPaid != null && !matchedTxnId)
-    alerts.push(mkAlert('payment_unmatched', mortgageAccountId, `Mortgage payment of $${fmt(totalPaid)} (${servicer || 'servicer'}) has no matching bank transaction yet.`, { amount: Number(totalPaid) }));
+    alerts.push(mkAlert('payment_unmatched', mortgageAccountId, `The $${fmt(totalPaid)} payment on the ${stmtLabel} (${loanLabel}, due ${fdate(p.dueDate)}) has no matching bank transaction yet.`, { amount: Number(totalPaid), statementDate: sDate, dueDate: p.dueDate || null }));
   appendAlerts(io, alerts);
 
   return { mortgageStatementId: stmtId, paymentId: payId, matchedTxnId, alerts };

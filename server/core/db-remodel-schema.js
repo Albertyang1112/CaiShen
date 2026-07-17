@@ -131,6 +131,8 @@ module.exports.init = async (query) => {
   await query(`ALTER TABLE source_transactions ADD COLUMN IF NOT EXISTS merchant_name           TEXT`);
   await query(`ALTER TABLE source_transactions ADD COLUMN IF NOT EXISTS category                TEXT`);
   await query(`ALTER TABLE source_transactions ADD COLUMN IF NOT EXISTS source_hash             TEXT`);
+  await query(`ALTER TABLE source_transactions ADD COLUMN IF NOT EXISTS pfc_detailed            TEXT`);   // Plaid personal_finance_category.detailed (FOOD_AND_DRINK_COFFEE, ...)
+  await query(`ALTER TABLE source_transactions ADD COLUMN IF NOT EXISTS payment_channel         TEXT`);   // Plaid payment_channel: online | in store | other
 
   await query(`CREATE INDEX IF NOT EXISTS idx_source_txns_period   ON source_transactions(user_id, bank_account_period_id)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_source_txns_extid    ON source_transactions(user_id, external_transaction_id)`);

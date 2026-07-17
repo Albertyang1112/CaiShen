@@ -6,12 +6,14 @@ import Projections from './pages/Projections/Projections'
 import PersonalSpending from './pages/PersonalSpending/PersonalSpending'
 import DataVault from './pages/DataVault/DataVault'
 import Accounting from './pages/Accounting/Accounting'
-import ChartOfAccounts from './pages/ChartOfAccounts/ChartOfAccounts'
 import Crypto from './pages/Crypto/Crypto'
 import Scrapers from './pages/Scrapers/Scrapers'
-import CsvFiles from './pages/DevTools/CsvFiles'
 import Banking, { classifyAccount } from './pages/Banking/Banking'
+import Mortgage from './pages/Mortgage/Mortgage'
+import Insurance from './pages/Insurance/Insurance'
+import Equities from './pages/Equities/Equities'
 import Login from './pages/Login/Login'
+import DevChat from './dev/DevChat'
 import { usePlaidLink } from 'react-plaid-link'
 
 // ── Auth context ──────────────────────────────────────────────────────
@@ -108,10 +110,8 @@ const IS_LOCALHOST =
 const NAV_TOOLS = [
   {id:'connections',   label:'Connections',   icon:'ti-plug',             adminOnly:false, localhostOnly:false},
   {id:'data',          label:'Data Vault',    icon:'ti-database',         adminOnly:false, localhostOnly:false},
-  {id:'coa',           label:'Chart of Accounts', icon:'ti-list-details', adminOnly:false, localhostOnly:false},
   {id:'accounting',    label:'Report',        icon:'ti-building-bank',    adminOnly:false, localhostOnly:false},
   {id:'scrapers',      label:'Scrapers',      icon:'ti-cloud-download',   adminOnly:false, localhostOnly:true},
-  {id:'dev-csv',       label:'CSV Files',     icon:'ti-file-spreadsheet', adminOnly:false, localhostOnly:true},
   {id:'settings',      label:'Settings',      icon:'ti-settings',         adminOnly:false, localhostOnly:false},
 ]
 
@@ -195,10 +195,13 @@ function DonutChart({data, size=180, nw=0}) {
 
 // ── Screens ───────────────────────────────────────────────────────────
 function MainDashboard({onDrill, accounts, transactions=[], properties, onConnect, enabledClasses=[], hasTransactions=false}) {
-  const reVal  = properties.reduce((s,p)=>s+p.value,0)
-  const reMort = properties.reduce((s,p)=>s+p.mortgage,0)
+  // NaN-safe: value/rent are optional now (mortgage/exp are document-derived server-side).
+  const reVal  = properties.reduce((s,p)=>s+(Number(p.value)||0),0)
+  const reMort = properties.reduce((s,p)=>s+(Number(p.mortgage)||0),0)
   const reEquity = reVal-reMort
-  const noi      = properties.reduce((s,p)=>s+(p.rent-p.exp),0)
+  const reExp    = properties.reduce((s,p)=>s+(Number(p.exp)||0),0)
+  const hasRent  = properties.some(p=>Number(p.rent)>0)
+  const noi      = properties.reduce((s,p)=>s+((Number(p.rent)||0)-(Number(p.exp)||0)),0)
 
   // For bank/credit accounts: only show balance when we have settled transaction data
   // (guards against stale or unsynced manual accounts showing phantom balances).
@@ -285,8 +288,14 @@ function MainDashboard({onDrill, accounts, transactions=[], properties, onConnec
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:24}}>
         <MetricCard label="Net Worth" value={fd(nw)} icon="ti-crown" iconColor="var(--amber)"/>
         <MetricCard label="Total Assets" value={fd(totalAssets)} icon="ti-chart-pie" iconColor="var(--blue)"/>
-        <MetricCard label="RE Equity" value={fd(reEquity)} sub={reVal>0?((reEquity/reVal)*100).toFixed(0)+'% of RE value':undefined} subColor="var(--teal)" icon="ti-building-estate" iconColor="var(--teal)"/>
-        <MetricCard label="Monthly NOI" value={fd(noi)} sub={noi>0?fd(noi*12)+'/year':undefined} subColor="var(--teal)" icon="ti-cash" iconColor="var(--teal)"/>
+        {/* Equity/NOI need market value & rent (not tracked right now) — fall back to the
+            document-derived debt/cost views so these cards never show misleading negatives. */}
+        {reVal>0
+          ? <MetricCard label="RE Equity" value={fd(reEquity)} sub={((reEquity/reVal)*100).toFixed(0)+'% of RE value'} subColor="var(--teal)" icon="ti-building-estate" iconColor="var(--teal)"/>
+          : <MetricCard label="RE Mortgage Debt" value={fdFull(reMort)} sub={properties.length?`${properties.length} propert${properties.length===1?'y':'ies'}`:undefined} icon="ti-building-estate" iconColor="var(--purple)"/>}
+        {hasRent
+          ? <MetricCard label="Monthly NOI" value={fd(noi)} sub={noi>0?fd(noi*12)+'/year':undefined} subColor="var(--teal)" icon="ti-cash" iconColor="var(--teal)"/>
+          : <MetricCard label="RE Monthly Costs" value={fdFull(reExp)} sub="tax · insurance · escrow" icon="ti-cash" iconColor="var(--coral)"/>}
       </div>
 
       {/* Legend includes all enabled classes even at $0; donut slices only non-zero */}
@@ -350,7 +359,9 @@ const PROP_COLORS = [
   {label:'Coral',  val:'var(--coral)'},
   {label:'Green',  val:'var(--green)'},
 ]
-const BLANK_PROP = {name:'',addr:'',value:'',mortgage:'',rate:'',rent:'',exp:'',sqft:'',yr:'',color:'var(--blue)'}
+const BLANK_PROP = {name:'',addr:'',color:'var(--blue)'}
+// Full-dollar formatter (no K/M abbreviation — this is a finance app).
+const fdFull = n => (Number(n)<0?'-$':'$')+Math.abs(Math.round(Number(n)||0)).toLocaleString('en-US')
 
 function PropertyForm({initial, onSave, onDelete, onClose, saving}) {
   const [form, setForm] = useState(initial || BLANK_PROP)
@@ -376,13 +387,6 @@ function PropertyForm({initial, onSave, onDelete, onClose, saving}) {
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
           <div style={{gridColumn:'1/-1'}}>{field('Property name','name','text','e.g. Maple St Duplex')}</div>
           <div style={{gridColumn:'1/-1'}}>{field('Address','addr','text','123 Main St, Los Angeles CA')}</div>
-          {field('Market value ($)','value','number','1250000')}
-          {field('Mortgage balance ($)','mortgage','number','780000')}
-          {field('Interest rate (%)','rate','number','3.875')}
-          {field('Monthly rent ($)','rent','number','6500')}
-          {field('Monthly expenses ($)','exp','number','2800')}
-          {field('Square footage','sqft','number','2400')}
-          {field('Year built','yr','number','2005')}
           <div style={{display:'flex',flexDirection:'column',gap:4}}>
             <label style={{fontSize:11,color:'var(--text-secondary)',fontWeight:500,textTransform:'uppercase',letterSpacing:'0.5px'}}>Color</label>
             <div style={{display:'flex',gap:8}}>
@@ -393,6 +397,11 @@ function PropertyForm({initial, onSave, onDelete, onClose, saving}) {
             </div>
           </div>
         </div>
+        <p style={{fontSize:11.5,color:'var(--text-muted)',margin:'0 0 16px',lineHeight:1.5}}>
+          <Icon name="ti-sparkles" size={12}/> Mortgage balance, rate, payment, and monthly expenses fill in automatically
+          from this property's linked mortgage statements, insurance policies, and property-tax bills — and stay current
+          as new ones are uploaded.
+        </p>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:8}}>
           {isEdit
             ? <button onClick={onDelete} disabled={saving}
@@ -403,7 +412,7 @@ function PropertyForm({initial, onSave, onDelete, onClose, saving}) {
           }
           <div style={{display:'flex',gap:8}}>
             <button onClick={onClose} style={{fontSize:12}}>Cancel</button>
-            <button onClick={()=>onSave(form)} disabled={saving||!form.name||!form.value}
+            <button onClick={()=>onSave(form)} disabled={saving||!form.name}
               style={{fontSize:12,background:'var(--blue)',color:'#fff',border:'none',borderRadius:'var(--radius-md)',padding:'8px 16px',cursor:'pointer',fontWeight:500}}>
               {saving?'Saving…':isEdit?'Save changes':'Add property'}
             </button>
@@ -414,32 +423,57 @@ function PropertyForm({initial, onSave, onDelete, onClose, saving}) {
   )
 }
 
+const titleCase = s => String(s||'').toLowerCase().replace(/\b\w/g, c=>c.toUpperCase())
+
 function RealEstateDash({onProp, properties, onRefresh}) {
   const [showForm, setShowForm]   = useState(false)
   const [editProp, setEditProp]   = useState(null)
   const [saving, setSaving]       = useState(false)
+  const [suggestions, setSuggestions] = useState([])   // new addresses found on mortgage/insurance docs
+  const [pendingSug, setPendingSug]   = useState(null) // suggestion the Add-Property form was opened from
 
-  const reVal    = properties.reduce((s,p)=>s+p.value,0)
-  const reEquity = properties.reduce((s,p)=>s+(p.value-p.mortgage),0)
-  const noi      = properties.reduce((s,p)=>s+(p.rent-p.exp),0)
+  // Addresses printed on ingested mortgage statements / insurance policies that don't
+  // match any portfolio property → offer to add them (dismissals persist server-side).
+  useEffect(() => {
+    axios.get(`${API}/re/address-suggestions`).then(r=>setSuggestions(Array.isArray(r.data)?r.data:[])).catch(()=>{})
+  }, [])
 
-  const openAdd  = () => { setEditProp(null); setShowForm(true) }
-  const openEdit = (p,e) => { e.stopPropagation(); setEditProp(p); setShowForm(true) }
+  // All three are document-derived server-side (linked mortgage/insurance/tax rows).
+  const totalDebt = properties.reduce((s,p)=>s+(Number(p.mortgage)||0),0)
+  const totalPay  = properties.reduce((s,p)=>s+(Number(p.monthlyPayment)||0),0)
+  const totalExp  = properties.reduce((s,p)=>s+(Number(p.exp)||0),0)
+
+  const openAdd  = () => { setEditProp(null); setPendingSug(null); setShowForm(true) }
+  const openEdit = (p,e) => { e.stopPropagation(); setEditProp(p); setPendingSug(null); setShowForm(true) }
+  // "Add property" on a suggestion: open the normal form pre-filled from the document's address.
+  const openFromSuggestion = (s) => {
+    const street = s.address.split(/[\n,]/)[0]
+    setEditProp({ ...BLANK_PROP, name: titleCase(street), addr: titleCase(s.address) })
+    setPendingSug(s)
+    setShowForm(true)
+  }
+  const dismissSuggestion = async (s) => {
+    setSuggestions(list => list.filter(x => x.key !== s.key))
+    try { await axios.post(`${API}/re/address-suggestions/dismiss`, { key: s.key }) } catch {}
+  }
 
   const saveProperty = async (form) => {
     setSaving(true)
-    const body = {
-      ...form,
-      value:form.value?Number(form.value):0, mortgage:form.mortgage?Number(form.mortgage):0,
-      rate:form.rate?Number(form.rate):0, rent:form.rent?Number(form.rent):0,
-      exp:form.exp?Number(form.exp):0, sqft:form.sqft?Number(form.sqft):undefined,
-      yr:form.yr?Number(form.yr):undefined,
-    }
+    const body = { ...form }   // name, address, color — the financial fields are derived server-side
     try {
       if (form.id) await axios.put(`${API}/properties/${form.id}`, body)
-      else         await axios.post(`${API}/properties`, body)
+      else {
+        const { data } = await axios.post(`${API}/properties`, body)
+        // Added from a suggestion → link the source mortgage/insurance rows to the new
+        // property so those tabs label it by name, and retire the suggestion.
+        if (pendingSug && data?.id) {
+          try { await axios.post(`${API}/re/address-suggestions/link`, { propertyId: data.id, mortgageAccountIds: pendingSug.mortgageAccountIds, policyIds: pendingSug.policyIds }) } catch {}
+          setSuggestions(list => list.filter(x => x.key !== pendingSug.key))
+        }
+      }
       await onRefresh()
       setShowForm(false)
+      setPendingSug(null)
     } catch(e) { alert('Save failed: '+e.message) }
     setSaving(false)
   }
@@ -462,15 +496,40 @@ function RealEstateDash({onProp, properties, onRefresh}) {
           initial={editProp}
           onSave={saveProperty}
           onDelete={deleteProperty}
-          onClose={()=>setShowForm(false)}
+          onClose={()=>{ setShowForm(false); setPendingSug(null) }}
           saving={saving}/>
+      )}
+
+      {/* New addresses found on mortgage statements / insurance policies */}
+      {suggestions.length > 0 && (
+        <div style={{marginBottom:16,display:'flex',flexDirection:'column',gap:8}}>
+          {suggestions.map(s => (
+            <div key={s.key} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'var(--blue-light)',border:'0.5px solid var(--blue)',borderRadius:'var(--radius-md)',flexWrap:'wrap'}}>
+              <Icon name="ti-home-plus" size={18} color="var(--blue)"/>
+              <div style={{flex:1,minWidth:220}}>
+                <p style={{margin:0,fontSize:13,fontWeight:500}}>New address found: {titleCase(s.address)}</p>
+                <p style={{margin:'2px 0 0',fontSize:11,color:'var(--text-secondary)'}}>
+                  From your {s.sources.map(x=>x.label).join(' and ')} — add it to your portfolio?
+                </p>
+              </div>
+              <button onClick={()=>openFromSuggestion(s)}
+                style={{fontSize:12,background:'var(--blue)',color:'#fff',border:'none',borderRadius:'var(--radius-md)',padding:'7px 14px',cursor:'pointer',fontWeight:500}}>
+                Add property
+              </button>
+              <button onClick={()=>dismissSuggestion(s)}
+                style={{fontSize:12,background:'none',color:'var(--text-secondary)',border:'0.5px solid var(--border)',borderRadius:'var(--radius-md)',padding:'7px 12px',cursor:'pointer'}}>
+                Dismiss
+              </button>
+            </div>
+          ))}
+        </div>
       )}
 
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
         <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12,flex:1,marginRight:12}}>
-          <MetricCard label="Portfolio Value" value={fd(reVal)} icon="ti-building-estate" iconColor="var(--blue)"/>
-          <MetricCard label="Total Equity" value={fd(reEquity)} sub={reVal>0?((reEquity/reVal)*100).toFixed(0)+'% of value':undefined} subColor="var(--teal)" icon="ti-trending-up" iconColor="var(--teal)"/>
-          <MetricCard label="Monthly NOI" value={fd(noi)} sub={noi>0?fd(noi*12)+'/year':undefined} subColor="var(--green)" icon="ti-cash" iconColor="var(--green)"/>
+          <MetricCard label="Mortgage Debt" value={fdFull(totalDebt)} sub={`${properties.length} propert${properties.length===1?'y':'ies'}`} icon="ti-building-estate" iconColor="var(--blue)"/>
+          <MetricCard label="Monthly Payments" value={fdFull(totalPay)} sub="P&I + escrow, from statements" icon="ti-calendar-dollar" iconColor="var(--purple)"/>
+          <MetricCard label="Monthly Expenses" value={fdFull(totalExp)} sub="tax · insurance · escrow" icon="ti-cash" iconColor="var(--coral)"/>
         </div>
         <button onClick={openAdd} style={{flexShrink:0,fontSize:12,background:'var(--blue-light)',color:'var(--blue)',borderColor:'var(--blue)',whiteSpace:'nowrap'}}>
           <Icon name="ti-plus" size={13}/> Add property
@@ -481,7 +540,7 @@ function RealEstateDash({onProp, properties, onRefresh}) {
         <div className="card" style={{textAlign:'center',padding:'3rem'}}>
           <Icon name="ti-building-estate" size={40} color="var(--text-muted)"/>
           <p style={{fontSize:15,fontWeight:500,margin:'14px 0 6px'}}>No properties yet</p>
-          <p style={{fontSize:13,color:'var(--text-secondary)',marginBottom:16}}>Add your real estate portfolio to track values, equity, and cash flow.</p>
+          <p style={{fontSize:13,color:'var(--text-secondary)',marginBottom:16}}>Add your properties — mortgage balances, rates, and expenses fill in automatically from your statements.</p>
           <button onClick={openAdd} style={{fontSize:13,background:'var(--blue-light)',color:'var(--blue)',borderColor:'var(--blue)'}}>
             <Icon name="ti-plus" size={14}/> Add your first property
           </button>
@@ -489,45 +548,39 @@ function RealEstateDash({onProp, properties, onRefresh}) {
       ) : (
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
           {properties.map(p=>{
-            const pnoi=p.rent-p.exp, roi=((pnoi*12)/p.value*100).toFixed(1), ltv=((p.mortgage/p.value)*100).toFixed(0)
+            const linked = !!p.derived
             return (
               <div key={p.id} onClick={()=>onProp(p.id,p.name)} className="card" style={{cursor:'pointer',transition:'border-color 0.15s'}}
                 onMouseEnter={e=>e.currentTarget.style.borderColor=p.color}
                 onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-                  <div style={{display:'flex',alignItems:'center',gap:10}}>
-                    <div style={{width:34,height:34,borderRadius:'var(--radius-md)',background:'var(--blue-light)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+                    <div style={{width:34,height:34,borderRadius:'var(--radius-md)',background:'var(--blue-light)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
                       <Icon name="ti-building-estate" size={17} color={p.color}/>
                     </div>
-                    <div>
+                    <div style={{minWidth:0}}>
                       <p style={{fontWeight:500,fontSize:14,margin:0}}>{p.name}</p>
-                      <p style={{fontSize:11,color:'var(--text-secondary)',margin:0}}>{p.sqft?.toLocaleString()} sqft{p.yr?` · ${p.yr}`:''}</p>
+                      {p.addr && <p style={{fontSize:11,color:'var(--text-secondary)',margin:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{p.addr}</p>}
                     </div>
                   </div>
-                  <div style={{display:'flex',alignItems:'center',gap:6}}>
-                    <span className="badge" style={{background:'var(--teal-light)',color:'var(--teal)'}}>{roi}% ROI</span>
+                  <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}>
+                    {linked && (
+                      <span className="badge" title={`Live from ${p.derived.loans} linked loan${p.derived.loans===1?'':'s'} + ${p.derived.policies} polic${p.derived.policies===1?'y':'ies'}`}
+                        style={{background:'var(--teal-light)',color:'var(--teal)'}}>auto</span>
+                    )}
                     <button onClick={e=>openEdit(p,e)} style={{background:'none',border:'none',color:'var(--text-muted)',padding:4,cursor:'pointer',fontSize:14,lineHeight:1}} title="Edit">
                       <Icon name="ti-pencil" size={13}/>
                     </button>
                   </div>
                 </div>
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:10}}>
-                  {[['Value',fd(p.value)],['Equity',fd(p.value-p.mortgage)],['NOI/mo',fd(pnoi)]].map(([l,v])=>(
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6}}>
+                  {[['Mortgage',fdFull(p.mortgage||0)],['Rate',p.rate?`${p.rate}%`:'—'],['Expenses/mo',fdFull(p.exp||0)]].map(([l,v])=>(
                     <div key={l} style={{background:'var(--bg-secondary)',borderRadius:'var(--radius-sm)',padding:'6px 8px'}}>
                       <p style={{fontSize:10,color:'var(--text-secondary)',margin:'0 0 2px'}}>{l}</p>
                       <p style={{fontSize:13,fontWeight:500,margin:0}}>{v}</p>
                     </div>
                   ))}
                 </div>
-                <div>
-                  <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--text-muted)',marginBottom:3}}>
-                    <span>LTV {ltv}%</span><span>{p.rate}% rate</span>
-                  </div>
-                  <div style={{height:3,background:'var(--bg-secondary)',borderRadius:2}}>
-                    <div style={{height:3,width:Math.min(100,ltv)+'%',background:p.color,borderRadius:2}}/>
-                  </div>
-                </div>
-                {p.addr && <p style={{fontSize:11,color:'var(--text-muted)',margin:'8px 0 0'}}>{p.addr}</p>}
               </div>
             )
           })}
@@ -550,11 +603,14 @@ function PropertyDetail({propId, properties, onRefresh}) {
     </div>
   )
 
-  const noi=p.rent-p.exp, monthly=p.mortgage*(p.rate/100)/12
+  // Prefer the real statement-derived payment; fall back to an interest-only estimate.
+  const d = p.derived || {}
+  const monthly  = Number(p.monthlyPayment) || (Number(p.mortgage)||0)*(Number(p.rate)||0)/100/12
+  const extrasMo = p.derived ? (d.taxMo||0)+(d.insuranceMo||0) : (Number(p.exp)||0)
 
   const saveProperty = async (form) => {
     setSaving(true)
-    const body={...form,value:Number(form.value),mortgage:Number(form.mortgage),rate:Number(form.rate),rent:Number(form.rent),exp:Number(form.exp),sqft:form.sqft?Number(form.sqft):undefined,yr:form.yr?Number(form.yr):undefined}
+    const body = { ...form }   // name, address, color — the financial fields are derived server-side
     try { await axios.put(`${API}/properties/${p.id}`,body); await onRefresh(); setShowForm(false) }
     catch(e) { alert('Save failed: '+e.message) }
     setSaving(false)
@@ -576,40 +632,46 @@ function PropertyDetail({propId, properties, onRefresh}) {
         </div>
         <div style={{flex:1}}>
           <h2 style={{margin:0,fontSize:20,fontWeight:500}}>{p.name}</h2>
-          <p style={{margin:0,fontSize:13,color:'var(--text-secondary)'}}>{p.addr}{p.sqft?` · ${p.sqft.toLocaleString()} sqft`:''}{p.yr?` · Built ${p.yr}`:''}</p>
+          <p style={{margin:0,fontSize:13,color:'var(--text-secondary)'}}>{p.addr}</p>
         </div>
         <button onClick={()=>setShowForm(true)} style={{fontSize:12}}>
           <Icon name="ti-pencil" size={13}/> Edit
         </button>
       </div>
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:16}}>
-        {[['Market Value',fd(p.value)],['Equity',fd(p.value-p.mortgage)],['Mortgage',fd(p.mortgage)],['Rate',p.rate+'%']].map(([l,v])=>(
+        {[['Mortgage Balance',fdFull(p.mortgage||0)],['Rate',p.rate?`${p.rate}%`:'—'],['Monthly Payment',fdFull(Math.round(monthly))],['Expenses/mo',fdFull(p.exp||0)]].map(([l,v])=>(
           <MetricCard key={l} label={l} value={v}/>
         ))}
       </div>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
         <div className="card">
-          <p style={{fontSize:14,fontWeight:500,margin:'0 0 12px'}}>Monthly cash flow</p>
+          <p style={{fontSize:14,fontWeight:500,margin:'0 0 12px'}}>Monthly costs</p>
           {[
-            ['Rental income',    p.rent,                   true],
-            ['Mortgage payment', -Math.round(monthly),      false],
-            ['Other expenses',   -(p.exp-Math.round(monthly)), false],
-            ['Net cash flow',    noi-Math.round(monthly),   noi>Math.round(monthly)],
-          ].map(([l,v,pos])=>(
+            ['Mortgage payment', Math.round(monthly)],
+            ...(d.escrowMo    ? [['· includes escrow (tax + insurance)', Math.round(d.escrowMo)]] : []),
+            ...(d.taxMo       ? [['Property tax', Math.round(d.taxMo)]] : []),
+            ...(d.insuranceMo ? [['Insurance', Math.round(d.insuranceMo)]] : []),
+            ...(!p.derived && p.exp ? [['Other expenses', Math.round(p.exp)]] : []),
+            ['Total monthly cost', Math.round(monthly + extrasMo)],
+          ].map(([l,v])=>(
             <div className="row" key={l}>
               <span style={{color:'var(--text-secondary)'}}>{l}</span>
-              <span style={{fontWeight:l==='Net cash flow'?500:400,color:pos?'var(--teal)':'var(--coral)'}}>{v>0?'+':''}{fd(v)}</span>
+              <span style={{fontWeight:l==='Total monthly cost'?500:400}}>{fdFull(v)}</span>
             </div>
           ))}
+          {p.derived && (
+            <p style={{fontSize:11,color:'var(--text-muted)',margin:'10px 0 0',lineHeight:1.5}}>
+              <Icon name="ti-sparkles" size={11}/> Live from {d.loans} linked loan{d.loans===1?'':'s'} and {d.policies} linked polic{d.policies===1?'y':'ies'} — updates as new statements arrive.
+            </p>
+          )}
         </div>
         <div className="card">
           <p style={{fontSize:14,fontWeight:500,margin:'0 0 12px'}}>Mortgage details</p>
           {[
-            ['Balance',          fd(p.mortgage)],
-            ['Rate',             p.rate+'%'],
-            ['Monthly payment',  fd(Math.round(monthly))],
-            ['LTV',              ((p.mortgage/p.value)*100).toFixed(1)+'%'],
-            ['Annual interest',  fd(Math.round(p.mortgage*(p.rate/100)))],
+            ['Balance',          fdFull(p.mortgage||0)],
+            ['Rate',             p.rate?`${p.rate}%`:'—'],
+            ['Monthly payment',  fdFull(Math.round(monthly))],
+            ['Annual interest',  fdFull(Math.round((p.mortgage||0)*(p.rate||0)/100))],
           ].map(([l,v])=>(
             <div className="row" key={l}><span style={{color:'var(--text-secondary)'}}>{l}</span><span style={{fontWeight:500}}>{v}</span></div>
           ))}
@@ -695,12 +757,18 @@ function usePlaidConnect({ onConnected } = {}) {
   const [linkToken, setLinkToken]   = useState(null)
   const [connecting, setConnecting] = useState(false)
   const [linkError, setLinkError]   = useState(null)
+  const updateItemRef = useRef(null)   // set → Link opened in update mode (re-consent, no token exchange)
 
-  const connect = async () => {
+  // connect() → link a NEW bank. connect(itemId) → UPDATE an existing connection to grant
+  // the liabilities product (mortgage detail). Guarded so onClick={connect} (event arg) still
+  // means "new connection".
+  const connect = async (itemId) => {
+    const updating = typeof itemId === 'string' && itemId
+    updateItemRef.current = updating ? itemId : null
     setConnecting(true)
     setLinkError(null)
     try {
-      const res = await axios.post(`${API}/plaid/create-link-token`)
+      const res = await axios.post(`${API}/plaid/create-link-token`, updating ? { item_id: itemId } : {})
       setLinkToken(res.data.link_token)
     } catch (e) {
       setLinkError(e.response?.data?.error || e.message)
@@ -712,18 +780,25 @@ function usePlaidConnect({ onConnected } = {}) {
     token: linkToken,
     onSuccess: async (publicToken, metadata) => {
       try {
-        await axios.post(`${API}/plaid/exchange-token`, {
-          public_token: publicToken,
-          institution_name: metadata.institution?.name || 'Unknown'
-        })
+        if (updateItemRef.current) {
+          // Update mode: same connection, new permission — no token exchange. Sync now so
+          // the fresh mortgage data lands immediately.
+          await axios.post(`${API}/plaid/sync`)
+        } else {
+          await axios.post(`${API}/plaid/exchange-token`, {
+            public_token: publicToken,
+            institution_name: metadata.institution?.name || 'Unknown'
+          })
+        }
         setLinkToken(null)
         await onConnected?.()
       } catch (e) {
         setLinkError('Failed to connect account: ' + e.message)
       }
+      updateItemRef.current = null
       setConnecting(false)
     },
-    onExit: () => { setLinkToken(null); setConnecting(false) },
+    onExit: () => { updateItemRef.current = null; setLinkToken(null); setConnecting(false) },
     onEvent: () => {}
   }
 
@@ -858,6 +933,11 @@ function ConnectionsScreen({status, accounts, onSync}) {
                       Last sync: {c.lastSync ? new Date(c.lastSync).toLocaleString() : 'Never'}
                     </p>
                   </div>
+                  <button onClick={()=>connect(c.item_id)} disabled={connecting}
+                    title="Grant access to loan/mortgage details (rate, escrow, payoff, YTD interest) — re-opens the bank's approval once"
+                    style={{ fontSize:11, padding:'3px 8px', color:'var(--purple)', borderColor:'var(--purple)', background:'var(--purple-light)' }}>
+                    Loan data
+                  </button>
                   <button onClick={()=>removeConnection(c.item_id)} style={{ fontSize:11, padding:'3px 8px', color:'var(--coral)', borderColor:'var(--coral)', background:'var(--coral-light)' }}>
                     Disconnect
                   </button>
@@ -1405,19 +1485,35 @@ function MainApp({ auth, onLogout }) {
   const renderContent = () => {
     if(nav==='dashboard') return <MainDashboard onDrill={drill} accounts={accounts} transactions={transactions} properties={properties} onConnect={addAccount} enabledClasses={enabledClasses} hasTransactions={transactions.length>0}/>
     const refreshProps = () => axios.get(`${API}/properties`).then(r=>setProperties(r.data||[])).catch(()=>{})
-    if(nav==='re') return <RealEstateDash onProp={(id,name)=>drill('prop_'+id,name)} properties={properties} onRefresh={refreshProps}/>
+    // Real Estate section — Properties | Mortgage | Insurance as tabs within one page.
+    if(nav==='re'||nav==='mortgage'||nav==='insurance') return (
+      <div>
+        <div style={{display:'flex',alignItems:'center',borderBottom:'0.5px solid var(--border)',marginBottom:18}}>
+          {[['re','Properties'],['mortgage','Mortgage'],['insurance','Insurance']].map(([id,label])=>(
+            <button key={id} onClick={()=>setNav(id)} style={{
+              background:'none',border:'none',
+              borderBottom:nav===id?'2px solid var(--blue)':'2px solid transparent',
+              padding:'8px 16px',fontSize:13,fontWeight:nav===id?500:400,
+              color:nav===id?'var(--text-primary)':'var(--text-secondary)',
+              cursor:'pointer',marginBottom:-1,
+            }}>{label}</button>
+          ))}
+        </div>
+        {nav==='re'
+          ? <RealEstateDash onProp={(id,name)=>drill('prop_'+id,name)} properties={properties} onRefresh={refreshProps}/>
+          : nav==='mortgage' ? <Mortgage/> : <Insurance/>}
+      </div>
+    )
     if(nav.startsWith('prop_')) return <PropertyDetail propId={nav.replace('prop_','')} properties={properties} onRefresh={refreshProps}/>
     if(nav==='personal') return <PersonalSpending transactions={transactions} onUpdate={setTransactions}/>
     if(nav==='connections') return <ConnectionsScreen status={status} accounts={accounts} onSync={()=>{ axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])); axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])) }}/>
-    if(nav==='equity' && IS_LOCALHOST) return <PlaceholderScreen label="Equities"/>
+    if(nav==='equity') return <Equities accounts={accounts}/>
     if(nav==='retirement' && IS_LOCALHOST) return <PlaceholderScreen label="Retirement"/>
     if(nav==='crypto') return <Crypto/>
     if(nav==='cash') return <Banking accounts={accounts} transactions={transactions} onUpdate={setTransactions}/>
     if(nav==='projections') return <Projections/>
-    if(nav==='coa') return <ChartOfAccounts/>
     if(nav==='accounting') return <Accounting/>
     if(nav==='scrapers' && IS_LOCALHOST) return <Scrapers/>
-    if(nav==='dev-csv'  && IS_LOCALHOST) return <CsvFiles/>
     if(nav==='data')       return <DataVault accounts={accounts} transactions={transactions} onImportTransactions={txs=>setTransactions(prev=>[...prev,...txs])} onTransactionsChanged={()=>{ axios.get(`${API}/transactions`).then(r=>setTransactions(r.data||[])).catch(()=>{}); axios.get(`${API}/accounts`).then(r=>setAccounts(r.data||[])).catch(()=>{}) }}/>
     if(nav==='settings')   return <SettingsScreen auth={auth}/>
     return null
@@ -1427,6 +1523,7 @@ function MainApp({ auth, onLogout }) {
 
   return (
     <div style={{display:'flex',flexDirection:'column',height:'100vh'}}>
+      {IS_LOCALHOST && <DevChat nav={nav}/>}
       <StatusBar status={status}/>
       <div style={{display:'flex',flex:1,overflow:'hidden'}}>
         {/* Sidebar */}
@@ -1441,6 +1538,11 @@ function MainApp({ auth, onLogout }) {
             {!collapsed && <p style={{fontSize:10,fontWeight:500,color:'var(--text-muted)',margin:'8px 14px 4px',textTransform:'uppercase',letterSpacing:'0.8px'}}>Overview</p>}
             <NavBtn id="dashboard" label="Dashboard" icon="ti-layout-dashboard" active={nav==='dashboard'} collapsed={collapsed} color="var(--blue)" onClick={()=>{ setNav('dashboard'); setTrail([{id:'dashboard',label:'Dashboard'}]) }}/>
             <NavBtn id="cash" label="Banking" icon="ti-building-bank" active={nav==='cash'} collapsed={collapsed} color="var(--green)" onClick={()=>go('cash','Banking')}/>
+            {/* Mortgage + Insurance live under Real Estate below; keep them reachable here if the RE class is toggled off */}
+            {!enabledClasses.includes('re') && <>
+              <NavBtn id="mortgage" label="Mortgage" icon="ti-home-dollar" active={nav==='mortgage'} collapsed={collapsed} color="var(--purple)" onClick={()=>go('mortgage','Mortgage')}/>
+              <NavBtn id="insurance" label="Insurance" icon="ti-shield-dollar" active={nav==='insurance'} collapsed={collapsed} color="var(--teal)" onClick={()=>go('insurance','Insurance')}/>
+            </>}
             {/* Asset Classes — opt-in */}
             {!collapsed && (
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',margin:'12px 14px 4px'}}>
@@ -1470,8 +1572,11 @@ function MainApp({ auth, onLogout }) {
             {enabledClasses.map(id=>{
               const a = ASSET_CLASSES.find(x=>x.id===id)
               if(!a || (a.devOnly && !IS_LOCALHOST)) return null
+              // Mortgage + Insurance render as tabs inside the Real Estate page, so the RE
+              // entry stays highlighted while either of them is open.
+              const active = nav===a.id || (a.id==='re' && (nav.startsWith('prop_') || nav==='mortgage' || nav==='insurance'))
               return (
-                <NavBtn key={a.id} id={a.id} label={a.label} icon={a.icon} active={nav===a.id||(nav.startsWith('prop_')&&a.id==='re')} collapsed={collapsed} color={a.color}
+                <NavBtn key={a.id} id={a.id} label={a.label} icon={a.icon} active={active} collapsed={collapsed} color={a.color}
                   onClick={()=>{ setNav(a.id); setTrail([{id:'dashboard',label:'Dashboard'},{id:a.id,label:a.label}]) }}/>
               )
             })}

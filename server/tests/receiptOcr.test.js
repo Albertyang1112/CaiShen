@@ -10,7 +10,8 @@ describe('receipt OCR parsing', () => {
     expect(parseOcrJson('not json at all')).toEqual({});
   });
 
-  const DUP = { time: null, receipt_number: null, order_number: null, invoice_number: null, card_last4: null, rotate_cw_to_upright: 0 };
+  const DUP = { time: null, receipt_number: null, order_number: null, invoice_number: null, card_last4: null, rotate_cw_to_upright: 0,
+                payee: null, check_number: null, check_amount: null, check_date: null };   // check fields (doc_type 'check')
 
   test('normalizeOcr coerces money strings, supports name/desc, keeps the gate + dedup fields', () => {
     expect(normalizeOcr({ is_receipt: true, doc_type: 'receipt', merchant: 'Walmart', total: '$14.99', date: '2026-06-15', card_last4: 'xxxx2210', items: [{ name: 'Milk', amount: '3.50' }] }))

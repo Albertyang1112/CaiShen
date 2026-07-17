@@ -245,6 +245,38 @@ module.exports = function makeBankingRouter({ readData, writeData }) {
     res.json({ rules: ruleRes.count, auto, capital, total: ruleRes.count + auto, transactions: txs });
   });
 
+  // Revert ONE transaction to its automatic category — same precedence as the bulk
+  // endpoint above (user rule first, then the built-in guesser), falling back to
+  // uncategorized when neither applies (e.g. transfers). Powers the Banking table's
+  // category revert, so undoing a manual pick restores the auto suggestion instead
+  // of leaving a hole. Always returns to Pending (approved:false).
+  router.post('/transactions/:id/auto-categorize', async (req, res) => {
+    const uid = req.user.id;
+    const txs = readData('transactions.json', uid) || [];
+    const idx = txs.findIndex(t => t.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'Not found' });
+
+    const { coaId, coaAuto, capital, ...bare } = txs[idx];
+    let next = { ...bare, approved: false };
+
+    const rules = readData('categorization_rules.json', uid) || [];
+    const ruled = applyCatRules([next], rules).transactions[0];
+    if (ruled.coaId) {
+      next = ruled;                                    // rule-set: coaId without coaAuto, like the bulk pass
+    } else {
+      const settings = readData('account_settings.json', uid) || {};
+      let accountsById = new Map();
+      try { accountsById = new Map((await store.listAccounts(uid)).map(a => [a.id, a])); } catch {}
+      const g = guessCategory(next, resolveCtx(next, settings, accountsById));
+      if (g) next = { ...next, coaId: g.coaId, coaAuto: true, ...(g.capital ? { capital: true } : {}) };
+    }
+
+    next.updatedAt = new Date().toISOString();
+    txs[idx] = next;
+    writeData('transactions.json', txs, uid);
+    res.json(next);
+  });
+
   // ── Per-account settings (business flag + property tag) ────────────────
   // Kept separate from accounts.json so a Plaid re-sync never wipes them.
   // Shape: { [accountId]: { business: bool, propertyId: string|null } }.

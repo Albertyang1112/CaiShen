@@ -3,7 +3,9 @@ import axios from 'axios'
 import TransactionsTable from './TransactionsTable'
 import ReconcileVerify from './ReconcileVerify'
 import ReceiptThumb from './ReceiptThumb'
-import { fd, fmtFull, TYPE_LABELS, TYPE_COLORS } from './bankingFormat'
+import ConfirmDialog from './ConfirmDialog'
+import ImportSpreadsheets from './ImportSpreadsheets'
+import { fmtFull, TYPE_LABELS, TYPE_COLORS } from './bankingFormat'
 
 const API = '/api'
 const IS_LOCALHOST = typeof window !== 'undefined' &&
@@ -518,9 +520,11 @@ const MATCH_STYLE = {
 
 // Full-size receipt viewer — fetched WITH auth (token → blob → img/iframe), same
 // pattern as StmtPreviewModal. zIndex sits above the transaction detail modal.
-function ReceiptViewModal({ receipt, onClose }) {
+// onDelete (optional) adds a Delete button — caller owns the API call + refresh.
+function ReceiptViewModal({ receipt, onClose, onDelete }) {
   const [url, setUrl] = useState(null)
   const [err, setErr] = useState('')
+  const [confirmDel, setConfirmDel] = useState(false)
   useEffect(() => {
     let objUrl, alive = true
     axios.get(`${API}/receipts/file/${receipt.id}`, { responseType: 'blob' })
@@ -539,6 +543,12 @@ function ReceiptViewModal({ receipt, onClose }) {
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'10px 14px',borderBottom:'0.5px solid var(--border)'}}>
           <span style={{fontSize:13,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{receipt.original_name || 'Receipt'}</span>
           <div style={{display:'flex',gap:14,alignItems:'center',flexShrink:0}}>
+            {onDelete && (
+              <button onClick={() => setConfirmDel(true)}
+                style={{fontSize:12,color:'var(--coral)',background:'none',border:'none',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:4,padding:0}}>
+                <i className="ti ti-trash" aria-hidden="true"/>Delete
+              </button>
+            )}
             {url && <a href={url} download={receipt.original_name || 'receipt'} style={{fontSize:12,color:'var(--blue)',textDecoration:'none',display:'inline-flex',alignItems:'center',gap:4}}><i className="ti ti-download" aria-hidden="true"/>Download</a>}
             <button onClick={onClose} style={{background:'none',border:'none',color:'var(--text-muted)',fontSize:16,cursor:'pointer'}} aria-label="Close">✕</button>
           </div>
@@ -550,6 +560,10 @@ function ReceiptViewModal({ receipt, onClose }) {
            :         <iframe src={url} title={receipt.original_name || 'Receipt'} style={{width:'100%',height:'100%',border:'none'}}/>}
         </div>
       </div>
+      {confirmDel && (
+        <ConfirmDialog message="Delete this receipt permanently? This cannot be undone." confirmLabel="Delete" danger
+          onConfirm={()=>{ setConfirmDel(false); onDelete(receipt) }} onCancel={()=>setConfirmDel(false)}/>
+      )}
     </div>
   )
 }
@@ -562,6 +576,7 @@ function ReceiptPanel({ txId, onChanged }) {
   const [fileUrls,   setFileUrls]   = useState({})     // receiptId → blob object URL (thumbnails)
   const [viewing,    setViewing]    = useState(null)   // receipt open in the full-size viewer
   const [dragOver,   setDragOver]   = useState(false)
+  const [confirmDel, setConfirmDel] = useState(null)   // receipt id pending removal
   const urlsRef = useRef({})                           // owns the object URLs for cleanup
 
   const load = useCallback(() => {
@@ -731,7 +746,7 @@ function ReceiptPanel({ txId, onChanged }) {
                     style={{fontSize:11,color:'var(--blue)',background:'none',border:'none',cursor:'pointer',padding:0}}>
                     <i className="ti ti-eye" style={{marginRight:3}} aria-hidden="true"/>View
                   </button>
-                  <button onClick={() => del(r.id)}
+                  <button onClick={() => setConfirmDel(r.id)}
                     style={{fontSize:11,color:'var(--coral)',background:'none',border:'none',cursor:'pointer',padding:0}}>
                     <i className="ti ti-trash" style={{marginRight:3}} aria-hidden="true"/>Remove
                   </button>
@@ -742,7 +757,13 @@ function ReceiptPanel({ txId, onChanged }) {
         )
       })}
 
-      {viewing && <ReceiptViewModal receipt={viewing} onClose={() => setViewing(null)}/>}
+      {viewing && <ReceiptViewModal receipt={viewing} onClose={() => setViewing(null)}
+        onDelete={(r) => { setViewing(null); del(r.id) }}/>}
+
+      {confirmDel && (
+        <ConfirmDialog message="Delete this receipt permanently? This cannot be undone." confirmLabel="Delete" danger
+          onConfirm={()=>{ const id = confirmDel; setConfirmDel(null); del(id) }} onCancel={()=>setConfirmDel(null)}/>
+      )}
     </div>
   )
 }
@@ -1296,6 +1317,7 @@ export default function Banking({ accounts, transactions, onUpdate }) {
   const [idxRunning, setIdxRunning]       = useState(false)       // index-statements request in flight
   const [idxResult, setIdxResult]         = useState(null)        // last index-statements summary
   const [idxErr, setIdxErr]               = useState('')          // index-statements error
+  const [confirmState, setConfirmState]   = useState(null)        // { message, label, danger, action } for the styled confirm dialog
 
   // Refetched after every attach/detach so the inline row thumbnails stay current.
   const reloadReceiptsByTxn = useCallback(() => {
@@ -1334,6 +1356,32 @@ export default function Banking({ accounts, transactions, onUpdate }) {
 
   // Refetch the full transaction list after server-side rule application.
   const reload = () => axios.get(`${API}/transactions`).then(r => onUpdate(r.data)).catch(() => {})
+  // One-click approve / unapprove from the table's Status chip — optimistic, rolled back on failure.
+  const setApproved = async (tx, approved) => {
+    onUpdate(prev => prev.map(t => t.id === tx.id ? { ...t, approved } : t))
+    try { await axios.patch(`${API}/transactions/${tx.id}`, { approved }) }
+    catch (e) {
+      console.error('approve toggle failed:', e.message)
+      onUpdate(prev => prev.map(t => t.id === tx.id ? { ...t, approved: !approved } : t))
+    }
+  }
+  // Revert a manually set category from the table row — the server re-derives the
+  // automatic category (user rules → built-in guesser; uncategorized only when neither
+  // applies) and returns the updated transaction. Returns to Pending either way.
+  const resetCategory = async (tx) => {
+    try {
+      const { data } = await axios.post(`${API}/transactions/${tx.id}/auto-categorize`)
+      onUpdate(prev => prev.map(t => t.id === tx.id ? data : t))
+    } catch (e) { console.error('category revert failed:', e.message) }
+  }
+  // One-click receipt removal from the table row (styled confirm → delete → refresh thumbnails).
+  const deleteReceipt = (r) => setConfirmState({
+    message: 'Delete this receipt permanently? This cannot be undone.', label: 'Delete', danger: true,
+    action: async () => {
+      try { await axios.delete(`${API}/receipts/${r.id}`) } catch (e) { console.error('receipt delete failed:', e.message) }
+      reloadReceiptsByTxn()
+    },
+  })
   const reloadCoa = () => axios.get(`${API}/accounting/coa`).then(r => setCoa(r.data || [])).catch(() => {})
   // After a manual match / alias change in the detail popup, refresh the inline
   // reconcile badges (✓ / ◈ / ⚠) on the transaction rows.
@@ -1472,39 +1520,43 @@ export default function Banking({ accounts, transactions, onUpdate }) {
         <div className="card" style={{textAlign:'center',padding:'3rem'}}>
           <i className="ti ti-building-bank" style={{fontSize:40,color:'var(--text-muted)'}} aria-hidden="true"/>
           <p style={{fontSize:15,fontWeight:500,margin:'14px 0 6px'}}>No banking accounts found</p>
-          <p style={{fontSize:13,color:'var(--text-secondary)',maxWidth:360,margin:'0 auto'}}>
-            Connect a bank via Plaid in Connections, or import a CSV in Data Vault. Depository accounts (checking, savings, money market, CDs) will appear here.
+          <p style={{fontSize:13,color:'var(--text-secondary)',maxWidth:360,margin:'0 auto 16px'}}>
+            Connect a bank via Plaid in Connections, import a CSV in Data Vault, or drop QuickBooks/Excel exports here — accounts and transactions are created automatically.
           </p>
+          <ImportSpreadsheets onDone={reload}/>
         </div>
       ) : (
         <div>
           {/* ── Metric row ─────────────────────────────────────────── */}
           <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:20}}>
-            <MetricCard label="Balance" value={fd(totalAvailable)}
-              sub={`Across ${bankAccounts.length} account${bankAccounts.length!==1?'s':''}`}
+            <MetricCard label="Available Balance" value={fmtFull(totalAvailable)}
+              sub={`Spendable now · ${bankAccounts.length} account${bankAccounts.length!==1?'s':''}`}
               icon="ti-cash" iconColor="var(--green)"/>
-            <MetricCard label="Posted Balance" value={fd(totalBalance)} sub="Officially settled"
+            <MetricCard label="Posted Balance" value={fmtFull(totalBalance)} sub="Officially settled"
               icon="ti-credit-card" iconColor="var(--teal)"/>
-            <MetricCard label="This Month Net" value={(monthNet>=0?'+':'')+fd(monthNet)}
+            <MetricCard label="This Month Net" value={(monthNet>=0?'+':'')+fmtFull(monthNet)}
               subColor={monthNet>=0?'var(--teal)':'var(--coral)'}
-              sub={`+${fd(monthIncome)} in / -${fd(Math.abs(monthExpenses))} out`}
+              sub={`+${fmtFull(monthIncome)} in / -${fmtFull(Math.abs(monthExpenses))} out`}
               icon="ti-arrows-exchange" iconColor={monthNet>=0?'var(--teal)':'var(--coral)'}/>
-            <MetricCard label="vs Last Month" value={(netDelta>=0?'+':'')+fd(netDelta)}
+            <MetricCard label="vs Last Month" value={(netDelta>=0?'+':'')+fmtFull(netDelta)}
               subColor={netDelta>=0?'var(--teal)':'var(--coral)'}
-              sub={prevNet!==0?`Last month: ${fd(prevNet)}`:'No prior month data'}
+              sub={prevNet!==0?`Last month: ${fmtFull(prevNet)}`:'No prior month data'}
               icon="ti-trending-up" iconColor={netDelta>=0?'var(--teal)':'var(--coral)'}/>
           </div>
 
           {/* ── Accounts (click to filter) ─────────────────────────── */}
           <div style={{marginBottom:22}}>
-            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10,gap:10}}>
               <p style={{fontSize:11,fontWeight:500,color:'var(--text-secondary)',margin:0,textTransform:'uppercase',letterSpacing:'0.5px'}}>Accounts</p>
-              {selectedAcct && (
-                <button onClick={()=>setSelectedAcct(null)}
-                  style={{fontSize:11,background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',display:'flex',alignItems:'center',gap:4,padding:0}}>
-                  <i className="ti ti-x" aria-hidden="true"/> Show all accounts
-                </button>
-              )}
+              <div style={{display:'flex',alignItems:'center',gap:10}}>
+                {selectedAcct && (
+                  <button onClick={()=>setSelectedAcct(null)}
+                    style={{fontSize:11,background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',display:'flex',alignItems:'center',gap:4,padding:0}}>
+                    <i className="ti ti-x" aria-hidden="true"/> Show all accounts
+                  </button>
+                )}
+                <ImportSpreadsheets onDone={reload} compact/>
+              </div>
             </div>
             <AccountStrip bankAccounts={bankAccounts} selectedAcct={selectedAcct} setSelectedAcct={setSelectedAcct} settings={acctSettings} properties={properties} onSaveSetting={saveAcctSetting}/>
           </div>
@@ -1563,9 +1615,9 @@ export default function Banking({ accounts, transactions, onUpdate }) {
                 {filteredTxs.length > 0 && (
                   <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
                     {[
-                      ['Deposits',    fd(filtIncome),   'var(--teal)'],
-                      ['Withdrawals', fd(filtExpenses), 'var(--coral)'],
-                      ['Net',         (filtNet>=0?'+':'')+fd(filtNet), filtNet>=0?'var(--teal)':'var(--coral)'],
+                      ['Deposits',    fmtFull(filtIncome),   'var(--teal)'],
+                      ['Withdrawals', fmtFull(filtExpenses), 'var(--coral)'],
+                      ['Net',         (filtNet>=0?'+':'')+fmtFull(filtNet), filtNet>=0?'var(--teal)':'var(--coral)'],
                       ['Count',       String(filteredTxs.length), 'var(--text-primary)'],
                     ].map(([label,val,color]) => (
                       <div key={label} style={{padding:'6px 14px',background:'var(--bg-secondary)',borderRadius:'var(--radius-sm)',border:'0.5px solid var(--border)'}}>
@@ -1578,7 +1630,8 @@ export default function Banking({ accounts, transactions, onUpdate }) {
                 <TransactionsTable txs={filteredTxs} bankAccounts={bankAccounts} showAccount={!selectedAcct}
                   sortDir={sortDir} onToggleSort={()=>setSortDir(d=>d==='desc'?'asc':'desc')}
                   onRowClick={setDetailTx} coaById={coaById} reconcileFlags={reconcileFlags} knownVendors={knownVendors}
-                  receiptsByTxn={receiptsByTxn} onViewReceipt={setViewReceipt} onAttachReceipt={setAttachTx} reload={reload}/>
+                  receiptsByTxn={receiptsByTxn} onViewReceipt={setViewReceipt} onAttachReceipt={setAttachTx}
+                  onDeleteReceipt={deleteReceipt} onSetApproved={setApproved} onResetCategory={resetCategory} reload={reload}/>
               </div>
             </div>
           )}
@@ -1704,11 +1757,21 @@ export default function Banking({ accounts, transactions, onUpdate }) {
         />
       )}
 
-      {viewReceipt && <ReceiptViewModal receipt={viewReceipt} onClose={()=>setViewReceipt(null)}/>}
+      {viewReceipt && <ReceiptViewModal receipt={viewReceipt} onClose={()=>setViewReceipt(null)}
+        onDelete={async (r)=>{
+          setViewReceipt(null)
+          try { await axios.delete(`${API}/receipts/${r.id}`) } catch (e) { console.error('receipt delete failed:', e.message) }
+          reloadReceiptsByTxn()
+        }}/>}
 
       {attachTx && (
         <AttachReceiptModal tx={attachTx} onClose={()=>setAttachTx(null)}
           onAttached={()=>{ reloadReceiptsByTxn(); reload() }}/>
+      )}
+
+      {confirmState && (
+        <ConfirmDialog message={confirmState.message} confirmLabel={confirmState.label} danger={confirmState.danger}
+          onConfirm={()=>{ const a = confirmState.action; setConfirmState(null); a() }} onCancel={()=>setConfirmState(null)}/>
       )}
     </div>
   )

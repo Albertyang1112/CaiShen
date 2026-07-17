@@ -8,13 +8,22 @@
  * makeIO(uid).read/write(file). Mounted at /api (after the auth guard) by index.js.
  */
 const express = require('express');
+const { query } = require('./db');
+const { deriveProperties } = require('./property-derive');
 
 module.exports = function makeUserRoutes(makeIO) {
   const router = express.Router();
   const io = (req) => makeIO(req.user.id);
 
   // ── Properties ──────────────────────────────────────────────────────────────
-  router.get('/properties', (req, res) => res.json(io(req).read('properties.json')));
+  // The stored record holds only user-known facts (name, address, color); mortgage
+  // balance / rate / payment / monthly expenses are derived live from the linked
+  // mortgage, insurance, and tax rows (core/property-derive.js). DB down → raw records.
+  router.get('/properties', async (req, res) => {
+    const props = io(req).read('properties.json') || [];
+    try { res.json(await deriveProperties(query, req.user.id, props)); }
+    catch { res.json(props); }
+  });
 
   router.post('/properties', (req, res) => {
     const x = io(req);
