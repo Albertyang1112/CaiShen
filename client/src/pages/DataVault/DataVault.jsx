@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import axios from 'axios'
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import { sniffImageMime } from '../../components/PdfPreview'
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 const API = '/api/vault'
@@ -109,9 +110,10 @@ function PDFPreview({ url, onTransactions }) {
   const [scale, setScale]     = useState(1.4)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
+  const [imgUrl, setImgUrl]   = useState(null)   // set when the ".pdf" is really a photo of the document
 
   useEffect(() => {
-    let cancelled = false
+    let cancelled = false, objUrl = null
     const token = localStorage.getItem('caishen_token') || ''
 
     const load = async () => {
@@ -120,6 +122,16 @@ function PDFPreview({ url, onTransactions }) {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.arrayBuffer()
         if (cancelled) return
+
+        // Photographed bills sometimes arrive named ".pdf" — pdfjs would throw
+        // "Invalid PDF structure", so sniff the bytes and show the image instead.
+        const mime = sniffImageMime(data)
+        if (mime) {
+          objUrl = URL.createObjectURL(new Blob([data], { type: mime }))
+          setImgUrl(objUrl)
+          setLoading(false)
+          return
+        }
 
         const loaded = await pdfjsLib.getDocument({ data }).promise
         if (cancelled) return
@@ -139,7 +151,7 @@ function PDFPreview({ url, onTransactions }) {
       }
     }
     load()
-    return () => { cancelled = true }
+    return () => { cancelled = true; if (objUrl) URL.revokeObjectURL(objUrl) }
   }, [url])
 
   if (loading) return (
@@ -153,6 +165,13 @@ function PDFPreview({ url, onTransactions }) {
     <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem' }}>
       <i className="ti ti-alert-circle" style={{ fontSize:36, color:'var(--amber)', marginBottom:12 }} aria-hidden="true"/>
       <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:16 }}>Could not load PDF: {error}</p>
+    </div>
+  )
+
+  // ".pdf" that's actually an image (photographed bill) — show it directly.
+  if (imgUrl) return (
+    <div style={{ flex:1, overflowY:'auto', background:'#525659', padding:'20px 16px', display:'flex', justifyContent:'center' }}>
+      <img src={imgUrl} alt="Document preview" style={{ maxWidth:'100%', height:'auto', alignSelf:'flex-start', boxShadow:'0 2px 12px rgba(0,0,0,0.4)', borderRadius:2 }}/>
     </div>
   )
 
@@ -1126,6 +1145,34 @@ export default function DataVault({ onImportTransactions, onTransactionsChanged,
   const folderRef  = useRef()
   const fileRef    = useRef()
   const dividerDrag = useRef(null)
+
+  // ── Dev Assistant hook (localhost-only) ──────────────────────────────
+  // Exposes this page's structured client state to the floating Dev Assistant
+  // so "what can you see on this page right now?" returns real data (selected
+  // folder, file/folder counts, in-flight upload, last upload result) instead
+  // of just scraped DOM text. No-op in prod where the widget never mounts.
+  useEffect(() => {
+    window.__caishenDev = {
+      snapshot: () => {
+        const selFolder = meta.folders?.find(f => f.id === selectedFolderId) || null
+        return {
+          page: 'DataVault',
+          counts: { folders: meta.folders?.length || 0, files: meta.files?.length || 0 },
+          selectedFolder: selFolder ? { id: selFolder.id, name: selFolder.name, path: selFolder.path } : null,
+          search, filterType,
+          uploading,
+          organizing,
+          pendingUpload: pendingUpload ? { fileCount: pendingUpload.files?.length ?? pendingUpload.fileCount, folderName: pendingUpload.folderName } : null,
+          mergePrompt: mergeInfo ? { folderName: mergeInfo.folderName } : null,
+          lastUploadSuccess: uploadSuccess || null,
+          lastUploadError: uploadError || null,
+          // First 40 files so the assistant can describe what's actually listed.
+          files: (meta.files || []).slice(0, 40).map(f => ({ name: f.name, folderId: f.folderId, fudge: f.tags?.fudge || false })),
+        }
+      },
+    }
+    return () => { if (window.__caishenDev) delete window.__caishenDev }
+  }, [meta, selectedFolderId, search, filterType, uploading, organizing, pendingUpload, mergeInfo, uploadSuccess, uploadError])
 
   const onDividerMouseDown = (e) => {
     e.preventDefault()

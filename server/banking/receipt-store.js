@@ -18,7 +18,7 @@
 const crypto = require('crypto');
 const { findOrCreatePeriod } = require('./periods');
 
-async function recordReceiptRemodel(query, { userId, receiptId, txnId, txn, ocrData, matchScore = null }) {
+async function recordReceiptRemodel(query, { userId, receiptId, txnId, txn, ocrData, matchScore = null, sourceRole = 'receipt' }) {
   // FK-safe account: only when the attached transaction's account is a real row.
   let accountId = null;
   if (txn && txn.account) {
@@ -71,10 +71,11 @@ async function recordReceiptRemodel(query, { userId, receiptId, txnId, txn, ocrD
      date, merchant, merchant, amount, sourceHash, JSON.stringify(ocrData || {})]
   );
 
-  // 4. Evidence link to the transaction it backs (role 'receipt'), via the matching engine.
+  // 4. Evidence link to the transaction it backs (role 'receipt', or 'check' for check
+  //    images riding this pipeline), via the matching engine.
   if (txnId) {
     await require('./matching').linkSource(query, userId, {
-      transactionId: txnId, sourceTransactionId: stId, sourceRole: 'receipt', confidence: matchScore,
+      transactionId: txnId, sourceTransactionId: stId, sourceRole, confidence: matchScore,
     });
   }
   return stId;

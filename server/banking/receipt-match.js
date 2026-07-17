@@ -85,11 +85,13 @@ async function groqPickMatch(merchant, candidates) {
   } catch { return null; }
 }
 
-// Match unmatched, non-cash, active receipts against current transactions. Returns # matched.
+// Match unmatched, non-cash, active receipts (and checks) against current transactions.
+// Checks match check-number-first with a wide date window (they clear late); receipts match
+// by amount + date (±3d) with Groq confirming the merchant. Returns # matched.
 async function matchPendingReceipts(query, io, userId, deps = {}) {
   const groqPick = deps.groqPick || groqPickMatch;
   const pend = await query(
-    `SELECT id, ocr_data, merchant_name, receipt_date, total_amount FROM receipts
+    `SELECT id, ocr_data, merchant_name, receipt_date, total_amount, doc_kind, check_number, payee FROM receipts
       WHERE user_id=$1 AND txn_id IS NULL AND (payment_method IS NULL OR payment_method <> 'cash')
         AND (review_status IS NULL OR review_status IN ('auto_accepted','user_confirmed'))`, [userId]);
   if (!pend.rows.length) return 0;
@@ -97,18 +99,26 @@ async function matchPendingReceipts(query, io, userId, deps = {}) {
   let matched = 0, changed = false;
   for (const rec of pend.rows) {
     const ocr = rec.ocr_data || {};
+    const isCheck = rec.doc_kind === 'check';
     const total = rec.total_amount != null ? Number(rec.total_amount) : (ocr.total != null ? Number(ocr.total) : null);
     const date = ymd(rec.receipt_date) || ocr.date;
     if (total == null) continue;
-    const cands = txns.filter(t => t && !t.receiptId && !t.excluded && t.source !== 'cash'
-      && Math.abs(Math.abs(Number(t.amount) || 0) - total) <= 0.02 && (!date || daysBetween(t.date, date) <= 3));
-    if (!cands.length) continue;
-    const pick = cands.length === 1 ? cands[0]
-      : (await groqPick(ocr.merchant || rec.merchant_name, cands)) || cands.slice().sort((a, b) => daysBetween(a.date, date) - daysBetween(b.date, date))[0];
+    let pick;
+    if (isCheck) {
+      pick = require('./doc-ingest').findCheckMatch(
+        { check_amount: total, check_date: date, check_number: rec.check_number || ocr.check_number, payee: rec.payee || ocr.payee },
+        txns);
+    } else {
+      const cands = txns.filter(t => t && !t.receiptId && !t.excluded && t.source !== 'cash'
+        && Math.abs(Math.abs(Number(t.amount) || 0) - total) <= 0.02 && (!date || daysBetween(t.date, date) <= 3));
+      if (!cands.length) continue;
+      pick = cands.length === 1 ? cands[0]
+        : (await groqPick(ocr.merchant || rec.merchant_name, cands)) || cands.slice().sort((a, b) => daysBetween(a.date, date) - daysBetween(b.date, date))[0];
+    }
     if (!pick) continue;
     await query(`UPDATE receipts SET txn_id=$1, match_status='matched' WHERE id=$2 AND user_id=$3`, [pick.id, rec.id, userId]);
     await require('./matching').linkSource(query, userId, {
-      transactionId: pick.id, sourceTransactionId: 'rcptxn_' + rec.id, sourceRole: 'receipt', confidence: 0.9,
+      transactionId: pick.id, sourceTransactionId: 'rcptxn_' + rec.id, sourceRole: isCheck ? 'check' : 'receipt', confidence: 0.9,
     });
     txns = txns.map(t => t.id === pick.id ? { ...t, receiptId: rec.id } : t);
     changed = true; matched++;

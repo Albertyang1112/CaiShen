@@ -93,14 +93,30 @@ async function mirrorTransactions(userId, txs) {
   await withTransaction(async (client) => {
     for (const t of list) {
       await client.query(
-        `INSERT INTO transactions (id,user_id,account,txn_date,month,description,amount,category,plaid_category,institution,pending,source,data,updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+        `INSERT INTO transactions (id,user_id,account,txn_date,month,description,amount,category,plaid_category,institution,pending,source,data,
+           merchant_name,merchant_entity_id,payment_channel,category_detailed,category_confidence,authorized_date,currency,logo_url,website,
+           transaction_type,transaction_code,check_number,account_owner,location_city,location_region,location_address,location_postal_code,
+           location_country,location_store_number,counterparty_name,counterparty_type,updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+           $14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW())
          ON CONFLICT (id) DO UPDATE SET account=EXCLUDED.account, txn_date=EXCLUDED.txn_date, month=EXCLUDED.month,
            description=EXCLUDED.description, amount=EXCLUDED.amount, category=EXCLUDED.category,
            plaid_category=EXCLUDED.plaid_category, institution=EXCLUDED.institution, pending=EXCLUDED.pending,
-           source=EXCLUDED.source, data=EXCLUDED.data, updated_at=NOW()`,
+           source=EXCLUDED.source, data=EXCLUDED.data,
+           merchant_name=EXCLUDED.merchant_name, merchant_entity_id=EXCLUDED.merchant_entity_id, payment_channel=EXCLUDED.payment_channel,
+           category_detailed=EXCLUDED.category_detailed, category_confidence=EXCLUDED.category_confidence, authorized_date=EXCLUDED.authorized_date,
+           currency=EXCLUDED.currency, logo_url=EXCLUDED.logo_url, website=EXCLUDED.website, transaction_type=EXCLUDED.transaction_type,
+           transaction_code=EXCLUDED.transaction_code, check_number=EXCLUDED.check_number, account_owner=EXCLUDED.account_owner,
+           location_city=EXCLUDED.location_city, location_region=EXCLUDED.location_region, location_address=EXCLUDED.location_address,
+           location_postal_code=EXCLUDED.location_postal_code, location_country=EXCLUDED.location_country,
+           location_store_number=EXCLUDED.location_store_number, counterparty_name=EXCLUDED.counterparty_name,
+           counterparty_type=EXCLUDED.counterparty_type, updated_at=NOW()`,
         [t.id, userId, t.account || null, t.date || null, t.month || null, t.desc || null, t.amount ?? null,
-         t.category || null, t.plaidCategory || null, t.institution || null, !!t.pending, t.source || null, JSON.stringify(t)]
+         t.category || null, t.plaidCategory || null, t.institution || null, !!t.pending, t.source || null, JSON.stringify(t),
+         t.merchantName || null, t.merchantEntityId || null, t.paymentChannel || null, t.plaidDetailed || null, t.pfcConfidence || null,
+         t.authorizedDate || null, t.currency || null, t.logoUrl || null, t.website || null, t.transactionType || null,
+         t.transactionCode || null, t.checkNumber || null, t.accountOwner || null, t.locCity || null, t.locRegion || null,
+         t.locAddress || null, t.locPostal || null, t.locCountry || null, t.locStore || null, t.cpName || null, t.cpType || null]
       );
     }
     // Remove only transactions no longer in the canonical set (settled-pending prune,

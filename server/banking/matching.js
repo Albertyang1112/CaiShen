@@ -25,10 +25,12 @@ const ROLES = new Set([
   'plaid',          // the displayed txn's own Plaid source row
   'bank_statement', // a parsed bank-statement line that corroborates it
   'receipt',        // an uploaded/where-sent receipt
+  'check',          // a check image attached as proof of a payment
   'cash',           // a cash transaction's backing evidence
   'manual_csv',     // a user-imported CSV row (import-history)
   'manual_entry',   // a hand-entered transaction
   'legacy_csv',     // pre-remodel CSV provenance
+  'quickbooks',     // a QuickBooks spreadsheet-import row (imports/importer.js)
 ]);
 
 function assertRole(role) {

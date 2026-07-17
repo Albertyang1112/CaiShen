@@ -86,7 +86,9 @@ async function ingestReceipt(query, io, userId, { buffer, mimeType, originalName
   try { ocrData = await ocrReceipt(buffer, mimeType); }
   catch (e) { ocrData = { is_receipt: null, merchant: null, total: null, date: null, items: [], error: e.message }; }
   const gate = shouldAccept(ocrData);
-  if (!gate.accept) return { rejected: true, reason: gate.reason, docType: gate.docType };
+  // Rejections carry the OCR read — the doc-ingest dispatcher routes checks / insurance /
+  // tax documents to their own flows using the fields the gate model already extracted.
+  if (!gate.accept) return { rejected: true, reason: gate.reason, docType: gate.docType, ocr: ocrData };
 
   // 2. dedup hashes + check against existing active receipts.
   const file_sha256 = fileSha256(buffer);

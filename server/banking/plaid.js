@@ -38,7 +38,10 @@ const PLAID_CAT_MAP = {
 const PLAID_CSV   = 'plaid_transactions.csv';
 // Full bank columns carried onto each imported transaction (these flow into transactions.json):
 // month feeds grouping, pending drives the Banking "Pending/Posted" badge, source marks Plaid rows.
-const RAW_COLUMNS = ['id', 'date', 'month', 'desc', 'amount', 'category', 'plaidCategory', 'account', 'institution', 'pending', 'source', 'lastUpdated'];
+const RAW_COLUMNS = ['id', 'date', 'month', 'desc', 'amount', 'category', 'plaidCategory', 'plaidDetailed', 'pfcConfidence', 'paymentChannel',
+  'merchantName', 'merchantEntityId', 'authorizedDate', 'currency', 'logoUrl', 'website', 'transactionType', 'transactionCode', 'checkNumber', 'accountOwner',
+  'locCity', 'locRegion', 'locAddress', 'locPostal', 'locCountry', 'locStore', 'cpName', 'cpType',
+  'account', 'institution', 'pending', 'source', 'lastUpdated'];
 // Slim columns for the stored audit CSV — drops 'month' (= date's YYYY-MM), 'pending'
 // (transient), and 'source' (always 'plaid' here) as redundant/noise for a CSV view.
 const CSV_COLUMNS = ['id', 'date', 'desc', 'amount', 'category', 'plaidCategory', 'account', 'institution', 'lastUpdated'];
@@ -108,10 +111,18 @@ function stageAndImport({ existing, plaidTxs, readText, writeText, csvFile = PLA
 module.exports = function(makeIO, notifyClients = () => {}) {
   const router = express.Router();
 
-  const plaidConfigured = process.env.PLAID_CLIENT_ID &&
+  // Kill switch: PLAID_DISABLED=1 in .env/.env.local turns off ALL Plaid API calls
+  // (cron sync, manual sync, webhooks, link) without touching the keys. Every route
+  // and syncUser already self-gate on plaidClient being null.
+  const plaidDisabled = /^(1|true|yes)$/i.test(process.env.PLAID_DISABLED || '');
+
+  const plaidConfigured = !plaidDisabled && process.env.PLAID_CLIENT_ID &&
     process.env.PLAID_CLIENT_ID !== 'paste_your_client_id_here';
 
   let plaidClient = null;
+  if (plaidDisabled) {
+    console.log('Plaid DISABLED via PLAID_DISABLED — no API calls will be made (remove the flag to re-enable)');
+  }
   if (plaidConfigured) {
     plaidClient = new PlaidApi(new Configuration({
       basePath: PlaidEnvironments[process.env.PLAID_ENV || 'sandbox'],
@@ -124,14 +135,34 @@ module.exports = function(makeIO, notifyClients = () => {}) {
 
   // ── Core helpers ──────────────────────────────────────────────────────
   function mapTransaction(t, institution_name) {
-    const plaidPrimary = t.personal_finance_category?.primary || t.category?.[0] || '';
+    const pfc = t.personal_finance_category || {};
+    const loc = t.location || {};
+    const cp  = (t.counterparties && t.counterparties[0]) || {};   // primary counterparty
+    const plaidPrimary = pfc.primary || t.category?.[0] || '';
     const amount   = -t.amount;
     const category = amount > 0 ? 'Income' : (PLAID_CAT_MAP[plaidPrimary] || 'Other');
     const [y, m]   = t.date.split('-');
     return {
       id: t.transaction_id, date: t.date, month: `${y}-${m}`,
       desc: t.merchant_name || t.name, amount, category,
-      plaidCategory: plaidPrimary, account: t.account_id,
+      plaidCategory: plaidPrimary,
+      plaidDetailed: pfc.detailed || '',                            // e.g. FOOD_AND_DRINK_COFFEE
+      pfcConfidence: pfc.confidence_level || '',
+      paymentChannel: t.payment_channel || '',                      // online | in store | other
+      merchantName: t.merchant_name || '',
+      merchantEntityId: t.merchant_entity_id || '',
+      authorizedDate: t.authorized_date || '',
+      currency: t.iso_currency_code || '',
+      logoUrl: t.logo_url || '',
+      website: t.website || '',
+      transactionType: t.transaction_type || '',
+      transactionCode: t.transaction_code || '',
+      checkNumber: t.check_number || '',
+      accountOwner: t.account_owner || '',
+      locCity: loc.city || '', locRegion: loc.region || '', locAddress: loc.address || '',
+      locPostal: loc.postal_code || '', locCountry: loc.country || '', locStore: loc.store_number || '',
+      cpName: cp.name || '', cpType: cp.type || '',
+      account: t.account_id,
       institution: institution_name, pending: t.pending,
       pendingTransactionId: t.pending_transaction_id || null,
       source: 'plaid', lastUpdated: new Date().toISOString()
@@ -139,16 +170,18 @@ module.exports = function(makeIO, notifyClients = () => {}) {
   }
 
   async function fetchAllTransactions(access_token, startDate, endDate, institution_name) {
-    const all = []; let offset = 0; const COUNT = 500;
+    const all = []; const rawById = new Map(); let offset = 0; const COUNT = 500;
     while (true) {
       const resp  = await plaidClient.transactionsGet({ access_token, start_date: startDate, end_date: endDate, options: { count: COUNT, offset } });
       const batch = resp.data.transactions;
-      all.push(...batch.map(t => mapTransaction(t, institution_name)));
+      // Keep the slim mapped row for the app, AND stash the FULL Plaid object (keyed by id)
+      // so the DB mirror can persist every field losslessly without bloating transactions.json.
+      for (const t of batch) { all.push(mapTransaction(t, institution_name)); rawById.set(t.transaction_id, t); }
       if (all.length >= resp.data.total_transactions || batch.length < COUNT) break;
       offset += COUNT;
       console.log(`[${institution_name}] Fetched ${all.length}/${resp.data.total_transactions} transactions...`);
     }
-    return all;
+    return { txns: all, rawById };
   }
 
   async function syncItem(connection, io, userId, startDate = null) {
@@ -173,10 +206,13 @@ module.exports = function(makeIO, notifyClients = () => {}) {
 
     let txCount = 0;
     let supersededPendingIds = [];
+    let rawById = new Map();
     try {
       const endDate  = new Date().toISOString().split('T')[0];
       const start    = startDate || new Date(Date.now() - 730 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-      const plaidTxs = await fetchAllTransactions(access_token, start, endDate, institution_name);
+      const fetched  = await fetchAllTransactions(access_token, start, endDate, institution_name);
+      const plaidTxs = fetched.txns;
+      rawById = fetched.rawById;
       const existing = read('transactions.json') || [];
       // Stage the pull to a CSV file, then import that file back into the table.
       // stageAndImport preserves user-owned fields (categorization, notes, splits)
@@ -193,7 +229,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
         console.log(`[${institution_name}] Transactions initializing — will be ready shortly`);
       } else { throw e; }
     }
-    return { accounts: plaidAccounts.length, transactions: txCount, supersededPendingIds };
+    return { accounts: plaidAccounts.length, transactions: txCount, supersededPendingIds, rawById };
   }
 
   // ── Sync all items for a given user (used by cron and sync-history) ───
@@ -207,13 +243,23 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     const beforeIds = new Set((io.read('transactions.json') || []).map(t => t.id));
 
     const results = [];
+    const rawById = new Map();   // full Plaid objects from this sync, accumulated across items, for the DB mirror
     for (const conn of items) {
       try {
-        results.push({ institution: conn.institution_name, ...await syncItem(conn, io, userId, startDate) });
+        const r = await syncItem(conn, io, userId, startDate);
+        if (r.rawById) { for (const [k, v] of r.rawById) rawById.set(k, v); delete r.rawById; }
+        results.push({ institution: conn.institution_name, ...r });
       } catch (e) {
         console.error(`Sync error [${conn.institution_name}]:`, e.response?.data || e.message);
         results.push({ institution: conn.institution_name, error: e.message });
       }
+      // Mortgage/loan detail (Plaid Liabilities) — best-effort; items without the consent
+      // just log a pointer at the "Loan data" button in Connections and move on.
+      try {
+        const l = await require('./liabilities').syncItemLiabilities(plaidClient, userId, conn, io);
+        if (l.mortgages) console.log(`[Liabilities] ${conn.institution_name} (user ${userId}): ${l.mortgages} mortgage(s), ${l.payments} new payment row(s)`);
+        else if (l.needsConsent) console.log(`[Liabilities] ${conn.institution_name}: needs consent — use "Loan data" on the Connections screen`);
+      } catch (e) { console.error('[Liabilities] error:', e.response?.data?.error_message || e.message); }
     }
     for (const it of items) { try { await plaidItems.touchSync(it.item_id); } catch {} }
     // Auto-categorize freshly-synced transactions: saved rules first, then the built-in
@@ -271,7 +317,7 @@ module.exports = function(makeIO, notifyClients = () => {}) {
         console.log(`[Auto-vendor] user ${userId}: ${fromMem.count} from memory, ${viaGroq} via Groq`);
       }
     } catch (e) { console.error('[Auto-vendor] error:', e.message); }
-    try { const m = await require('./neon-mirror').mirrorPlaid(userId, io.read('transactions.json') || []); console.log(`[Neon] user ${userId}: mirrored ${m} plaid rows`); } catch (e) { console.error('[Neon mirror] error:', e.message); }
+    try { const m = await require('./neon-mirror').mirrorPlaid(userId, io.read('transactions.json') || [], rawById); console.log(`[Neon] user ${userId}: mirrored ${m} plaid rows`); } catch (e) { console.error('[Neon mirror] error:', e.message); }
     // Prune audit rows for pending charges that settled this sync — stageAndImport already
     // dropped them from transactions.json; clear the source_transactions twins too.
     try {
@@ -297,6 +343,19 @@ module.exports = function(makeIO, notifyClients = () => {}) {
       const _rm = await require('./receipt-match').matchPendingReceipts(query, io, userId);
       if (_rm) console.log(`[Receipts] user ${userId}: matched ${_rm} pending receipt(s) to transactions`);
     } catch (e) { console.error('[Receipts match] error:', e.message); }
+    // Paid-detection: match unpaid insurance premiums + tax installments against the fresh
+    // feed. Idempotent (conditional updates) — safe under the multi-instance cron. A match
+    // flips the bill paid (green flag), advances the policy cycle, and silences reminders.
+    try {
+      const { query } = require('../core/db');
+      const _ip = await require('./insurance').matchPendingPremiums(query, io, userId);
+      if (_ip) console.log(`[Insurance] user ${userId}: matched ${_ip} premium payment(s)`);
+    } catch (e) { console.error('[Insurance match] error:', e.message); }
+    try {
+      const { query } = require('../core/db');
+      const _tp = await require('../tax/schedule').matchPendingTaxPayments(query, io, userId);
+      if (_tp) console.log(`[Tax] user ${userId}: matched ${_tp} tax payment(s)`);
+    } catch (e) { console.error('[Tax match] error:', e.message); }
     // Auto-reconcile: re-match Plaid rows against any previously uploaded statement data
     try {
       const { query } = require('../core/db');
@@ -325,12 +384,25 @@ module.exports = function(makeIO, notifyClients = () => {}) {
     try {
       const tokenRequest = {
         user: { client_user_id: req.user.id },
-        client_name: 'CaiShen', products: ['transactions'],
+        client_name: 'CaiShen',
         country_codes: ['US'], language: 'en',
       };
+      const { item_id } = req.body || {};
+      if (item_id) {
+        // UPDATE mode: re-open Link on an existing connection to grant an extra product
+        // (liabilities → mortgage rate/escrow/payoff detail). No products array here —
+        // update mode keeps the item's products and asks consent for the additions only.
+        const items = await plaidItems.listItems(req.user.id);
+        const conn  = items.find(c => c.item_id === item_id);
+        if (!conn) return res.status(404).json({ error: 'Connection not found' });
+        tokenRequest.access_token = conn.access_token;
+        tokenRequest.additional_consented_products = ['liabilities'];
+      } else {
+        tokenRequest.products = ['transactions'];
+      }
       if (process.env.PLAID_WEBHOOK_URL) tokenRequest.webhook = process.env.PLAID_WEBHOOK_URL;
       const response = await plaidClient.linkTokenCreate(tokenRequest);
-      res.json({ link_token: response.data.link_token });
+      res.json({ link_token: response.data.link_token, update_mode: !!item_id });
     } catch (e) {
       console.error('Plaid link token error:', e.response?.data || e.message);
       res.status(500).json({ error: e.response?.data?.error_message || e.message });

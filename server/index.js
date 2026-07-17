@@ -217,6 +217,13 @@ migrateAdminData();
     });
   });
 
+  // 3a. Dev Assistant capture (LOCALHOST-ONLY, no-op off localhost). Records a
+  // summary of every /api request+response into the dev-log ring buffer so the
+  // Dev Assistant can answer "what did the backend just see when I did X?".
+  // Mounted here — after auth (req.user populated), before the routes — so its
+  // res.on('finish') hook sees fully-parsed multipart uploads (req.files).
+  app.use('/api', require('./dev/dev-capture'));
+
 // ── Routes: Global data (no userId) ──────────────────────────────────
 app.get('/api/settings', (req, res) => res.json(readData('settings.json')));
 
@@ -285,15 +292,19 @@ app.use('/api/reconcile', require('./banking/reconcile-routes')(makeIO));
 
 // ── Routes: Mortgage domain (read-only; written during scraper import) ──
 app.use('/api/mortgage', require('./banking/mortgage-routes')(makeIO));
+
+// ── Routes: Insurance domain + tax payment schedule (read-only; written by the
+// vault/chatbot ingestion hooks) ──────────────────────────────────────────────
+app.use('/api/insurance', require('./banking/insurance-routes')(makeIO));
+app.use('/api/tax-schedule', require('./tax/schedule').router());
+
+// ── Routes: Real-estate helpers — new-address suggestions from mortgage/insurance docs ──
+app.use('/api/re', require('./banking/re-suggest')(makeIO));
 // DEV-ONLY reconciliation verification (localhost only). These two files are gitignored, so a
 // fresh clone/deploy may not have them — guard the require so the server still boots (mirrors
 // the bank-scraper guard). Delete the file to remove the route.
 if (fs.existsSync(_path.join(__dirname, 'banking', 'dev-verify.js'))) {
   app.use('/api/dev-verify', localhostOnly, require('./banking/dev-verify')(makeIO));
-}
-// DEV-ONLY CSV inspector — lists stored plaid/statement/confirmed CSVs (localhost only; gitignored).
-if (fs.existsSync(_path.join(__dirname, 'banking', 'dev-csv.js'))) {
-  app.use('/api/dev-csv', localhostOnly, require('./banking/dev-csv')());
 }
 
 // ── Routes: Receipts / OCR (Phase 4) ─────────────────────────────────
@@ -315,6 +326,12 @@ app.use('/api/quickbooks', qbApi);
 // ── Routes: AI Advisor ────────────────────────────────────────────────
 const { router: advisorRouter } = require('./advisor')(makeIO);
 app.use('/api/advisor', advisorRouter);
+
+// ── Routes: Dev Assistant (LOCALHOST-ONLY) ────────────────────────────
+// Debugging chatbot that can describe what the frontend page and the backend
+// just saw (reads the dev-log ring buffer populated by dev-capture above).
+// Gated by localhostOnly so it never activates on prod.
+app.use('/api/dev-chat', localhostOnly, require('./dev/dev-chat')());
 
 // ── Routes: Accounting ────────────────────────────────────────────────
 const { router: accountingRouter } = require('./accounting')(makeIO);
@@ -353,6 +370,9 @@ app.use('/api/tax-normalize', makeTaxNormalizeRouter(makeIO));
 // crypto txns + wallets + wallet-lookup. crypto-wallet is mounted BEFORE the crypto report
 // router below so /api/crypto/transactions resolves to the CRUD router. ──
 app.use('/api', require('./core/backup-routes')({ readData, writeData }));
+// Spreadsheet import (QuickBooks exports & clearly-labeled generic sheets): parsed fully
+// in memory — the files are never stored, only extracted data + a sha256 batch record.
+app.use('/api', require('./imports/routes')(makeIO, notifyClients));
 app.use('/api', require('./tax/estimate-routes')(makeIO));
 app.use('/api', require('./crypto/wallet-routes')(makeIO));
 
@@ -368,7 +388,8 @@ app.use('/api', require('./core/pdf-routes')());
 app.get('/api/status', (req, res) => {
   res.json({
     status: 'running', version: '1.0.0',
-    plaidConfigured:   !!(process.env.PLAID_CLIENT_ID && process.env.PLAID_CLIENT_ID !== 'paste_your_client_id_here'),
+    plaidConfigured:   !/^(1|true|yes)$/i.test(process.env.PLAID_DISABLED || '') && !!(process.env.PLAID_CLIENT_ID && process.env.PLAID_CLIENT_ID !== 'paste_your_client_id_here'),
+    plaidDisabled:     /^(1|true|yes)$/i.test(process.env.PLAID_DISABLED || ''),
     qbConfigured:      !!(process.env.QB_CLIENT_ID && process.env.QB_CLIENT_SECRET && process.env.QB_CLIENT_ID !== 'paste_your_qb_client_id_here' && process.env.QB_CLIENT_SECRET !== 'paste_your_qb_client_secret_here' && process.env.QB_CLIENT_ID.length > 10 && process.env.QB_CLIENT_SECRET.length > 10),
     advisorConfigured: !!(process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY !== 'your_anthropic_api_key_here'),
     dataDir: DATA_DIR, uptime: process.uptime()

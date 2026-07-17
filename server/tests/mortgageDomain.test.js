@@ -1,7 +1,7 @@
 'use strict';
 // Mortgage domain: the text parser (pure) + the recorder/matcher (mocked DB + io).
 
-const { parseMortgageStatement, normDate } = require('../banking/mortgage-parse');
+const { parseMortgageStatement, grabPropertyAddress, normDate } = require('../banking/mortgage-parse');
 const mortgage = require('../banking/mortgage');
 
 const SAMPLE = `
@@ -18,6 +18,63 @@ Principal $850.25
 Interest $1,300.75
 Escrow (Taxes and Insurance) $299.00
 `;
+
+// Rocket's 2026 layout (from real statements): value on the line BELOW the label in the
+// same visual column, and a genuine "Total amount due: $0.00" autopay artifact whose real
+// figure lives in the page-1 header.
+const ROCKET_COLUMNS = [
+  '                                             Mortgage Loan statement',
+  '                                             Loan number',
+  '                                             0731308201',
+  '                                             Property address',
+  '                                             8962 KOBE PL',
+  '         JIACHAO YANG                        SAN DIEGO, CA 92123',
+  '         8962 KOBE PL                        Statement date',
+  '         SAN DIEGO, CA 92123                 03/03/2026',
+  '',
+  '                                             Amount due',
+  '                                             $2,748.51',
+  '',
+  '                                             Due date',
+  '                                             04/01/2026',
+  '',
+  'Account information                          Explanation of amount due',
+  'Interest bearing principal balance:              $575,749.42',
+  'Interest rate                                           2.999%',
+  'Escrow balance:                                           $0.00',
+  '                                             Total amount due:                $0.00',
+  '  Principal:                                     $1,309.62',
+  '  Interest:                                      $1,438.89',
+].join('\n');
+
+// Mr. Cooper's layout: label rows with the value 1–2 lines below in the same column, other
+// columns' text interleaved between them.
+const MRCOOPER_COLUMNS = [
+  '                            RETURN SERVICE ONLY                      STATEMENT DATE               PAYMENT DUE DATE',
+  '                            PLEASE DO NOT SEND MAIL TO THIS ADDRESS',
+  '                            PO Box 818060                            05/10/2024                   06/01/2024',
+  '',
+  '                                                                     LOAN NUMBER                  AMOUNT DUE',
+  '',
+  '                                                                     0731308201                   $2,748.51',
+  '',
+  '                                             INTEREST                ACCOUNT OVERVIEW                       INTEREST RATE',
+  '                                             $1,508.87',
+  '                                                                     INTEREST BEARING                       2.999%',
+  '                                                                     PRINCIPAL BALANCE',
+  '                                  REGULAR',
+  '                            MONTHLY PAYMENT                          $603,749.20',
+  '',
+  '                            $2,748.51                                                             ESCROW BALANCE',
+  '',
+  '                                                                                                  $0.00',
+  '       PRINCIPAL',
+  '        $1,239.64',
+  // payment coupon — this inline label is what "amount due" actually resolves from
+  // (label priority: Total Amount Due beats the Regular Monthly Payment fallback, whose
+  // merged-column line carries the principal balance).
+  '             TOTAL AMOUNT DUE:        $2,748.51',
+].join('\n');
 
 describe('parseMortgageStatement', () => {
   test('extracts the core + breakdown fields from a typical statement', () => {
@@ -55,6 +112,37 @@ describe('parseMortgageStatement', () => {
     expect(normDate('Apr 1, 2026')).toBe('2026-04-01');
     expect(normDate('garbage')).toBeNull();
   });
+
+  test('Rocket column layout: value below label, $0.00 autopay artifact overridden by header', () => {
+    const p = parseMortgageStatement(ROCKET_COLUMNS);
+    expect(p.statementDate).toBe('2026-03-03');
+    expect(p.dueDate).toBe('2026-04-01');
+    expect(p.amountDue).toBe(2748.51);          // NOT the "Total amount due: $0.00" artifact
+    expect(p.principalBalance).toBe(575749.42);
+    expect(p.escrowBalance).toBe(0);
+    expect(p.interestRate).toBe(2.999);
+    expect(p.principalPaid).toBe(1309.62);
+    expect(p.interestPaid).toBe(1438.89);
+    expect(p.loanNumberMask).toBe('8201');
+  });
+
+  test('Mr. Cooper column layout: interleaved two-column labels resolve by column alignment', () => {
+    const p = parseMortgageStatement(MRCOOPER_COLUMNS);
+    expect(p.statementDate).toBe('2024-05-10');
+    expect(p.dueDate).toBe('2024-06-01');
+    expect(p.amountDue).toBe(2748.51);
+    expect(p.principalBalance).toBe(603749.20);
+    expect(p.escrowBalance).toBe(0);
+    expect(p.interestRate).toBe(2.999);         // NOT grabbed as money from "2.999%"
+    expect(p.principalPaid).toBe(1239.64);
+    expect(p.interestPaid).toBe(1508.87);
+    expect(p.loanNumberMask).toBe('8201');
+  });
+
+  test('grabPropertyAddress reads street + city/state/zip from the label column', () => {
+    const a = grabPropertyAddress(ROCKET_COLUMNS);
+    expect(a).toEqual({ street: '8962 KOBE PL', city: 'SAN DIEGO', region: 'CA', postalCode: '92123' });
+  });
 });
 
 describe('matchPaymentToBankTxn', () => {
@@ -77,8 +165,8 @@ describe('recordMortgageStatement', () => {
     const calls = [];
     const query = (sql, params) => {
       calls.push({ sql, params });
-      if (/SELECT monthly_payment, escrow_balance FROM mortgage_accounts/.test(sql))
-        return Promise.resolve({ rows: [{ monthly_payment: 2400, escrow_balance: 4000 }] });   // prior state
+      if (/SELECT monthly_payment, escrow_balance, loan_number_mask FROM mortgage_accounts/.test(sql))
+        return Promise.resolve({ rows: [{ monthly_payment: 2400, escrow_balance: 4000, loan_number_mask: '8201' }] });   // prior state
       if (/SELECT 1 FROM documents/.test(sql)) return Promise.resolve({ rows: [] });
       return Promise.resolve({ rows: [], rowCount: 0 });
     };
@@ -94,6 +182,10 @@ describe('recordMortgageStatement', () => {
     expect(res.matchedTxnId).toBeNull();                    // no transactions to match against
     const kinds = res.alerts.map(a => a.kind);
     expect(kinds).toEqual(expect.arrayContaining(['payment_changed', 'escrow_changed', 'payment_unmatched']));
+    // Alerts must name the exact statement + loan — every statement can be from one servicer.
+    const unmatched = res.alerts.find(a => a.kind === 'payment_unmatched');
+    expect(unmatched.message).toContain('Mar 2026 statement');
+    expect(unmatched.message).toContain('••••8201');
     expect(written['mortgage_alerts.json'].length).toBe(3);
     expect(calls.some(c => /INSERT INTO mortgage_statements/.test(c.sql))).toBe(true);
     expect(calls.some(c => /INSERT INTO mortgage_payments/.test(c.sql))).toBe(true);

@@ -53,26 +53,30 @@ async function handleInbound({ query, makeIO, parseReply, ingest, groqClassify }
       : 'That code is invalid or expired — grab a fresh one in CaiShen → Settings → Connect Discord.'] };
   }
 
-  // Receipt attachments → OCR + store (no transaction context needed).
+  // Attachments → the doc dispatcher: receipts keep their pipeline; checks, insurance
+  // bills, tax documents, disclosures and bank statements each route to their own flow.
   if (Array.isArray(attachments) && attachments.length) {
-    const ingestReceipt = ingest || require('./receipt-ingest').ingestReceipt;
+    const docIngest = require('./doc-ingest');
     const io = makeIO(userId);
     const replies = [];
     for (const a of attachments) {
       try {
-        const res = await ingestReceipt(query, io, userId, { buffer: a.bytes, mimeType: a.contentType, originalName: a.name });
-        replies.push(formatReceiptReply(res));
+        const res = await docIngest.ingestAttachment(query, io, userId,
+          { buffer: a.bytes, mimeType: a.contentType, originalName: a.name },
+          ingest ? { ingestReceipt: ingest } : {});
+        replies.push(docIngest.formatDocReply(res) || formatReceiptReply(res));
         // On a flagged duplicate, send the existing receipt photo back for comparison (best-effort).
         if ((res.level === 'hard' || res.level === 'possible') && res.existingDocId) {
           try { const bytes = await require('../core/documents').getDocumentBytes(userId, res.existingDocId); if (bytes) replies.push({ file: bytes, name: 'existing-receipt.jpg' }); }
           catch { /* skip the photo if it can't be fetched */ }
         }
-        // A saved, unmatched receipt → ask whether it was cash.
+        // A saved, unmatched receipt → ask whether it was cash. (Checks skip this — they
+        // retro-match when the debit clears; a check is never a cash purchase.)
         if (res.level === 'unique' && !res.matched && res.id) {
           await require('./receipt-match').createCashQuestion(query, userId, res.id);
           replies.push('Was this a cash purchase? Reply yes or no.');
         }
-      } catch (e) { replies.push('⚠️ Could not process that receipt: ' + e.message); }
+      } catch (e) { replies.push('⚠️ Could not process that attachment: ' + e.message); }
     }
     return { replies, userId };
   }
@@ -91,6 +95,25 @@ async function handleInbound({ query, makeIO, parseReply, ingest, groqClassify }
   if (cq) {
     const res = await rm.handleCashAnswer(query, makeIO(userId), userId, cq, text);
     return { replies: res.replies, userId };
+  }
+
+  // Then a pending "add this property?" question (unlinked insurance address).
+  const pl = require('./property-link');
+  const pq = await pl.pendingPropertyQuestion(query, userId);
+  if (pq) {
+    const res = await pl.handlePropertyAnswer(query, makeIO(userId), userId, pq, text);
+    return { replies: res.replies, userId };
+  }
+
+  // "done [what]" completes an open action item (escheatment notices etc.) and stops its
+  // reminders. Falls through to the categorizer when nothing is open — "done" might be a
+  // reply to something else.
+  const doneM = /^\s*done\b\s*(.*)$/i.exec(text || '');
+  if (doneM) {
+    const r = require('./notices').markDone(makeIO(userId), doneM[1]);
+    if (r.done) return { replies: [`✅ Marked done: ${r.item.title}. I'll stop reminding you.`], userId };
+    if (r.reason === 'ambiguous') return { replies: [
+      `Which one did you finish?\n${r.options.map((t, i) => `  ${i + 1}) ${t}`).join('\n')}\nReply like "done etoro".`], userId };
   }
 
   const res = await core.handleReply(query, makeIO(userId), userId, text, parseReply ? { parseReply } : {});
@@ -133,6 +156,9 @@ async function deliverPending({ query, makeIO, transport, transports }) {
         if (ext.rows[0]) { target = { transport: map[ch], externalId: ext.rows[0].external_id }; break; }
       }
       if (!target) continue;                                                    // not linked on any live channel
+      // Property-link questions (vault-originated — no chat context to inline-ask) go first.
+      const propQ = await require('./property-link').nextOpenPropertyQuestion(query, user_id);
+      if (propQ) { await target.transport.send(target.externalId, propQ); continue; }
       const text = await core.nextPrompt(query, makeIO(user_id), user_id);
       if (text) await target.transport.send(target.externalId, text);
     } catch (e) { console.error('[bot] deliver user', user_id, e.message); }
@@ -150,16 +176,21 @@ let _lockKeepalive = null;
 
 const BOT_LOCK_KEY = 776699;  // arbitrary constant identifying the categorizer-bot advisory lock
 
-// Periodically DM each linked user about any overdue (un-uploaded) bank statement.
+// Periodically DM each linked user about any overdue (un-uploaded) bank statement AND any
+// upcoming insurance/tax payment (weekly <1 month out, daily ≤1 week — payment-reminders.js).
 async function checkReminders({ query, makeIO }) {
   const reminder = require('./statement-reminder');
+  const payments = require('./payment-reminders');
   const links = await query(`SELECT user_id, channel, external_id FROM messaging_links`);
   const today = new Date().toISOString().slice(0, 10);
   for (const { user_id, channel, external_id } of links.rows) {
     const t = _transports[channel];
     if (!t) continue;
-    try { await reminder.sendReminders(query, user_id, (text) => t.send(external_id, text), today); }
+    const send = (text) => t.send(external_id, text);
+    try { await reminder.sendReminders(query, user_id, send, today); }
     catch (e) { console.error('[bot] reminder', user_id, e.message); }
+    try { await payments.sendPaymentReminders(query, user_id, send, today, { io: makeIO(user_id) }); }
+    catch (e) { console.error('[bot] payment reminder', user_id, e.message); }
   }
 }
 

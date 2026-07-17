@@ -14,7 +14,12 @@ const { periodIdFor, findOrCreatePeriod } = require('./periods');
 const plaidSourceHash = (userId, txnId) =>
   crypto.createHash('sha256').update(`${userId}|plaid|${txnId}`).digest('hex');
 
-async function mirrorPlaid(userId, txs) {
+// rawById: optional Map(plaidTxnId -> full Plaid transaction object) from the current sync.
+// When present we persist the COMPLETE Plaid payload into the `raw` JSONB column (lossless —
+// every field, even ones the app doesn't use) and promote personal_finance_category.detailed
+// into its own column. Rows we have no fresh raw for (carried-forward history) keep whatever
+// raw/pfc_detailed they already had via COALESCE, so a sync never nulls out prior captures.
+async function mirrorPlaid(userId, txs, rawById = new Map()) {
   const rows = (txs || []).filter(t => t.source === 'plaid');
   if (!rows.length) return 0;
 
@@ -36,23 +41,33 @@ async function mirrorPlaid(userId, txs) {
       catch (e) { periodId = null; }   // never let a period hiccup drop the transaction
     }
 
+    // Full Plaid object when we have it this sync; else null → COALESCE keeps the prior capture.
+    const full        = rawById.get(t.id) || null;
+    const rawJson     = full ? JSON.stringify(full) : null;
+    const pfcDetailed = (full && full.personal_finance_category && full.personal_finance_category.detailed)
+                        || t.plaidDetailed || null;
+    const payChannel  = (full && full.payment_channel) || t.paymentChannel || null;
+
     await query(
       `INSERT INTO source_transactions
          (id, user_id, source, source_file, period_year, account, account_id,
           external_transaction_id, bank_account_period_id, txn_date, description,
-          merchant_name, amount, category, source_hash, raw, ingested_at)
-       VALUES ($1,$2,'plaid','plaid_transactions.csv',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+          merchant_name, amount, category, source_hash, raw, pfc_detailed, payment_channel, ingested_at)
+       VALUES ($1,$2,'plaid','plaid_transactions.csv',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
        ON CONFLICT (id) DO UPDATE SET
          amount=EXCLUDED.amount, description=EXCLUDED.description, merchant_name=EXCLUDED.merchant_name,
          txn_date=EXCLUDED.txn_date, account=EXCLUDED.account, account_id=EXCLUDED.account_id,
          external_transaction_id=EXCLUDED.external_transaction_id,
          bank_account_period_id=COALESCE(EXCLUDED.bank_account_period_id, source_transactions.bank_account_period_id),
          category=EXCLUDED.category, source_hash=EXCLUDED.source_hash,
-         raw=EXCLUDED.raw, ingested_at=NOW()`,
+         raw=COALESCE(EXCLUDED.raw, source_transactions.raw),
+         pfc_detailed=COALESCE(EXCLUDED.pfc_detailed, source_transactions.pfc_detailed),
+         payment_channel=COALESCE(EXCLUDED.payment_channel, source_transactions.payment_channel),
+         ingested_at=NOW()`,
       [t.id, userId, year, t.account || null, accountId,
        t.id, periodId, t.date || null, t.desc || null,
        t.desc || null, (t.amount == null ? null : Number(t.amount)), t.category || null,
-       plaidSourceHash(userId, t.id), JSON.stringify(t)]
+       plaidSourceHash(userId, t.id), rawJson, pfcDetailed, payChannel]
     );
     n++;
   }
