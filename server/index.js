@@ -56,7 +56,14 @@ app.use(cors());
 app.use(express.json({ limit: '10mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 
 // ── Static client files ───────────────────────────────────────────────
-app.use(express.static(path.join(__dirname, '../client-dist')));
+// index.html must NEVER be browser-cached (or deploys don't show up until the heuristic
+// cache expires — bit us on 2026-07-17); the content-hashed /assets bundles are immutable.
+app.use(express.static(path.join(__dirname, '../client-dist'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+    else if (/[\\/]assets[\\/]/.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  },
+}));
 
 // ── Directory setup ───────────────────────────────────────────────────
 const DATA_DIR   = path.join(__dirname, '../data');
@@ -400,6 +407,7 @@ app.get('/api/status', (req, res) => {
 app.get('/{*path}', (req, res) => {
   const indexPath = path.join(__dirname, '../client-dist/index.html');
   if (fs.existsSync(indexPath)) {
+    res.setHeader('Cache-Control', 'no-cache');   // SPA shell — always revalidate (see static config)
     res.sendFile(indexPath);
   } else {
     res.send(`<html><body style="font-family:sans-serif;padding:2rem;background:#0f1117;color:#fff">
