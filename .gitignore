@@ -49,3 +49,6 @@ excludelist.txt
 ROADMAP.md
 # Dev-only Banking verification dashboard — local/dev mode, not for the public repo
 server/banking/dev-verify.js
+
+# Dev CSV exports with real transaction data — never commit
+client/src/pages/DevTools/*.csv
